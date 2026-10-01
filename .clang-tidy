@@ -1,0 +1,46 @@
+
+Checks: >
+  *,
+  -llvm-*,
+  -llvmlibc-*,
+  -fuchsia-*,
+  -abseil-*,
+  -altera-*,
+  -android-*,
+  -hicpp-*,
+  -readability-braces-around-statements,
+  -hicpp-braces-around-statements,
+  -cppcoreguidelines-pro-type-union-access,
+  -hicpp-signed-bitwise,
+  -misc-no-recursion,
+  -modernize-use-trailing-return-type
+
+WarningsAsErrors: "*"
+
+CheckOptions:
+  - { key: readability-identifier-naming.NamespaceCase                                                  , value: lower_case       }
+  - { key: readability-identifier-naming.ClassCase                                                      , value: Camel_Snake_Case }
+  - { key: readability-identifier-naming.StructCase                                                     , value: CamelCase        }
+  # Exempts detail-namespace trait structs (is_field, is_schema, is_relation)
+  # that deliberately mimic std::is_same-style trait naming (lower_case)
+  # rather than the StructCase default.
+  - { key: readability-identifier-naming.StructIgnoredRegexp                                            , value: '^is_[a-z_]+$'   }
+  - { key: readability-identifier-naming.EnumCase                                                        , value: CamelCase        }
+  - { key: readability-identifier-naming.EnumConstantCase                                                , value: CamelCase        }
+  - { key: readability-identifier-naming.ConceptCase                                                     , value: CamelCase        }
+  - { key: readability-identifier-naming.TemplateParameterCase                                           , value: lower_case       }
+  - { key: readability-identifier-naming.FunctionCase                                                    , value: lower_case       }
+  # Exempts Google Benchmark's own BM_FunctionName convention (paired with
+  # BENCHMARK(BM_Xxx) registration) in benchmarks/.
+  - { key: readability-identifier-naming.FunctionIgnoredRegexp                                            , value: '^BM_[A-Za-z0-9]+$' }
+  - { key: readability-identifier-naming.ParameterCase                                                   , value: lower_case       }
+  - { key: readability-identifier-naming.VariableCase                                                    , value: lower_case       }
+  - { key: readability-identifier-naming.MethodCase                                                      , value: lower_case       }
+  - { key: readability-identifier-naming.PrivateMemberCase                                               , value: lower_case       }
+  - { key: readability-identifier-naming.PrivateMemberPrefix                                             , value: _                }
+  - { key: readability-identifier-naming.ConstexprVariableCase                                           , value: UPPER_CASE       }
+  - { key: readability-identifier-naming.ClassConstantCase                                               , value: UPPER_CASE       }
+  - { key: readability-identifier-naming.GlobalConstantCase                                              , value: UPPER_CASE       }
+  - { key: readability-implicit-bool-conversion.AllowIntegerConditions                                   , value: 1                }
+  - { key: readability-implicit-bool-conversion.AllowPointerConditions                                   , value: 1                }
+  - { key: misc-non-private-member-variables-in-classes.IgnoreClassesWithAllMemberVariablesBeingPublic   , value: 1                }

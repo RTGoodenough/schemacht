@@ -1,0 +1,27 @@
+Language: Cpp
+BasedOnStyle: Google
+Standard: Latest
+TabWidth: 2
+UseTab: Never
+ColumnLimit: 150
+PointerAlignment: Left
+ReflowComments:  false
+IncludeBlocks: Preserve
+AlignConsecutiveDeclarations: true
+DerivePointerAlignment: false
+
+SpaceAfterLogicalNot: true
+
+SpacesInParens: Custom
+SpacesInParensOptions:
+  InConditionalStatements: true
+  Other: false
+
+SpaceBeforeParens: Custom
+SpaceBeforeParensOptions:
+  AfterControlStatements: true
+  AfterFunctionDeclarationName: false
+  AfterFunctionDefinitionName: false
+  AfterIfMacros: true
+  AfterOverloadedOperator: false
+  BeforeNonEmptyParentheses: false
