@@ -14,6 +14,7 @@
 #include <utility>
 #include <vector>
 
+#include "schemacht/postgres/binary_form.hpp"  // IWYU pragma: export
 #include "schemacht/schema/column_type.hpp"
 #include "schemacht/schema/field.hpp"
 
@@ -24,11 +25,13 @@ namespace detail {
 [[nodiscard]] std::vector<std::byte> parse_hex_bytes(std::string_view text);
 [[nodiscard]] std::string            format_hex_bytes(const std::vector<std::byte>& bytes);
 
+}  // namespace detail
+
 /**
  * @brief Walks the elements of a one-dimensional PostgreSQL array in text form: `{}`, `{1,2,3}`, `{"a b","c\"d"}`.
  *
- * Not a template, so its code is compiled once and not for each element type; `FieldCodec<std::vector<T>>` hands each element's
- * text to `FieldCodec<T>`. Refuses, with `std::invalid_argument`, what a `std::vector<T>` cannot hold: a NULL element, a
+ * What `FieldCodec<std::vector<T>>` reads with (handing each element's text to `FieldCodec<T>`), and a type of your own whose
+ * text form holds an array can too. Refuses, with `std::invalid_argument`, what a `std::vector<T>` cannot hold: a NULL element, a
  * nested (multi-dimensional) array, a dimension prefix (`[0:2]={...}`), and text that is not an array.
  */
 class ArrayReader {
@@ -61,69 +64,6 @@ class ArrayReader {
   bool             _after_comma = false;
   std::string      _unescaped;
 };
-
-/** @brief The PostgreSQL type OIDs of the built-in types whose binary form the codecs below read (`pg_type.oid`; fixed by the server). */
-inline constexpr std::uint32_t OID_BOOL = 16;
-inline constexpr std::uint32_t OID_BYTEA = 17;
-inline constexpr std::uint32_t OID_NAME = 19;
-inline constexpr std::uint32_t OID_INT8 = 20;
-inline constexpr std::uint32_t OID_INT2 = 21;
-inline constexpr std::uint32_t OID_INT4 = 23;
-inline constexpr std::uint32_t OID_TEXT = 25;
-inline constexpr std::uint32_t OID_FLOAT4 = 700;
-inline constexpr std::uint32_t OID_FLOAT8 = 701;
-inline constexpr std::uint32_t OID_BPCHAR = 1042;
-inline constexpr std::uint32_t OID_VARCHAR = 1043;
-
-/** @return A whole number in PostgreSQL's binary form: big endian, signed, 2, 4 or 8 bytes (`int2`, `int4`, `int8`). @throws std::invalid_argument for any other length. */
-[[nodiscard]] std::int64_t binary_integer(std::span<const std::byte> bytes);
-
-/** @return A floating point number in PostgreSQL's binary form: big endian IEEE, 4 or 8 bytes (`float4`, `float8`). @throws std::invalid_argument for any other length. */
-[[nodiscard]] double binary_real(std::span<const std::byte> bytes);
-
-/**
- * @brief Walks the elements of a one-dimensional PostgreSQL array in binary form: a header (dimension count, has-NULL flag, the
- * element type's OID, and for one dimension its length and lower bound), then each element as a 4-byte length and its bytes.
- *
- * Not a template, like `ArrayReader`. Refuses, with `std::invalid_argument`, what a `std::vector<T>` cannot hold: a NULL
- * element (length -1) and more than one dimension; and bytes that end early. An empty array (no dimensions) has no elements.
- */
-class BinaryArrayReader {
- public:
-  /** @throws std::invalid_argument if `bytes` is not a one-dimensional array's binary form. */
-  explicit BinaryArrayReader(std::span<const std::byte> bytes);
-
-  BinaryArrayReader(const BinaryArrayReader&) = default;
-  BinaryArrayReader(BinaryArrayReader&&) noexcept = default;
-  BinaryArrayReader& operator=(const BinaryArrayReader&) = default;
-  BinaryArrayReader& operator=(BinaryArrayReader&&) noexcept = default;
-  ~BinaryArrayReader() = default;
-
-  /** @return The element type's OID, from the header. */
-  [[nodiscard]] std::uint32_t element_type() const noexcept { return _element_type; }
-
-  /** @return How many elements there are. */
-  [[nodiscard]] std::size_t size() const noexcept { return _size; }
-
-  /** @return The next element's bytes, valid as long as the array's bytes are. @pre Fewer than `size()` calls so far. @throws std::invalid_argument for a NULL element or bytes that end early. */
-  [[nodiscard]] std::span<const std::byte> next();
-
- private:
-  std::span<const std::byte> _rest;
-  std::uint32_t              _element_type = 0;
-  std::size_t                _size = 0;
-};
-
-}  // namespace detail
-
-/**
- * @return `bytes` as the text they hold, valid while they are: for reading a type whose binary form is its text (a string, an
- * enum's label, `jsonb` after its version byte).
- */
-[[nodiscard]] inline std::string_view as_text(std::span<const std::byte> bytes) noexcept {
-  // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast) -- the one place bytes are viewed as the characters they are
-  return {reinterpret_cast<const char*>(bytes.data()), bytes.size()};
-}
 
 namespace detail {
 
@@ -224,13 +164,13 @@ class FieldCodec {
     } else if constexpr ( std::same_as<data_t, std::vector<std::byte>> ) {
       return std::vector<std::byte>(bytes.begin(), bytes.end());
     } else if constexpr ( std::integral<data_t> ) {
-      const std::int64_t value = detail::binary_integer(bytes);
+      const std::int64_t value = binary_integer(bytes);
       if ( ! std::in_range<data_t>(value) ) {
         throw std::invalid_argument("parse_binary: " + std::to_string(value) + " does not fit the column's type");
       }
       return static_cast<data_t>(value);
     } else {
-      return static_cast<data_t>(detail::binary_real(bytes));
+      return static_cast<data_t>(binary_real(bytes));
     }
   }
 
@@ -245,15 +185,15 @@ class FieldCodec {
     if constexpr ( UserColumnTypeWithTypeCheck<data_t> ) {
       return ColumnType<data_t>::binary_accepts(type_oid);
     } else if constexpr ( std::same_as<data_t, bool> ) {
-      return type_oid == detail::OID_BOOL;
+      return type_oid == OID_BOOL;
     } else if constexpr ( std::same_as<data_t, std::string> ) {
-      return type_oid == detail::OID_TEXT || type_oid == detail::OID_VARCHAR || type_oid == detail::OID_BPCHAR || type_oid == detail::OID_NAME;
+      return type_oid == OID_TEXT || type_oid == OID_VARCHAR || type_oid == OID_BPCHAR || type_oid == OID_NAME;
     } else if constexpr ( std::same_as<data_t, std::vector<std::byte>> ) {
-      return type_oid == detail::OID_BYTEA;
+      return type_oid == OID_BYTEA;
     } else if constexpr ( std::integral<data_t> ) {
-      return type_oid == detail::OID_INT2 || type_oid == detail::OID_INT4 || type_oid == detail::OID_INT8;
+      return type_oid == OID_INT2 || type_oid == OID_INT4 || type_oid == OID_INT8;
     } else {
-      return type_oid == detail::OID_FLOAT4 || type_oid == detail::OID_FLOAT8;
+      return type_oid == OID_FLOAT4 || type_oid == OID_FLOAT8;
     }
   }
 };
@@ -378,7 +318,7 @@ template <typename element_t>
 class FieldCodec<std::vector<element_t>> {
  public:
   [[nodiscard]] static std::vector<element_t> parse(std::string_view text) {
-    detail::ArrayReader    reader(text);
+    ArrayReader            reader(text);
     std::vector<element_t> values;
     values.reserve(reader.element_estimate());
     while ( const std::optional<std::string_view> element = reader.next() ) {
@@ -396,7 +336,7 @@ class FieldCodec<std::vector<element_t>> {
   [[nodiscard]] static std::vector<element_t> parse_binary(std::span<const std::byte> bytes)
     requires HasBinaryForm<element_t>
   {
-    detail::BinaryArrayReader reader(bytes);
+    BinaryArrayReader reader(bytes);
     if constexpr ( requires { FieldCodec<element_t>::binary_accepts(reader.element_type()); } ) {
       if ( ! FieldCodec<element_t>::binary_accepts(reader.element_type()) ) {
         throw std::invalid_argument("parse_binary: the array's elements have the type with OID " + std::to_string(reader.element_type()) +

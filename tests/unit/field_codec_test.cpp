@@ -102,8 +102,8 @@ TEST_CASE("binary integers are read by their length and range-checked", "[codec]
   CHECK_THROWS_AS(pg::FieldCodec<std::uint32_t>::parse_binary(bytes({0xff, 0xff})), std::invalid_argument);    // -1
   CHECK_THROWS_AS(pg::FieldCodec<std::int64_t>::parse_binary(bytes({1, 2, 3})), std::invalid_argument);
   CHECK(pg::FieldCodec<bool>::parse_binary(bytes({1})));
-  CHECK(pg::FieldCodec<std::int64_t>::binary_accepts(pg::detail::OID_INT4));
-  CHECK_FALSE(pg::FieldCodec<std::int64_t>::binary_accepts(pg::detail::OID_TEXT));
+  CHECK(pg::FieldCodec<std::int64_t>::binary_accepts(pg::OID_INT4));
+  CHECK_FALSE(pg::FieldCodec<std::int64_t>::binary_accepts(pg::OID_TEXT));
 }
 
 TEST_CASE("binary arrays", "[codec][binary]") {

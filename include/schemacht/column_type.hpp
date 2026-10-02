@@ -28,7 +28,9 @@
 #include <type_traits>
 #include <utility>
 
+#include "schemacht/postgres/binary_form.hpp"  // IWYU pragma: export
 #include "schemacht/postgres/field_codec.hpp"  // IWYU pragma: export
+#include "schemacht/postgres/numeric.hpp"      // IWYU pragma: export
 #include "schemacht/query/sql_type.hpp"        // IWYU pragma: export
 #include "schemacht/schema/column_type.hpp"    // IWYU pragma: export
 #include "schemacht/schema/field.hpp"          // IWYU pragma: export

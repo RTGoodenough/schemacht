@@ -11,6 +11,8 @@
 #include <string>
 #include <string_view>
 
+#include "schemacht/postgres/binary_form.hpp"
+
 // field_codec.hpp includes this at its end, so these codecs are seen wherever `FieldCodec` is.
 
 /**
@@ -35,10 +37,6 @@ template <typename data_t>
 class FieldCodec;  // defined in field_codec.hpp; specialized below
 
 namespace detail {
-
-inline constexpr std::uint32_t OID_DATE = 1082;
-inline constexpr std::uint32_t OID_TIMESTAMP = 1114;
-inline constexpr std::uint32_t OID_TIMESTAMPTZ = 1184;
 
 /// A time as these functions pass it: microseconds since 1970-01-01 00:00 (UTC for `timestamptz`), or one of these for infinity.
 inline constexpr std::int64_t INFINITE_FUTURE = std::numeric_limits<std::int64_t>::max();
@@ -129,7 +127,7 @@ class FieldCodec<std::chrono::sys_time<duration_t>> {
   }
 
   /** @brief Only `timestamptz`: a `timestamp` has no zone, and reading it as UTC would be a guess. */
-  [[nodiscard]] static constexpr bool binary_accepts(std::uint32_t type_oid) { return type_oid == detail::OID_TIMESTAMPTZ; }
+  [[nodiscard]] static constexpr bool binary_accepts(std::uint32_t type_oid) { return type_oid == OID_TIMESTAMPTZ; }
 };
 
 /** @brief A `std::chrono::local_time` is a `timestamp`: a date and a time of day, in no particular zone. */
@@ -148,7 +146,7 @@ class FieldCodec<std::chrono::local_time<duration_t>> {
   }
 
   /** @brief Only `timestamp`: a `timestamptz` is a moment, which has a date and time of day only in some zone. */
-  [[nodiscard]] static constexpr bool binary_accepts(std::uint32_t type_oid) { return type_oid == detail::OID_TIMESTAMP; }
+  [[nodiscard]] static constexpr bool binary_accepts(std::uint32_t type_oid) { return type_oid == OID_TIMESTAMP; }
 };
 
 /** @brief A `std::chrono::year_month_day` is a `date`. */
@@ -162,7 +160,7 @@ class FieldCodec<std::chrono::year_month_day> {
     return detail::date_of(detail::parse_binary_date(bytes));
   }
 
-  [[nodiscard]] static constexpr bool binary_accepts(std::uint32_t type_oid) { return type_oid == detail::OID_DATE; }
+  [[nodiscard]] static constexpr bool binary_accepts(std::uint32_t type_oid) { return type_oid == OID_DATE; }
 };
 
 }  // namespace schemacht::postgres

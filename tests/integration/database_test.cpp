@@ -10,6 +10,7 @@
 
 #include <atomic>
 #include <chrono>
+#include <compare>
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
@@ -20,6 +21,7 @@
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <span>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -27,6 +29,7 @@
 #include <utility>
 #include <vector>
 
+#include "schemacht/column_type.hpp"
 #include "schemacht/schemacht.hpp"
 #include "schemacht/util/compile_time.hpp"
 
@@ -138,7 +141,23 @@ constexpr auto DROP_ALL = q::delete_all<Scored>();
 /** @brief An argument type whose text form is always refused. */
 struct Unwritable {};
 
+/** @brief Cents in a `numeric`, written with the library's `numeric` helpers. */
+struct Cents {
+  std::int64_t value = 0;
+
+  auto operator<=>(const Cents&) const = default;
+};
+
 }  // namespace
+
+template <>
+struct schemacht::ColumnType<Cents> {
+  static constexpr std::string_view SQL_TYPE = "numeric(12,2)";
+  static Cents                      parse(std::string_view text) { return {schemacht::postgres::parse_scaled_numeric<2>(text)}; }
+  static std::string                format(const Cents& amount) { return schemacht::postgres::format_scaled_numeric<2>(amount.value); }
+  static Cents          parse_binary(std::span<const std::byte> bytes) { return {schemacht::postgres::parse_binary_scaled_numeric<2>(bytes)}; }
+  static constexpr bool binary_accepts(std::uint32_t type_oid) { return type_oid == schemacht::postgres::OID_NUMERIC; }
+};
 
 template <>
 class schemacht::postgres::FieldCodec<Unwritable> {
@@ -398,4 +417,27 @@ TEST_CASE("integration: notices go to the handler, or nowhere", "[integration]")
   REQUIRE(dup2(saved, STDERR_FILENO) >= 0);
   close(saved);
   CHECK(std::ftell(capture.get()) == 0);
+}
+
+TEST_CASE("integration: a numeric is read exactly, in binary and in text", "[integration]") {
+  pg::Database database(test_db());
+  using Amount = sch::Field<Cents, "amount">;
+  using Amounts = q::RawStatement<
+      "SELECT v::numeric(12,2) AS amount FROM unnest(ARRAY['19.99', '-0.05', '0.05', '1200.5', '9999999999.99', '0']) "
+      "WITH ORDINALITY AS t(v, n) ORDER BY n",
+      q::RawArguments<>, Amount>;
+  using Third = q::RawStatement<"SELECT 1::numeric / 3 AS amount", q::RawArguments<>, Amount>;
+  using Echo = q::RawStatement<"SELECT $1::numeric(12,2) AS amount", q::RawArguments<Cents>, Amount>;
+
+  for ( const pg::ResultFormat format : {pg::ResultFormat::Binary, pg::ResultFormat::Text} ) {
+    const auto                rows = database.execute(Amounts::bind(), pg::ReadOptions{.format = format}).get();
+    std::vector<std::int64_t> cents;
+    for ( const auto& row : rows ) {
+      cents.push_back(sch::get<"amount">(row).value);
+    }
+    CHECK(cents == std::vector<std::int64_t>{1999, -5, 5, 120050, 999999999999, 0});
+    CHECK_THROWS_AS(database.execute(Third::bind(), pg::ReadOptions{.format = format}).get(),
+                    std::invalid_argument);  // 0.333...: refused, not rounded
+    CHECK(sch::get<"amount">(database.execute(Echo::bind(Cents{-123456}), pg::ReadOptions{.format = format}).get().at(0)) == Cents{-123456});
+  }
 }

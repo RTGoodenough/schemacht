@@ -10,6 +10,7 @@
 #include <string>
 #include <string_view>
 
+#include "schemacht/postgres/binary_form.hpp"
 #include "schemacht/schema/column_type.hpp"
 
 /**
@@ -110,10 +111,7 @@ struct ColumnType<Uuid> {
   }
 
   /** @brief Only `uuid` (OID 2950, fixed by the server). */
-  [[nodiscard]] static constexpr bool binary_accepts(std::uint32_t type_oid) { return type_oid == UUID_OID; }
-
- private:
-  static constexpr std::uint32_t UUID_OID = 2950;
+  [[nodiscard]] static constexpr bool binary_accepts(std::uint32_t type_oid) { return type_oid == postgres::OID_UUID; }
 };
 
 }  // namespace schemacht

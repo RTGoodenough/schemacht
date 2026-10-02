@@ -14,7 +14,7 @@
 #include <string_view>
 #include <vector>
 
-namespace schemacht::postgres::detail {
+namespace schemacht::postgres {
 
 namespace {
 
@@ -76,6 +76,8 @@ bool is_null_word(std::string_view token) {
 
 }  // namespace
 
+namespace detail {
+
 std::vector<std::byte> parse_hex_bytes(std::string_view text) {
   if ( text.size() % 2 != 0 ) {
     throw std::invalid_argument("field_codec: hex byte string must have even length");
@@ -105,6 +107,8 @@ std::string format_hex_bytes(const std::vector<std::byte>& bytes) {
   }
   return text;
 }
+
+}  // namespace detail
 
 void ArrayReader::fail(std::string_view reason) const {
   std::string text(_text.substr(0, MESSAGE_TEXT_LIMIT));
@@ -209,92 +213,4 @@ std::optional<std::string_view> ArrayReader::next() {
   return element;
 }
 
-// ---- PostgreSQL's binary form ---------------------------------------------------------------------------------------------
-
-namespace {
-
-constexpr std::size_t BINARY_LENGTH_BYTES = 4;     // each array element starts with its length
-constexpr std::size_t BINARY_ARRAY_HEADER = 12;    // dimension count, has-NULL flag, element type
-constexpr std::size_t BINARY_DIMENSION_BYTES = 8;  // a dimension's length and lower bound
-constexpr std::size_t INT16_BYTES = 2;
-constexpr std::size_t INT32_BYTES = 4;
-constexpr std::size_t INT64_BYTES = 8;
-
-/** @return The `value_t` at `offset`, read from its big-endian bytes (which the caller has checked are there). */
-template <std::unsigned_integral value_t>
-value_t load_big_endian(std::span<const std::byte> bytes, std::size_t offset) {
-  value_t value = 0;
-  std::memcpy(&value, bytes.data() + offset, sizeof(value_t));  // NOLINT(cppcoreguidelines-pro-bounds-pointer-arithmetic)
-  if constexpr ( std::endian::native == std::endian::little ) {
-    value = std::byteswap(value);
-  }
-  return value;
-}
-
-}  // namespace
-
-std::int64_t binary_integer(std::span<const std::byte> bytes) {
-  switch ( bytes.size() ) {
-    case INT16_BYTES:
-      return static_cast<std::int16_t>(load_big_endian<std::uint16_t>(bytes, 0));
-    case INT32_BYTES:
-      return static_cast<std::int32_t>(load_big_endian<std::uint32_t>(bytes, 0));
-    case INT64_BYTES:
-      return static_cast<std::int64_t>(load_big_endian<std::uint64_t>(bytes, 0));
-    default:
-      throw std::invalid_argument("parse_binary: a whole number is 2, 4 or 8 bytes, not " + std::to_string(bytes.size()));
-  }
-}
-
-double binary_real(std::span<const std::byte> bytes) {
-  switch ( bytes.size() ) {
-    case INT32_BYTES:
-      return static_cast<double>(std::bit_cast<float>(load_big_endian<std::uint32_t>(bytes, 0)));
-    case INT64_BYTES:
-      return std::bit_cast<double>(load_big_endian<std::uint64_t>(bytes, 0));
-    default:
-      throw std::invalid_argument("parse_binary: a floating point number is 4 or 8 bytes, not " + std::to_string(bytes.size()));
-  }
-}
-
-BinaryArrayReader::BinaryArrayReader(std::span<const std::byte> bytes) {
-  if ( bytes.size() < BINARY_ARRAY_HEADER ) {
-    throw std::invalid_argument("parse_binary: too short to be an array");
-  }
-  const auto dimensions = static_cast<std::int32_t>(load_big_endian<std::uint32_t>(bytes, 0));
-  _element_type = load_big_endian<std::uint32_t>(bytes, 2 * INT32_BYTES);
-  if ( dimensions == 0 ) {
-    return;  // an empty array has no dimension entry
-  }
-  if ( dimensions != 1 ) {
-    throw std::invalid_argument("parse_binary: a multi-dimensional array does not fit a list");
-  }
-  if ( bytes.size() < BINARY_ARRAY_HEADER + BINARY_DIMENSION_BYTES ) {
-    throw std::invalid_argument("parse_binary: too short to hold its length");
-  }
-  const auto length = static_cast<std::int32_t>(load_big_endian<std::uint32_t>(bytes, BINARY_ARRAY_HEADER));
-  _rest = bytes.subspan(BINARY_ARRAY_HEADER + BINARY_DIMENSION_BYTES);
-  // Every element takes at least its length field, so a count above that is a lie (and would be a huge reserve).
-  if ( length < 0 || static_cast<std::size_t>(length) > _rest.size() / BINARY_LENGTH_BYTES ) {
-    throw std::invalid_argument("parse_binary: the array says it has " + std::to_string(length) + " elements, more than its bytes can hold");
-  }
-  _size = static_cast<std::size_t>(length);
-}
-
-std::span<const std::byte> BinaryArrayReader::next() {
-  if ( _rest.size() < BINARY_LENGTH_BYTES ) {
-    throw std::invalid_argument("parse_binary: the array ends before its last element");
-  }
-  const auto length = static_cast<std::int32_t>(load_big_endian<std::uint32_t>(_rest, 0));
-  if ( length < 0 ) {
-    throw std::invalid_argument("parse_binary: a NULL element does not fit a list");
-  }
-  if ( static_cast<std::size_t>(length) > _rest.size() - BINARY_LENGTH_BYTES ) {
-    throw std::invalid_argument("parse_binary: an element ends after the array's bytes");
-  }
-  const std::span<const std::byte> element = _rest.subspan(BINARY_LENGTH_BYTES, static_cast<std::size_t>(length));
-  _rest = _rest.subspan(BINARY_LENGTH_BYTES + static_cast<std::size_t>(length));
-  return element;
-}
-
-}  // namespace schemacht::postgres::detail
+}  // namespace schemacht::postgres

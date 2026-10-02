@@ -36,8 +36,10 @@ add_library(
   STATIC
   src/async/thread_pool.cpp
   src/postgres/async_client.cpp
+  src/postgres/binary_form.cpp
   src/postgres/chrono_codec.cpp
   src/postgres/field_codec.cpp
+  src/postgres/numeric.cpp
 )
 
 # The headers are found in the source tree while building here and under the install prefix once installed.

@@ -20,6 +20,7 @@ add_executable(
   compile/raw_statement_test.cpp
   compile/schema_test.cpp
   compile/sql_test.cpp
+  unit/binary_form_test.cpp
   unit/chrono_uuid_test.cpp
   unit/column_type_test.cpp
   unit/field_codec_test.cpp

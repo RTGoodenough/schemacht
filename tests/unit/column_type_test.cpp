@@ -111,8 +111,8 @@ TEST_CASE("a WrappedColumn is stored as the type it wraps", "[column_type]") {
   CHECK(pg::parse_field<OrderId>("-3") == OrderId{-3});
   const std::vector<std::byte> eight{std::byte{0}, std::byte{0}, std::byte{0}, std::byte{0}, std::byte{0}, std::byte{0}, std::byte{1}, std::byte{0}};
   CHECK(pg::FieldCodec<OrderId>::parse_binary(eight) == OrderId{256});
-  CHECK(pg::FieldCodec<OrderId>::binary_accepts(pg::detail::OID_INT8));
-  CHECK_FALSE(pg::FieldCodec<OrderId>::binary_accepts(pg::detail::OID_TEXT));
+  CHECK(pg::FieldCodec<OrderId>::binary_accepts(pg::OID_INT8));
+  CHECK_FALSE(pg::FieldCodec<OrderId>::binary_accepts(pg::OID_TEXT));
 }
 
 TEST_CASE("an EnumColumn is stored as its labels", "[column_type]") {

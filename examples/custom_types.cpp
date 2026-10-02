@@ -1,12 +1,15 @@
 // Column types of your own: storing a C++ type in a PostgreSQL column and reading it back.
 //
 // A type of your own becomes a column type by specializing `schemacht::ColumnType` once, next to the type
-// (schemacht/column_type.hpp). Three kinds, from least to most work:
+// (schemacht/column_type.hpp). It gives the SQL type's name and the text form; a binary form is optional, and lets results be
+// read in PostgreSQL's binary form, which is less to send and parse. Three kinds:
 //
 // - OrderId: a strong type over a built-in one (a `bigint`). `WrappedColumn` writes the whole specialization, binary form included.
-// - Mood: a C++ enum stored as a PostgreSQL enum. `EnumColumn` writes it from the labels.
-// - Money: exact cents stored as `numeric(12,2)`, with a text form written by hand. It has no binary form, so rows holding it
-//   are read as text, which needs nothing more.
+// - Mood: a C++ enum stored as a PostgreSQL enum. `EnumColumn` writes it from the labels, binary form included.
+// - Money: exact cents stored as `numeric(12,2)`, written by hand with the library's helpers for `numeric` (postgres/numeric.hpp)
+//   and the type's OID (postgres/binary_form.hpp), in text and in binary form.
+//
+// A type without `parse_binary` works too: a row holding one is then read as text, whatever the query asks for.
 //
 // The library's own date, time and UUID types sit beside them: `std::chrono::system_clock::time_point` is a `timestamptz`, and
 // `schemacht::Uuid` a `uuid`. Give a type `operator<=>` if queries should compare with it (`<`, `>`) or order by it.
@@ -14,7 +17,6 @@
 // Run with a libpq connection string: schemacht_example_custom_types "host=localhost dbname=app user=app"
 // It creates the type schemacht_example_mood and the table schemacht_example_orders, and drops them when it is done.
 
-#include <charconv>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
@@ -28,7 +30,6 @@
 #include <stdexcept>
 #include <string>
 #include <string_view>
-#include <system_error>
 #include <vector>
 
 #include "schemacht/column_type.hpp"
@@ -71,50 +72,23 @@ struct schemacht::ColumnType<shop::OrderId> : schemacht::WrappedColumn<&shop::Or
 template <>
 struct schemacht::ColumnType<shop::Mood> : schemacht::EnumColumn<shop::Mood, "schemacht_example_mood", "sad", "ok", "happy"> {};
 
-/** @brief `Money` is written as PostgreSQL prints a `numeric(12,2)`: `19.99`, `-0.05`. */
+/**
+ * @brief `Money` is a `numeric(12,2)`: in text as PostgreSQL prints one (`19.99`, `-0.05`), and in binary form as its base-10000
+ * digits, both read as a count of cents by the library's `numeric` helpers. They refuse rather than round: `NaN`, an infinity,
+ * or a value with a third decimal place (a `total / 3`) is an error, not a nearby amount.
+ */
 template <>
 struct schemacht::ColumnType<shop::Money> {
   static constexpr std::string_view SQL_TYPE = "numeric(12,2)";  // a type with modifiers is fine
+  static constexpr unsigned         CENT_PLACES = 2;
 
-  /** @throws std::invalid_argument for anything but an amount with exactly two decimals, such as `NaN`. */
-  static shop::Money parse(std::string_view text) {
-    const std::string_view whole = text;
-    const bool             negative = text.starts_with('-');
-    if ( negative ) {
-      text.remove_prefix(1);
-    }
-    const std::size_t point = text.find('.');
-    if ( point == std::string_view::npos || text.size() - point != 3 ) {
-      throw std::invalid_argument("not an amount with two decimals: '" + std::string(whole) + "'");
-    }
-    const std::optional<std::int64_t> units = digits(text.substr(0, point));
-    const std::optional<std::int64_t> hundredths = digits(text.substr(point + 1));
-    if ( ! units || ! hundredths ) {
-      throw std::invalid_argument("not an amount: '" + std::string(whole) + "'");
-    }
-    const std::int64_t cents = (*units * CENTS_PER_UNIT) + *hundredths;
-    return {negative ? -cents : cents};
-  }
+  static shop::Money parse(std::string_view text) { return {schemacht::postgres::parse_scaled_numeric<CENT_PLACES>(text)}; }
+  static std::string format(const shop::Money& amount) { return schemacht::postgres::format_scaled_numeric<CENT_PLACES>(amount.cents); }
 
-  static std::string format(const shop::Money& amount) {
-    const std::int64_t magnitude = amount.cents < 0 ? -amount.cents : amount.cents;
-    return std::format("{}{}.{:02}", amount.cents < 0 ? "-" : "", magnitude / CENTS_PER_UNIT, magnitude % CENTS_PER_UNIT);
-  }
+  static shop::Money parse_binary(std::span<const std::byte> bytes) { return {schemacht::postgres::parse_binary_scaled_numeric<CENT_PLACES>(bytes)}; }
 
- private:
-  static constexpr std::int64_t CENTS_PER_UNIT = 100;
-
-  /** @return `text` as a number, if it is digits and nothing else. */
-  static std::optional<std::int64_t> digits(std::string_view text) {
-    std::uint64_t value = 0;                        // unsigned: `from_chars` then refuses a sign
-    const char*   end = text.data() + text.size();  // NOLINT(cppcoreguidelines-pro-bounds-pointer-arithmetic)
-    // NOLINTNEXTLINE(bugprone-suspicious-stringview-data-usage) -- the end is passed: from_chars needs no terminator
-    const auto [last, error] = std::from_chars(text.data(), end, value);
-    if ( text.empty() || error != std::errc{} || last != end ) {
-      return std::nullopt;
-    }
-    return static_cast<std::int64_t>(value);
-  }
+  /** @brief Only a `numeric` column: a `double precision` one, say, has another binary form, and is refused before any row is read. */
+  static constexpr bool binary_accepts(std::uint32_t type_oid) { return type_oid == schemacht::postgres::OID_NUMERIC; }
 };
 
 namespace shop {
@@ -144,10 +118,11 @@ using Orders = sch::Schema<"schemacht_example_orders", Id, Reference, PlacedAt, 
 using OrderColumns = q::On<Orders>;
 
 // The orders with any of some moods, the largest first. The moods go as one array argument, `$1::schemacht_example_mood[]`.
+// Every column's type has a binary form, so the rows are read in binary (`Database`'s default).
 constexpr auto BY_MOOD = q::select(OrderColumns::col<"mood">().in(q::arg<0>())).order_by(OrderColumns::col<"total">().desc());
 
-// Who spent more than an amount, when, and how they felt. None of the returned columns is a `Money`, so this result is read in
-// binary; `BY_MOOD`'s rows hold one, so they are read as text.
+// Who spent more than an amount, when, and how they felt: only those columns are fetched. The amount is sent as text
+// (`ColumnType::format`), as every argument is.
 constexpr auto SPENT_OVER = q::select(OrderColumns::col<"total">() > q::arg<0>())
                                 .order_by(OrderColumns::col<"id">().asc())
                                 .project(OrderColumns::col<"id">(), OrderColumns::col<"placed_at">(), OrderColumns::col<"mood">());
@@ -201,7 +176,7 @@ int main(int argc, char** argv) {
         })
         .get();
 
-    // Out: each column through its `ColumnType::parse` (text) or `parse_binary` (binary), read by name.
+    // Out: each column through its `ColumnType::parse_binary` (`parse`, for a result read as text), read by name.
     std::cout << "Happy or ok orders, the largest first:\n";
     for ( const Orders::row_type& order : database.execute(q::Prepared<BY_MOOD>::bind(std::vector{Mood::Happy, Mood::Ok})).get() ) {
       std::cout << "  " << sch::get<"id">(order) << "  " << sch::get<"total">(order) << "  " << sch::get<"mood">(order) << "  "

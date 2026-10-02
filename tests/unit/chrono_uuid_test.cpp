@@ -93,8 +93,8 @@ TEST_CASE("a timestamptz in binary", "[chrono]") {
   CHECK(Codec::parse_binary(big_endian<8>(-1)) == at(std::chrono::sys_days{2000y / 1 / 1}, -1us));
   CHECK(Codec::parse_binary(big_endian<8>(std::numeric_limits<std::int64_t>::max())) == Micros::max());
   CHECK_THROWS_AS(Codec::parse_binary(big_endian<4>(0)), std::invalid_argument);
-  CHECK(Codec::binary_accepts(pg::detail::OID_TIMESTAMPTZ));
-  CHECK_FALSE(Codec::binary_accepts(pg::detail::OID_TIMESTAMP));
+  CHECK(Codec::binary_accepts(pg::OID_TIMESTAMPTZ));
+  CHECK_FALSE(Codec::binary_accepts(pg::OID_TIMESTAMP));
 }
 
 TEST_CASE("a timestamp has no zone", "[chrono]") {
@@ -103,7 +103,7 @@ TEST_CASE("a timestamp has no zone", "[chrono]") {
   CHECK(Codec::format(noon) == "2026-10-01 12:00:00.000000");
   CHECK(Codec::parse("2026-10-01 12:00:00") == noon);
   CHECK_THROWS_AS(Codec::parse("2026-10-01 12:00:00+00"), std::invalid_argument);
-  CHECK(Codec::binary_accepts(pg::detail::OID_TIMESTAMP));
+  CHECK(Codec::binary_accepts(pg::OID_TIMESTAMP));
 }
 
 TEST_CASE("a date", "[chrono]") {
@@ -136,5 +136,5 @@ TEST_CASE("a UUID", "[uuid]") {
   using Codec = pg::FieldCodec<Uuid>;
   CHECK(Codec::parse_binary(parsed.bytes()) == parsed);
   CHECK_THROWS_AS(Codec::parse_binary(std::array<std::byte, 4>{}), std::invalid_argument);
-  CHECK(Codec::binary_accepts(2950));
+  CHECK(Codec::binary_accepts(pg::OID_UUID));
 }

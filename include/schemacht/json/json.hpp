@@ -8,6 +8,7 @@
 #include <string_view>
 #include <utility>
 
+#include "schemacht/postgres/binary_form.hpp"
 #include "schemacht/postgres/field_codec.hpp"
 #include "schemacht/schema/column_type.hpp"
 
@@ -68,9 +69,8 @@ struct schemacht::ColumnType<schemacht::json::Json> {
   }
 
   /** @brief Only `jsonb` (OID 3802, fixed by the server): a `json` column has no version byte and is refused rather than misread. */
-  [[nodiscard]] static constexpr bool binary_accepts(std::uint32_t type_oid) { return type_oid == JSONB_OID; }
+  [[nodiscard]] static constexpr bool binary_accepts(std::uint32_t type_oid) { return type_oid == postgres::OID_JSONB; }
 
  private:
-  static constexpr std::uint32_t JSONB_OID = 3802;
-  static constexpr std::uint8_t  JSONB_BINARY_VERSION = 1;
+  static constexpr std::uint8_t JSONB_BINARY_VERSION = 1;
 };
