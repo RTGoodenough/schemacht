@@ -52,6 +52,7 @@ namespace detail {
   if ( name.empty() || ! std::ranges::all_of(name, [&](char chr) { return OPERATOR_CHARS.contains(chr); }) ) {
     return false;
   }
+
   if ( name.contains("--") || name.contains("/*") ) {
     return false;
   }

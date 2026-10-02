@@ -139,14 +139,17 @@ TEST_CASE("errors name the column", "[row_reader]") {
   CHECK_THROWS_WITH((pg::read_row<Row, pg::ResultFormat::Text>(null_id, 0)), "column 'id' is NULL, but its schema field is not a std::optional");
 
   const FakeChunk bad_id(false, {20, 25}, {{"x", "y"}});
-  CHECK_THROWS_WITH((pg::read_row<Row, pg::ResultFormat::Text>(bad_id, 0)),
-                    "column 'id': parse_field: could not parse 'x' as a number of the column's type");
+  CHECK_THROWS_WITH(
+      (pg::read_row<Row, pg::ResultFormat::Text>(bad_id, 0)), "column 'id': parse_field: could not parse 'x' as a number of the column's type"
+  );
 
   const FakeChunk wrong_type(true, {25, 25}, {{"text", "y"}});
   Keep            keep;
 
-  CHECK_THROWS_WITH(pg::read_rows<Row>(wrong_type, keep),
-                    "column 'id': the database has the type with OID 25, which the schema's field cannot read (the field and the table disagree)");
+  CHECK_THROWS_WITH(
+      pg::read_rows<Row>(wrong_type, keep),
+      "column 'id': the database has the type with OID 25, which the schema's field cannot read (the field and the table disagree)"
+  );
   CHECK(keep.rows.empty());  // refused before any row is read
 }
 

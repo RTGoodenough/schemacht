@@ -1,7 +1,6 @@
 #pragma once
 
 #include <algorithm>
-#include <concepts>
 #include <cstddef>
 #include <span>
 #include <stdexcept>
@@ -12,41 +11,24 @@
 #include <variant>
 #include <vector>
 
+#include "schemacht/postgres/concepts/statements.hpp"  // IWYU pragma: export
 #include "schemacht/postgres/field_codec.hpp"
-#include "schemacht/postgres/row_reader.hpp"
 #include "schemacht/query/compiled_query.hpp"
 #include "schemacht/query/raw_statement.hpp"
 #include "schemacht/query/sql.hpp"
 #include "schemacht/query/sql_type.hpp"
 #include "schemacht/schema/schema.hpp"
-#include "schemacht/util/type_utils.hpp"
+#include "schemacht/util/concepts/type_utils.hpp"
 
 /**
  * Turning bound queries and rows into what is sent to Postgres: statement text plus each argument's text. Free of libpq.
  */
-namespace schemacht::postgres {
-
-/**
- * @brief A schema whose every column's type has a text form (`HasTextForm`): its rows can be inserted and read, and any of its
- * columns' values given as a query's argument.
- */
-template <typename schema_t>
-concept TextSchema = schema::IsSchema<schema_t> && TextRow<typename schema_t::row_type>;
-
-}  // namespace schemacht::postgres
-
 namespace schemacht::postgres::detail {
 
 /** @brief Appends a bound query argument's text, in the form Postgres reads for that type. */
 class TextBinder {
  public:
   explicit TextBinder(std::vector<std::string>* texts) : _texts(texts) {}
-
-  TextBinder(const TextBinder&) = default;
-  TextBinder(TextBinder&&) noexcept = default;
-  TextBinder& operator=(const TextBinder&) = default;
-  TextBinder& operator=(TextBinder&&) noexcept = default;
-  ~TextBinder() = default;
 
   void operator()(std::monostate /*unset*/) const { throw std::logic_error("query argument was never set"); }
 
@@ -58,6 +40,13 @@ class TextBinder {
 
  private:
   std::vector<std::string>* _texts;
+
+ public:
+  TextBinder(const TextBinder&) = default;
+  TextBinder(TextBinder&&) noexcept = default;
+  TextBinder& operator=(const TextBinder&) = default;
+  TextBinder& operator=(TextBinder&&) noexcept = default;
+  ~TextBinder() = default;
 };
 
 /** @return The text of each of `query`'s bound arguments, in placeholder order: element 0 is `$1`. */
@@ -91,8 +80,9 @@ consteval bool any_insertable_array(std::index_sequence<idx...> /*indices*/) {
 
 template <schema::IsSchema schema_t, std::size_t... idx>
 consteval bool every_insertable_has_sql_type(std::index_sequence<idx...> /*indices*/) {
-  return ((schema_t::template field_at<idx>::GENERATED || ! query::sql::type_name<typename schema_t::template field_at<idx>::value_type>().empty()) &&
-          ...);
+  return (
+      (schema_t::template field_at<idx>::GENERATED || ! query::sql::type_name<typename schema_t::template field_at<idx>::value_type>().empty()) && ...
+  );
 }
 
 /**
@@ -179,6 +169,7 @@ void append_one_value(const typename schema_t::row_type& row, InsertStatement& s
     if ( const auto* value = schema::value_if_present(std::get<idx>(row)); value != nullptr ) {
       statement.values.push_back(format_field<typename field_t::value_type>(*value));
       statement.sql += "$" + std::to_string(statement.values.size());
+
     } else {
       statement.sql += "NULL";  // written into the statement: it takes the column's type, and needs no parameter
     }
@@ -249,11 +240,14 @@ template <TextSchema schema_t>
   static_assert(schema_t::INSERTABLE_FIELD_COUNT > 0, "insert: the schema has no column that is not GENERATED");
 
   if constexpr ( insert_detail::USES_UNNEST<schema_t> ) {
-    static_assert(insert_detail::every_insertable_has_sql_type<schema_t>(std::make_index_sequence<schema_t::FIELD_COUNT>{}),
-                  "insert: every inserted column's type needs a SQL type name (it is sent as an array of that type): give it "
-                  "one (ColumnType::SQL_TYPE, or a query::sql::SqlType specialization)");
+    static_assert(
+        insert_detail::every_insertable_has_sql_type<schema_t>(std::make_index_sequence<schema_t::FIELD_COUNT>{}),
+        "insert: every inserted column's type needs a SQL type name (it is sent as an array of that type): give it "
+        "one (ColumnType::SQL_TYPE, or a query::sql::SqlType specialization)"
+    );
 
     return {insert_detail::build_unnest<schema_t>(rows, std::make_index_sequence<schema_t::FIELD_COUNT>{})};
+
   } else {
     constexpr std::size_t        ROWS_PER_STATEMENT = MAX_STATEMENT_PARAMETERS / schema_t::INSERTABLE_FIELD_COUNT;
     std::vector<InsertStatement> statements;
@@ -268,49 +262,6 @@ template <TextSchema schema_t>
 // ---- what a backend sends: a query or a raw statement, bound ------------------------------------------------------
 
 }  // namespace schemacht::postgres::detail
-
-namespace schemacht::postgres {
-
-namespace detail {
-
-template <typename arguments_t>
-inline constexpr bool EVERY_ARGUMENT_HAS_TEXT_FORM = false;
-
-template <typename... argument_ts>
-inline constexpr bool EVERY_ARGUMENT_HAS_TEXT_FORM<std::tuple<argument_ts...>> = (HasTextForm<argument_ts> && ...);
-
-}  // namespace detail
-
-/**
- * @brief What a `Database` can send, with a `result_type` (a `TextRow`): a query or command (`Prepared::bind`) of a `TextSchema`, or a
- * bound raw statement (`RawStatement::bind`), which is about no table, whose every argument has a text form (`HasTextForm`) to be sent as.
- */
-template <typename statement_t>
-concept SendableStatement =
-    (query::IsBoundRawStatement<statement_t> && detail::EVERY_ARGUMENT_HAS_TEXT_FORM<typename statement_t::arguments_type> &&
-     TextRow<typename statement_t::result_type>) ||
-    (std::derived_from<statement_t, query::CompiledQuery<typename statement_t::schema_type>> && TextSchema<typename statement_t::schema_type>);
-
-/** @brief A statement that returns rows (`Database::execute` gives them): a query, or a raw statement that names its columns. */
-template <typename statement_t>
-concept RunnableStatement = SendableStatement<statement_t> && (std::tuple_size_v<typename statement_t::result_type> > 0);
-
-/**
- * @brief A statement that returns no rows (`Database::execute` gives the count of rows it affected): a typed update or delete,
- * or a raw statement with no columns, such as an `UPDATE`, a `DELETE` or a `CREATE TABLE`.
- */
-template <typename statement_t>
-concept CommandStatement = SendableStatement<statement_t> && (std::tuple_size_v<typename statement_t::result_type> == 0);
-
-/** @brief A result whose columns can be counted and named (`QueryResult` is one). */
-template <typename result_t>
-concept NamedColumns = requires(const result_t& result, std::size_t column) {
-  { result.row_count() } -> std::convertible_to<std::size_t>;
-  { result.column_count() } -> std::convertible_to<std::size_t>;
-  { result.column_name(column) } -> std::convertible_to<std::string_view>;
-};
-
-}  // namespace schemacht::postgres
 
 namespace schemacht::postgres::detail {
 
@@ -335,6 +286,7 @@ template <SendableStatement statement_t>
     std::apply([&wired](const auto&... arguments) { (TextBinder{&wired.params}(arguments), ...); }, statement.arguments());
 
     wired.column_names.assign(statement.column_names().begin(), statement.column_names().end());
+
   } else {
     using schema_t = statement_t::schema_type;
     wired.params = param_texts<schema_t>(statement);
@@ -358,16 +310,19 @@ void check_result_columns(std::span<const std::string_view> column_names, const 
   const std::size_t column_count = result.column_count();
   if ( column_count != column_names.size() ) {
     if ( result.row_count() > 0 ) {  // a result without rows and without columns is the end of a stream, not a mistake
-      throw std::runtime_error("the result has " + std::to_string(column_count) + " columns, and the statement returns " +
-                               std::to_string(column_names.size()));
+      throw std::runtime_error(
+          "the result has " + std::to_string(column_count) + " columns, and the statement returns " + std::to_string(column_names.size())
+      );
     }
     return;
   }
 
   for ( std::size_t column = 0; const std::string_view expected : column_names ) {
     if ( const std::string_view name = result.column_name(column++); name != expected ) {  // `column` is now its 1-based position
-      throw std::runtime_error("the statement returned the column '" + std::string(name) + "' at position " + std::to_string(column) +
-                               ", where its fields have '" + std::string(expected) + "' (name the select list's columns with AS)");
+      throw std::runtime_error(
+          "the statement returned the column '" + std::string(name) + "' at position " + std::to_string(column) + ", where its fields have '" +
+          std::string(expected) + "' (name the select list's columns with AS)"
+      );
     }
   }
 }

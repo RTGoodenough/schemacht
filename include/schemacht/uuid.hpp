@@ -2,7 +2,6 @@
 
 #include <algorithm>
 #include <array>
-#include <compare>
 #include <cstddef>
 #include <cstdint>
 #include <span>
@@ -23,7 +22,6 @@ class Uuid {
  public:
   static constexpr std::size_t SIZE = 16;
 
-  constexpr Uuid() = default;
   constexpr explicit Uuid(const std::array<std::byte, SIZE>& bytes) : _bytes(bytes) {}
 
   /**
@@ -38,7 +36,7 @@ class Uuid {
     std::array<std::byte, SIZE> bytes{};
     std::size_t                 next = 0;
     for ( std::size_t i = 0; i < TEXT_SIZE; ) {
-      if ( i == 8 || i == 13 || i == 18 || i == 23 ) {
+      if ( std::ranges::contains(TEXT_HYPHENS, i) ) {
         if ( text.at(i) != '-' ) {
           refuse(text);
         }
@@ -60,13 +58,13 @@ class Uuid {
     text.reserve(TEXT_SIZE);
 
     for ( std::size_t i = 0; i < SIZE; ++i ) {
-      if ( i == 4 || i == 6 || i == 8 || i == 10 ) {
+      if ( std::ranges::contains(BYTES_BEFORE_HYPHEN, i) ) {
         text += '-';
       }
 
       const auto value = std::to_integer<unsigned>(_bytes.at(i));
       text += DIGITS.at(value >> 4U);
-      text += DIGITS.at(value & 0xFU);
+      text += DIGITS.at(value & LOW_NIBBLE);
     }
 
     return text;
@@ -79,6 +77,15 @@ class Uuid {
  private:
   static constexpr std::size_t TEXT_SIZE = 36;
 
+  // Where the hyphens of the 8-4-4-4-12 groups go: at these positions of the text, and before these bytes.
+  static constexpr std::array<std::size_t, 4> TEXT_HYPHENS{8, 13, 18, 23};
+  static constexpr std::array<std::size_t, 4> BYTES_BEFORE_HYPHEN{4, 6, 8, 10};
+
+  static constexpr unsigned LOW_NIBBLE = 0xFU;
+  static constexpr unsigned FIRST_LETTER_DIGIT = 10U;  // the value of hex digit `a`
+
+  std::array<std::byte, SIZE> _bytes{};
+
   [[noreturn]] static void refuse(std::string_view text) { throw std::invalid_argument("'" + std::string(text) + "' is not a UUID"); }
 
   [[nodiscard]] static constexpr unsigned hex_value(std::string_view text, std::size_t index) {
@@ -86,17 +93,20 @@ class Uuid {
     if ( chr >= '0' && chr <= '9' ) {
       return static_cast<unsigned>(chr - '0');
     }
+
     if ( chr >= 'a' && chr <= 'f' ) {
-      return static_cast<unsigned>(chr - 'a') + 10U;
+      return static_cast<unsigned>(chr - 'a') + FIRST_LETTER_DIGIT;
     }
+
     if ( chr >= 'A' && chr <= 'F' ) {
-      return static_cast<unsigned>(chr - 'A') + 10U;
+      return static_cast<unsigned>(chr - 'A') + FIRST_LETTER_DIGIT;
     }
 
     refuse(text);
   }
 
-  std::array<std::byte, SIZE> _bytes{};
+ public:
+  constexpr Uuid() = default;
 };
 
 /** @brief A `Uuid` is a `uuid`: written as text, and read in binary form as its 16 bytes. */

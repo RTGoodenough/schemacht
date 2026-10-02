@@ -95,6 +95,7 @@ BinaryArrayReader::BinaryArrayReader(std::span<const std::byte> bytes) : _reader
   if ( dimensions == 0 ) {
     return;  // an empty array has no dimension entry
   }
+
   if ( dimensions != 1 ) {
     throw std::invalid_argument("parse_binary: a multi-dimensional array does not fit a list");
   }

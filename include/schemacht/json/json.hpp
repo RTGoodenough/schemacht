@@ -32,12 +32,6 @@ class Json {
 
   explicit Json(std::string text) : _text(std::move(text)) {}
 
-  Json(const Json&) = default;
-  Json(Json&&) noexcept = default;
-  Json& operator=(const Json&) = default;
-  Json& operator=(Json&&) noexcept = default;
-  ~Json() = default;
-
   /** @return The document as it was written or read. */
   [[nodiscard]] const std::string& text() const noexcept { return _text; }
 
@@ -45,6 +39,13 @@ class Json {
 
  private:
   std::string _text;
+
+ public:
+  Json(const Json&) = default;
+  Json(Json&&) noexcept = default;
+  Json& operator=(const Json&) = default;
+  Json& operator=(Json&&) noexcept = default;
+  ~Json() = default;
 };
 
 }  // namespace schemacht::json

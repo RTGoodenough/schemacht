@@ -59,8 +59,9 @@ TEST_CASE("a raw statement binds its declared types", "[prepared][raw]") {
 }
 
 TEST_CASE("a raw statement sends a list as one array, and bytea as bytes", "[prepared][raw]") {
-  using ByNicks = q::RawStatement<"SELECT name AS name FROM people WHERE nick = ANY($1) AND data = $2",
-                                  q::RawArguments<std::vector<std::string>, std::vector<std::byte>>, t::Name>;
+  using ByNicks = q::RawStatement<
+      "SELECT name AS name FROM people WHERE nick = ANY($1) AND data = $2", q::RawArguments<std::vector<std::string>, std::vector<std::byte>>,
+      t::Name>;
   const auto bound = ByNicks::bind(std::vector<std::string>{"a", "b"}, std::vector<std::byte>{std::byte{0x01}, std::byte{0xff}});
 
   CHECK(pg::detail::wire(bound).params == std::vector<std::string>{R"({"a","b"})", R"(\x01ff)"});

@@ -7,6 +7,7 @@
 #include <stdexcept>
 #include <type_traits>
 
+#include "schemacht/query/concepts/query.hpp"  // IWYU pragma: export
 #include "schemacht/query/predicate.hpp"
 #include "schemacht/schema/schema.hpp"
 
@@ -148,18 +149,6 @@ struct Query {
   }
 };
 
-namespace detail {
-template <typename data_t>
-struct is_query : std::false_type {};
-
-template <schema::IsSchema schema_t, std::size_t predicate_capacity, std::size_t order_capacity>
-struct is_query<Query<schema_t, predicate_capacity, order_capacity>> : std::true_type {};
-}  // namespace detail
-
-/** @brief Detects whether `data_t` is a `Query<...>` specialization. */
-template <typename data_t>
-concept IsQuery = detail::is_query<data_t>::value;
-
 /** @return A query for the rows matching `predicate`, in no particular order and without a limit. */
 template <schema::IsSchema schema_t, std::size_t capacity>
 [[nodiscard]] constexpr Query<schema_t, capacity, 0> select(const Predicate<schema_t, capacity>& predicate) {
@@ -171,10 +160,6 @@ template <schema::IsSchema schema_t>
 [[nodiscard]] constexpr Query<schema_t, 1, 0> select() {
   return select(match_all<schema_t>());
 }
-
-/** @brief What `Prepared` accepts: a `Query`, or a bare `Predicate`. */
-template <typename data_t>
-concept IsQuerySource = IsQuery<data_t> || IsPredicate<data_t>;
 
 /** @return `source` as a `Query`. */
 template <typename source_t>

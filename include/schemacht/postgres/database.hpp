@@ -67,12 +67,6 @@ class Database : private detail::ClientHolder, public StatementRunner {
       : ClientHolder(conninfo, options.pool), StatementRunner(held_client(), {}, false, options.read) {}
   explicit Database(const std::string& conninfo) : Database(conninfo, Options{}) {}
 
-  Database(const Database&) = delete;  // it owns the pool: one per database
-  Database(Database&&) = delete;
-  Database& operator=(const Database&) = delete;
-  Database& operator=(Database&&) = delete;
-  ~Database() = default;
-
   /** @return The pool, for what only it does: a statement given as text (`AsyncClient::run`), or a task on its worker threads. */
   [[nodiscard]] AsyncClient& pool() noexcept { return held_client(); }
 
@@ -84,8 +78,8 @@ class Database : private detail::ClientHolder, public StatementRunner {
    */
   template <detail::TransactionCallback done_t>
   void begin_into(done_t done, const TransactionOptions& options = {}) {
-    held_client().lease([client = &held_client(), read = read_options(), sql = detail::begin_statement(options), done = std::move(done)](
-                            AsyncClient::Lease lease, const std::exception_ptr& error) mutable {
+    held_client().lease([client = &held_client(), read = read_options(), sql = detail::begin_statement(options),
+                         done = std::move(done)](AsyncClient::Lease lease, const std::exception_ptr& error) mutable {
       if ( error ) {
         done(Transaction(*client, {}, read), error);
         return;
@@ -93,10 +87,12 @@ class Database : private detail::ClientHolder, public StatementRunner {
 
       // The lease goes with the BEGIN's completion: to the transaction, or (if the BEGIN failed) back to the pool.
       const auto held = std::make_shared<AsyncClient::Lease>(std::move(lease));
-      client->run(*held, std::move(sql), {},
-                  [client, held, read, done = std::move(done)](const QueryResult& /*began*/, const std::exception_ptr& began) mutable {
-                    done(Transaction(*client, began ? AsyncClient::Lease() : std::move(*held), read), began);
-                  });
+      client->run(
+          *held, std::move(sql), {},
+          [client, held, read, done = std::move(done)](const QueryResult& /*began*/, const std::exception_ptr& began) mutable {
+            done(Transaction(*client, began ? AsyncClient::Lease() : std::move(*held), read), began);
+          }
+      );
     });
   }
 
@@ -122,10 +118,17 @@ class Database : private detail::ClientHolder, public StatementRunner {
             promise->set_value(std::move(transaction));
           }
         },
-        options);
+        options
+    );
 
     return future;
   }
+
+  Database(const Database&) = delete;  // it owns the pool: one per database
+  Database(Database&&) = delete;
+  Database& operator=(const Database&) = delete;
+  Database& operator=(Database&&) = delete;
+  ~Database() = default;
 };
 
 }  // namespace schemacht::postgres

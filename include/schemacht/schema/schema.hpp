@@ -4,9 +4,9 @@
 #include <cstddef>
 #include <string_view>
 #include <tuple>
-#include <type_traits>
 #include <utility>
 
+#include "schemacht/schema/concepts/schema.hpp"  // IWYU pragma: export
 #include "schemacht/schema/field.hpp"
 #include "schemacht/util/compile_time.hpp"
 #include "schemacht/util/identifier.hpp"
@@ -40,8 +40,9 @@ template <std::size_t count>
 
 /** @return The entries of `names` whose flag is set, in order. */
 template <std::size_t selected, std::size_t count>
-[[nodiscard]] consteval std::array<std::string_view, selected> select_names(const std::array<std::string_view, count>& names,
-                                                                            const std::array<bool, count>&             flags) {
+[[nodiscard]] consteval std::array<std::string_view, selected> select_names(
+    const std::array<std::string_view, count>& names, const std::array<bool, count>& flags
+) {
   std::array<std::string_view, selected> result{};
   std::size_t                            next = 0;
   for ( std::size_t i = 0; i < count; ++i ) {
@@ -89,10 +90,14 @@ class Schema {
     return row_type{field_ts{typename field_ts::data_type{std::forward<arg_ts>(args)}}...};
   }
 
-  static_assert(util::is_identifier(TABLE_NAME),
-                "a table name must be lowercase letters, digits and underscores, not start with a digit, and be at most 63 bytes");
-  static_assert(detail::all_distinct(std::array<std::string_view, FIELD_COUNT>{field_ts::COLUMN_NAME.view()...}),
-                "two fields of the schema have the same column name");
+  static_assert(
+      util::is_identifier(TABLE_NAME),
+      "a table name must be lowercase letters, digits and underscores, not start with a digit, and be at most 63 bytes"
+  );
+  static_assert(
+      detail::all_distinct(std::array<std::string_view, FIELD_COUNT>{field_ts::COLUMN_NAME.view()...}),
+      "two fields of the schema have the same column name"
+  );
 
   /**
    * @brief Finds a field's index by its column name.
@@ -157,25 +162,6 @@ class Schema {
     return detail::select_names<INSERTABLE_FIELD_COUNT>(column_names(), {(! field_ts::GENERATED)...});
   }
 };
-
-// ============================================================================
-// Schema concept
-// ============================================================================
-namespace detail {
-template <typename t>
-struct is_schema : std::false_type {};
-
-template <util::CTString table_str, typename... field_ts>
-struct is_schema<Schema<table_str, field_ts...>> : std::true_type {};
-}  // namespace detail
-
-/** @brief Detects whether `data_t` is a `Schema<...>` specialization. */
-template <typename data_t>
-concept IsSchema = detail::is_schema<data_t>::value;
-
-/** @brief Whether `schema_t` has a primary key of exactly one column, so a row can be found by that one value. */
-template <typename schema_t>
-concept HasSingleColumnKey = IsSchema<schema_t> && schema_t::PRIMARY_KEY_FIELD_COUNT == 1;
 
 namespace detail {
 

@@ -23,10 +23,14 @@ TEST_CASE("rows are inserted with one array per column", "[insert]") {
   const std::vector<pg::detail::InsertStatement> statements = pg::detail::build_insert<t::People>(rows);
 
   REQUIRE(statements.size() == 1);
-  CHECK(statements[0].sql == R"(INSERT INTO "people" ("id", "name", "nick", "score", "active") )"
-                             R"(SELECT * FROM unnest($1::bigint[], $2::text[], $3::text[], $4::double precision[], $5::boolean[]))");
-  CHECK(statements[0].values ==
-        std::vector<std::string>{R"({"1","2"})", R"({"a \"quoted\" name","bo"})", R"({"al",NULL})", R"({"1.5","-2"})", R"({"t","f"})"});
+  CHECK(
+      statements[0].sql == R"(INSERT INTO "people" ("id", "name", "nick", "score", "active") )"
+                           R"(SELECT * FROM unnest($1::bigint[], $2::text[], $3::text[], $4::double precision[], $5::boolean[]))"
+  );
+  CHECK(
+      statements[0].values ==
+      std::vector<std::string>{R"({"1","2"})", R"({"a \"quoted\" name","bo"})", R"({"al",NULL})", R"({"1.5","-2"})", R"({"t","f"})"}
+  );
 }
 
 TEST_CASE("generated columns are not inserted", "[insert]") {
@@ -54,26 +58,36 @@ TEST_CASE("an array-typed column falls back to VALUES, split to fit the paramete
 }
 
 TEST_CASE("a table is created from its schema", "[ddl]") {
-  CHECK(pg::detail::CreateTableSql<t::People>::VALUE ==
-        R"(CREATE TABLE "people" ("id" bigint NOT NULL, "name" text NOT NULL, "nick" text, "score" double precision NOT NULL, )"
-        R"("active" boolean NOT NULL, PRIMARY KEY ("id")))");
-  CHECK(pg::detail::CreateTableSql<t::Counted>::VALUE ==
-        R"(CREATE TABLE "counted" ("id" bigint NOT NULL, "count" bigint NOT NULL, "doc" jsonb NOT NULL, PRIMARY KEY ("id")))");
+  CHECK(
+      pg::detail::CreateTableSql<t::People>::VALUE ==
+      R"(CREATE TABLE "people" ("id" bigint NOT NULL, "name" text NOT NULL, "nick" text, "score" double precision NOT NULL, )"
+      R"("active" boolean NOT NULL, PRIMARY KEY ("id")))"
+  );
+  CHECK(
+      pg::detail::CreateTableSql<t::Counted>::VALUE ==
+      R"(CREATE TABLE "counted" ("id" bigint NOT NULL, "count" bigint NOT NULL, "doc" jsonb NOT NULL, PRIMARY KEY ("id")))"
+  );
 
   using Pairs = sch::Schema<"pairs", sch::Field<std::int16_t, "a", sch::KeyRole::Primary>, sch::Field<bool, "b", sch::KeyRole::Primary>>;
   CHECK(pg::detail::CreateTableSql<Pairs>::VALUE == R"(CREATE TABLE "pairs" ("a" smallint NOT NULL, "b" boolean NOT NULL, PRIMARY KEY ("a", "b")))");
 
   // Each unique column is unique on its own, after the primary key.
-  using Accounts = sch::Schema<"accounts", t::Id, sch::Field<std::string, "email", sch::KeyRole::Unique>,
-                               sch::Field<std::optional<std::string>, "phone", sch::KeyRole::Unique>>;
-  CHECK(pg::detail::CreateTableSql<Accounts>::VALUE == R"(CREATE TABLE "accounts" ("id" bigint NOT NULL, "email" text NOT NULL, "phone" text, )"
-                                                       R"(PRIMARY KEY ("id"), UNIQUE ("email"), UNIQUE ("phone")))");
+  using Accounts = sch::Schema<
+      "accounts", t::Id, sch::Field<std::string, "email", sch::KeyRole::Unique>,
+      sch::Field<std::optional<std::string>, "phone", sch::KeyRole::Unique>>;
+  CHECK(
+      pg::detail::CreateTableSql<Accounts>::VALUE == R"(CREATE TABLE "accounts" ("id" bigint NOT NULL, "email" text NOT NULL, "phone" text, )"
+                                                     R"(PRIMARY KEY ("id"), UNIQUE ("email"), UNIQUE ("phone")))"
+  );
 
   // A std::vector column is an array of its element's type.
-  using Arrays = sch::Schema<"arrays", t::Id, sch::Field<std::vector<std::string>, "tags">,
-                             sch::Field<std::optional<std::vector<std::int32_t>>, "ranks">, sch::Field<std::vector<std::byte>, "blob">>;
-  CHECK(pg::detail::CreateTableSql<Arrays>::VALUE == R"(CREATE TABLE "arrays" ("id" bigint NOT NULL, "tags" text[] NOT NULL, "ranks" integer[], )"
-                                                     R"("blob" bytea NOT NULL, PRIMARY KEY ("id")))");
+  using Arrays = sch::Schema<
+      "arrays", t::Id, sch::Field<std::vector<std::string>, "tags">, sch::Field<std::optional<std::vector<std::int32_t>>, "ranks">,
+      sch::Field<std::vector<std::byte>, "blob">>;
+  CHECK(
+      pg::detail::CreateTableSql<Arrays>::VALUE == R"(CREATE TABLE "arrays" ("id" bigint NOT NULL, "tags" text[] NOT NULL, "ranks" integer[], )"
+                                                   R"("blob" bytea NOT NULL, PRIMARY KEY ("id")))"
+  );
 
   using Keyless = sch::Schema<"keyless", t::Name>;
   CHECK(pg::detail::CreateTableSql<Keyless>::VALUE == R"(CREATE TABLE "keyless" ("name" text NOT NULL))");

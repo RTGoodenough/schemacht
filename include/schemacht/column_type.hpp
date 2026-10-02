@@ -31,7 +31,6 @@
 
 #include <algorithm>
 #include <array>
-#include <concepts>
 #include <cstddef>
 #include <cstdint>
 #include <functional>
@@ -42,6 +41,7 @@
 #include <type_traits>
 #include <utility>
 
+#include "schemacht/concepts/column_type.hpp"  // IWYU pragma: export
 #include "schemacht/postgres/binary_form.hpp"  // IWYU pragma: export
 #include "schemacht/postgres/field_codec.hpp"  // IWYU pragma: export
 #include "schemacht/postgres/numeric.hpp"      // IWYU pragma: export
@@ -49,33 +49,8 @@
 #include "schemacht/schema/column_type.hpp"    // IWYU pragma: export
 #include "schemacht/schema/field.hpp"          // IWYU pragma: export
 #include "schemacht/util/compile_time.hpp"
-#include "schemacht/util/type_utils.hpp"
 
 namespace schemacht {
-
-namespace detail {
-
-template <auto member>
-struct MemberOf {
-  static constexpr bool IS_DATA_MEMBER = false;
-};
-
-template <typename class_t, typename value_t, value_t class_t::* member>
-struct MemberOf<member> {
-  static constexpr bool IS_DATA_MEMBER = true;
-  using class_type = class_t;
-  using value_type = value_t;
-};
-
-}  // namespace detail
-
-/**
- * @brief Whether `member` (`&Wrapper::value`) is a data member whose type has a text form, of a class that is made from that one
- * value (`Wrapper{inner}`): a type that wraps a built-in one, as a strongly typed id does.
- */
-template <auto member>
-concept WrappableMember = detail::MemberOf<member>::IS_DATA_MEMBER && postgres::HasTextForm<typename detail::MemberOf<member>::value_type> &&
-                          util::NonNarrowingTo<const typename detail::MemberOf<member>::value_type&, typename detail::MemberOf<member>::class_type>;
 
 /**
  * @brief The `ColumnType` of a type that wraps one value of a type the database already knows: stored as that type, in text and
@@ -108,10 +83,6 @@ struct WrappedColumn {
     return postgres::FieldCodec<inner_type>::binary_accepts(type_oid);
   }
 };
-
-/** @brief Whether `enum_t` is an enumeration, whose values `EnumColumn` stores as labels. */
-template <typename enum_t>
-concept Enumeration = std::is_enum_v<enum_t>;
 
 namespace detail {
 
@@ -201,14 +172,6 @@ struct EnumIntegerColumn {
 };
 
 /**
- * @brief Whether `member` (`&Money::cents`) is an `std::int64_t` data member of a class made from that one value: an exact
- * amount held as a count of its smallest unit.
- */
-template <auto member>
-concept ScaledMember = detail::MemberOf<member>::IS_DATA_MEMBER && std::same_as<typename detail::MemberOf<member>::value_type, std::int64_t> &&
-                       util::NonNarrowingTo<std::int64_t, typename detail::MemberOf<member>::class_type>;
-
-/**
  * @brief The `ColumnType` of an exact amount held as a count of 10^-`scale` units, stored as a `numeric`: in text as
  * PostgreSQL prints one, and in binary form as its base-10000 digits (postgres/numeric.hpp).
  *
@@ -234,14 +197,6 @@ struct ScaledNumericColumn {
   static amount_type    parse_binary(std::span<const std::byte> bytes) { return amount_type{postgres::parse_binary_scaled_numeric<scale>(bytes)}; }
   static constexpr bool binary_accepts(std::uint32_t type_oid) { return type_oid == postgres::OID_NUMERIC; }
 };
-
-/**
- * @brief Whether `to_stored` turns a `value_t` into a `stored_t`, and `from_stored` back, where `stored_t` is a type the database
- * knows (one with a text form).
- */
-template <typename value_t, typename stored_t, auto to_stored, auto from_stored>
-concept ConvertsThrough = postgres::HasTextForm<stored_t> && std::is_invocable_r_v<stored_t, decltype(to_stored), const value_t&> &&
-                          std::is_invocable_r_v<value_t, decltype(from_stored), const stored_t&>;
 
 /**
  * @brief The `ColumnType` of a type stored as another the database knows, through two functions (or captureless lambdas): the

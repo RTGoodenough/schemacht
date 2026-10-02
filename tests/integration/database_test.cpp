@@ -70,9 +70,11 @@ using Bulk = TypesIn<"schemacht_it_bulk">;
 /** @brief Drops and creates `table` with the columns of `TypesIn`. */
 void create_types_table(pg::Database& database, const std::string& table) {
   exec(database, "DROP TABLE IF EXISTS " + table);
-  exec(database, "CREATE TABLE " + table +
-                     " (id bigint PRIMARY KEY, flag boolean NOT NULL, small smallint NOT NULL, count bigint NOT NULL, "
-                     "real real NOT NULL, precise double precision NOT NULL, text text, bytes bytea NOT NULL, doc jsonb)");
+  exec(
+      database, "CREATE TABLE " + table +
+                    " (id bigint PRIMARY KEY, flag boolean NOT NULL, small smallint NOT NULL, count bigint NOT NULL, "
+                    "real real NOT NULL, precise double precision NOT NULL, text text, bytes bytea NOT NULL, doc jsonb)"
+  );
 }
 
 using Tags = sch::Field<std::vector<std::string>, "tags">;
@@ -164,14 +166,14 @@ template <>
 struct schemacht::ColumnType<Price> : schemacht::ScaledNumericColumn<&Price::cents, 2, "numeric(12,2)"> {};
 
 template <>
-struct schemacht::ColumnType<Location>
-    : schemacht::ConvertedColumn<Location, std::string, [](const Location& location) { return "file://" + location.path; },
-                                 [](const std::string& text) {
-                                   if ( ! text.starts_with("file://") ) {
-                                     throw std::invalid_argument("not a file URL: " + text);
-                                   }
-                                   return Location{text.substr(7)};
-                                 }> {};
+struct schemacht::ColumnType<Location> : schemacht::ConvertedColumn<
+                                             Location, std::string, [](const Location& location) { return "file://" + location.path; },
+                                             [](const std::string& text) {
+                                               if ( ! text.starts_with("file://") ) {
+                                                 throw std::invalid_argument("not a file URL: " + text);
+                                               }
+                                               return Location{text.substr(7)};
+                                             }> {};
 
 template <>
 struct schemacht::ColumnType<Cents> {
@@ -294,8 +296,10 @@ TEST_CASE("integration: errors carry what went wrong", "[integration]") {
   }
 
   using Misnamed = q::RawStatement<"SELECT 1 AS wrong", q::RawArguments<>, sch::Field<int, "n">>;
-  CHECK_THROWS_WITH(database.execute(Misnamed::bind()).get(),
-                    "the statement returned the column 'wrong' at position 1, where its fields have 'n' (name the select list's columns with AS)");
+  CHECK_THROWS_WITH(
+      database.execute(Misnamed::bind()).get(),
+      "the statement returned the column 'wrong' at position 1, where its fields have 'n' (name the select list's columns with AS)"
+  );
 }
 
 TEST_CASE("integration: a statement that cannot start reports why, through its completion", "[integration]") {
@@ -392,8 +396,10 @@ TEST_CASE("integration: dates, times and UUIDs round-trip, in binary and in text
   const system_clock::time_point moment = sys_days{2026y / 10 / 1} + 20h + 55min + 12s + 264ms;
   const local_time<microseconds> wall = local_days{1999y / 12 / 31} + 23h + 59min + 59s + 999999us;
   database
-      .insert<Times>({Times::make_row(first, moment, wall, year_month_day{2026y / 2 / 28}),
-                      Times::make_row(second, system_clock::time_point::max(), wall, std::nullopt)})
+      .insert<Times>(
+          {Times::make_row(first, moment, wall, year_month_day{2026y / 2 / 28}),
+           Times::make_row(second, system_clock::time_point::max(), wall, std::nullopt)}
+      )
       .get();
 
   for ( const pg::ResultFormat format : {pg::ResultFormat::Binary, pg::ResultFormat::Text} ) {
@@ -478,8 +484,10 @@ TEST_CASE("integration: a numeric is read exactly, in binary and in text", "[int
     }
 
     CHECK(cents == std::vector<std::int64_t>{1999, -5, 5, 120050, 999999999999, 0});
-    CHECK_THROWS_AS(database.execute(Third::bind(), pg::ReadOptions{.format = format}).get(),
-                    std::invalid_argument);  // 0.333...: refused, not rounded
+    CHECK_THROWS_AS(
+        database.execute(Third::bind(), pg::ReadOptions{.format = format}).get(),
+        std::invalid_argument
+    );  // 0.333...: refused, not rounded
     CHECK(sch::get<"amount">(database.execute(Echo::bind(Cents{-123456}), pg::ReadOptions{.format = format}).get().at(0)) == Cents{-123456});
   }
 }
@@ -497,7 +505,8 @@ TEST_CASE("integration: the column type helpers round-trip, in binary and in tex
   database.create_table<Tasks>().get();
   database
       .insert<Tasks>(
-          {Tasks::make_row(1, Priority::High, Price{1999}, Location{"/tmp/a"}), Tasks::make_row(2, Priority::Low, Price{-5}, std::nullopt)})
+          {Tasks::make_row(1, Priority::High, Price{1999}, Location{"/tmp/a"}), Tasks::make_row(2, Priority::Low, Price{-5}, std::nullopt)}
+      )
       .get();
 
   for ( const pg::ResultFormat format : {pg::ResultFormat::Binary, pg::ResultFormat::Text} ) {
@@ -514,8 +523,9 @@ TEST_CASE("integration: the column type helpers round-trip, in binary and in tex
   REQUIRE(urgent.size() == 1);
   CHECK(sch::get<"id">(urgent[0]) == 1);
 
-  using Stored = q::RawStatement<"SELECT level::text || ' ' || cost::text || ' ' || place AS stored FROM schemacht_it_tasks WHERE id = 1",
-                                 q::RawArguments<>, sch::Field<std::string, "stored">>;
+  using Stored = q::RawStatement<
+      "SELECT level::text || ' ' || cost::text || ' ' || place AS stored FROM schemacht_it_tasks WHERE id = 1", q::RawArguments<>,
+      sch::Field<std::string, "stored">>;
   CHECK(sch::get<"stored">(database.execute(Stored::bind()).get().at(0)) == "2 19.99 file:///tmp/a");  // as the database holds them
 
   database.drop_table<Tasks>().get();

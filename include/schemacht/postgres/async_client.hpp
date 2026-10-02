@@ -24,17 +24,18 @@ class QueryError : public std::runtime_error {
   // NOLINTNEXTLINE(bugprone-easily-swappable-parameters) -- a message and a code; the names and the one call site keep them apart
   QueryError(const std::string& message, std::string sqlstate) : std::runtime_error(message), _sqlstate(std::move(sqlstate)) {}
 
-  QueryError(const QueryError&) = default;
-  QueryError(QueryError&&) noexcept = default;
-  QueryError& operator=(const QueryError&) = default;
-  QueryError& operator=(QueryError&&) noexcept = default;
-  ~QueryError() override = default;
-
   /** @return The five-character SQLSTATE code (e.g. `42P01`, undefined table); empty if the failure wasn't the server's. */
   [[nodiscard]] const std::string& sqlstate() const noexcept { return _sqlstate; }
 
  private:
   std::string _sqlstate;
+
+ public:
+  QueryError(const QueryError&) = default;
+  QueryError(QueryError&&) noexcept = default;
+  QueryError& operator=(const QueryError&) = default;
+  QueryError& operator=(QueryError&&) noexcept = default;
+  ~QueryError() override = default;
 };
 
 /** @brief The form a statement's result arrives in: PostgreSQL's binary form (less to send and parse), or text. */
@@ -49,12 +50,8 @@ enum class ResultFormat : std::uint8_t {
  */
 class QueryResult {
  public:
-  QueryResult() = default;
-  QueryResult(const QueryResult&) = delete;
   QueryResult(QueryResult&& other) noexcept;
-  QueryResult& operator=(const QueryResult&) = delete;
   QueryResult& operator=(QueryResult&& other) noexcept;
-  ~QueryResult() = default;
 
   [[nodiscard]] std::size_t row_count() const noexcept { return _row_count; }
   [[nodiscard]] std::size_t column_count() const noexcept { return _column_count; }
@@ -100,14 +97,20 @@ class QueryResult {
     void operator()(pg_result* raw) const noexcept;
   };
 
-  explicit QueryResult(pg_result* raw);
-
   std::unique_ptr<pg_result, Deleter> _raw;
   // Read once from `_raw`: they are checked on every `field`.
   std::size_t   _row_count = 0;
   std::size_t   _column_count = 0;
   bool          _binary = false;
   std::uint64_t _affected_rows = 0;
+
+  explicit QueryResult(pg_result* raw);
+
+ public:
+  QueryResult() = default;
+  QueryResult(const QueryResult&) = delete;
+  QueryResult& operator=(const QueryResult&) = delete;
+  ~QueryResult() = default;
 };
 
 /** @brief A message the server sent besides a result (`RAISE NOTICE`, a `WARNING`, "table does not exist, skipping"). */
@@ -186,11 +189,6 @@ class AsyncClient {
   explicit AsyncClient(const std::string& conninfo, const Options& options);
   explicit AsyncClient(const std::string& conninfo) : AsyncClient(conninfo, Options{}) {}
 
-  AsyncClient(const AsyncClient&) = delete;
-  AsyncClient(AsyncClient&&) = delete;
-  AsyncClient& operator=(const AsyncClient&) = delete;
-  AsyncClient& operator=(AsyncClient&&) = delete;
-
   /**
    * @brief Stops accepting statements and waits for the ones in flight. Statements still queued complete with an
    * error, so every `Completion` handed in is called exactly once.
@@ -247,9 +245,6 @@ class AsyncClient {
    */
   class Lease {
    public:
-    Lease() = default;
-    Lease(const Lease&) = delete;
-    Lease& operator=(const Lease&) = delete;
     Lease(Lease&& other) noexcept;
     Lease& operator=(Lease&& other) noexcept;
     ~Lease();
@@ -264,10 +259,15 @@ class AsyncClient {
     friend class AsyncClient;
     friend class Impl;
 
-    Lease(Impl* impl, std::shared_ptr<LeaseState> state) noexcept;
-
     Impl*                       _impl = nullptr;
     std::shared_ptr<LeaseState> _state;
+
+    Lease(Impl* impl, std::shared_ptr<LeaseState> state) noexcept;
+
+   public:
+    Lease() = default;
+    Lease(const Lease&) = delete;
+    Lease& operator=(const Lease&) = delete;
   };
 
   /** @brief Called once, on a worker thread, with the lease once a connection is free, or with the error (and an empty lease). */
@@ -293,11 +293,18 @@ class AsyncClient {
    * stopped early is not cancelled on the server, which would abort a transaction on it: the rest of its rows are read and
    * dropped. (On shutdown it is cancelled.)
    */
-  void stream(const Lease& lease, std::string sql, std::vector<std::string> params, StreamOptions options, ChunkHandler on_chunk,
-              StreamCompletion done);
+  void stream(
+      const Lease& lease, std::string sql, std::vector<std::string> params, StreamOptions options, ChunkHandler on_chunk, StreamCompletion done
+  );
 
  private:
   std::unique_ptr<Impl> _impl;
+
+ public:
+  AsyncClient(const AsyncClient&) = delete;
+  AsyncClient(AsyncClient&&) = delete;
+  AsyncClient& operator=(const AsyncClient&) = delete;
+  AsyncClient& operator=(AsyncClient&&) = delete;
 };
 
 }  // namespace schemacht::postgres

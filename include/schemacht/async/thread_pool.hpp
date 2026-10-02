@@ -23,10 +23,6 @@ class ThreadPool {
   /** @throws std::invalid_argument if `threads` is 0. */
   explicit ThreadPool(std::size_t threads);
 
-  ThreadPool(const ThreadPool&) = delete;
-  ThreadPool(ThreadPool&&) = delete;
-  ThreadPool& operator=(const ThreadPool&) = delete;
-  ThreadPool& operator=(ThreadPool&&) = delete;
   ~ThreadPool();
 
   /**
@@ -44,14 +40,20 @@ class ThreadPool {
   void post(std::move_only_function<void()> task);
 
  private:
-  void work();
-
   std::mutex                                  _mutex;
   std::condition_variable                     _wake;
   std::deque<std::move_only_function<void()>> _tasks;
   bool                                        _stopping = false;
   bool                                        _joined = false;
   std::vector<std::thread>                    _threads;
+
+  void work();
+
+ public:
+  ThreadPool(const ThreadPool&) = delete;
+  ThreadPool(ThreadPool&&) = delete;
+  ThreadPool& operator=(const ThreadPool&) = delete;
+  ThreadPool& operator=(ThreadPool&&) = delete;
 };
 
 }  // namespace schemacht::async

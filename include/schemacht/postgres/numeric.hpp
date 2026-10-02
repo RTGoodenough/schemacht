@@ -6,6 +6,8 @@
 #include <string>
 #include <string_view>
 
+#include "schemacht/postgres/concepts/numeric.hpp"  // IWYU pragma: export
+
 /**
  * Exact decimal amounts as PostgreSQL's `numeric`, for a column type of your own that holds one as a whole number of its
  * smallest unit: cents are a scale of 2, so `19.99` is 1999. The `Money` of examples/custom_types.cpp is written with these.
@@ -25,13 +27,6 @@
  * (a `total / 3`, say), `NaN` or an infinity, or one too large for `std::int64_t` units.
  */
 namespace schemacht::postgres {
-
-/** @brief The most decimal places a scaled value can have: one unit of 10^-18 still leaves an `std::int64_t` room for 9. */
-inline constexpr unsigned MAX_NUMERIC_SCALE = 18;
-
-/** @brief Whether `scale` decimal places fit an `std::int64_t` count of units. */
-template <unsigned scale>
-concept NumericScale = scale <= MAX_NUMERIC_SCALE;
 
 namespace detail {
 

@@ -1,6 +1,5 @@
 #pragma once
 
-#include <concepts>
 #include <cstddef>
 #include <cstdint>
 #include <exception>
@@ -11,11 +10,11 @@
 #include <span>
 #include <string>
 #include <string_view>
-#include <type_traits>
 #include <utility>
 #include <vector>
 
 #include "schemacht/postgres/async_client.hpp"
+#include "schemacht/postgres/concepts/statement_runner.hpp"  // IWYU pragma: export
 #include "schemacht/postgres/key_lookup.hpp"
 #include "schemacht/postgres/row_reader.hpp"
 #include "schemacht/postgres/statements.hpp"
@@ -25,20 +24,6 @@
 namespace schemacht::postgres {
 
 namespace detail {
-
-/** @brief Whether `done_t` can finish an `execute_into` for `result_t`: called once with the rows and the error (null on success). */
-template <typename done_t, typename result_t>
-concept ExecuteCallback = std::invocable<done_t&, std::vector<result_t>, std::exception_ptr> &&
-                          std::same_as<std::invoke_result_t<done_t&, std::vector<result_t>, std::exception_ptr>, void>;
-
-/** @brief Whether `done_t` can finish a `stream_into`, a `commit_into` or a `rollback_into`: called once with the error (null on success). */
-template <typename done_t>
-concept StreamCallback = std::invocable<done_t&, std::exception_ptr> && std::same_as<std::invoke_result_t<done_t&, std::exception_ptr>, void>;
-
-/** @brief Whether `done_t` can finish a command's `execute_into`: called once with the count of rows affected and the error (null on success). */
-template <typename done_t>
-concept CommandCallback = std::invocable<done_t&, std::uint64_t, std::exception_ptr> &&
-                          std::same_as<std::invoke_result_t<done_t&, std::uint64_t, std::exception_ptr>, void>;
 
 /** @return A future that is already complete with `value`. */
 template <typename value_t>
@@ -122,8 +107,8 @@ void send_all(AsyncClient& client, const AsyncClient::Lease* lease, std::vector<
  */
 template <StreamCallback done_t>
 void run_atomically(AsyncClient& client, std::vector<InsertStatement> statements, done_t done) {
-  client.lease([client = &client, statements = std::move(statements), done = std::move(done)](const AsyncClient::Lease& lease,
-                                                                                              const std::exception_ptr& error) mutable {
+  client.lease([client = &client, statements = std::move(statements),
+                done = std::move(done)](const AsyncClient::Lease& lease, const std::exception_ptr& error) mutable {
     if ( error ) {
       done(error);
       return;
@@ -157,9 +142,6 @@ using ReadOptions = AsyncClient::StreamOptions;
  */
 class StatementRunner {
  public:
-  StatementRunner(const StatementRunner&) = delete;
-  StatementRunner& operator=(const StatementRunner&) = delete;
-
   /**
    * @brief Runs `statement` in the background and calls `done` exactly once, on a worker thread, with every row (as `execute`
    * returns them) and the error (null on success).
@@ -177,7 +159,8 @@ class StatementRunner {
     stream_into(
         statement, [rows](result_t&& row) { rows->push_back(std::move(row)); },
         [rows, done = std::move(done)](const std::exception_ptr& error) mutable { done(error ? std::vector<result_t>{} : std::move(*rows), error); },
-        read);
+        read
+    );
   }
 
   /**
@@ -188,8 +171,9 @@ class StatementRunner {
    * @param read How to read the result; the default if not given.
    */
   template <RunnableStatement statement_t>
-  [[nodiscard]] std::future<std::vector<typename statement_t::result_type>> execute(const statement_t&                statement,
-                                                                                    const std::optional<ReadOptions>& read = std::nullopt) {
+  [[nodiscard]] std::future<std::vector<typename statement_t::result_type>> execute(
+      const statement_t& statement, const std::optional<ReadOptions>& read = std::nullopt
+  ) {
     using result_t = statement_t::result_type;
     const auto                         promise = std::make_shared<std::promise<std::vector<result_t>>>();
     std::future<std::vector<result_t>> future = promise->get_future();
@@ -203,7 +187,8 @@ class StatementRunner {
             promise->set_value(std::move(rows));
           }
         },
-        read);
+        read
+    );
 
     return future;
   }
@@ -240,7 +225,8 @@ class StatementRunner {
           detail::check_result_columns(column_names, chunk);
           return read_rows<result_t>(chunk, on_row);  // false: `on_row` wants no more rows, stop the query
         },
-        std::move(done));
+        std::move(done)
+    );
   }
 
   /**
@@ -370,16 +356,17 @@ class StatementRunner {
   StatementRunner(AsyncClient& client, AsyncClient::Lease lease, bool on_lease, const ReadOptions& read)
       : _client(&client), _lease(std::move(lease)), _on_lease(on_lease), _read(read) {}
 
-  StatementRunner(StatementRunner&&) noexcept = default;
-  StatementRunner& operator=(StatementRunner&&) noexcept = default;
-  ~StatementRunner() = default;
-
   [[nodiscard]] AsyncClient&       client() const noexcept { return *_client; }
   [[nodiscard]] bool               holds_lease() const noexcept { return static_cast<bool>(_lease); }
   [[nodiscard]] AsyncClient::Lease take_lease() noexcept { return std::move(_lease); }
   [[nodiscard]] const ReadOptions& read_options() const noexcept { return _read; }
 
  private:
+  AsyncClient*       _client;
+  AsyncClient::Lease _lease;     // a transaction's connection; empty for a database, and once the transaction has ended
+  bool               _on_lease;  // a transaction's: statements go to `_lease`, and fail without it
+  ReadOptions        _read;
+
   /** @brief Sends a statement to the pool, or to the transaction's connection (where, once it has ended, `done` gets `std::logic_error`). */
   void send(std::string sql, std::vector<std::string> params, AsyncClient::Completion done) {
     if ( _on_lease ) {
@@ -390,8 +377,10 @@ class StatementRunner {
   }
 
   /** @brief As `send`, for a stream. */
-  void send_stream(std::string sql, std::vector<std::string> params, const ReadOptions& options, AsyncClient::ChunkHandler on_chunk,
-                   AsyncClient::StreamCompletion done) {
+  void send_stream(
+      std::string sql, std::vector<std::string> params, const ReadOptions& options, AsyncClient::ChunkHandler on_chunk,
+      AsyncClient::StreamCompletion done
+  ) {
     if ( _on_lease ) {
       _client->stream(_lease, std::move(sql), std::move(params), options, std::move(on_chunk), std::move(done));
     } else {
@@ -430,10 +419,14 @@ class StatementRunner {
     return future;
   }
 
-  AsyncClient*       _client;
-  AsyncClient::Lease _lease;     // a transaction's connection; empty for a database, and once the transaction has ended
-  bool               _on_lease;  // a transaction's: statements go to `_lease`, and fail without it
-  ReadOptions        _read;
+ public:
+  StatementRunner(const StatementRunner&) = delete;
+  StatementRunner& operator=(const StatementRunner&) = delete;
+
+ protected:
+  StatementRunner(StatementRunner&&) noexcept = default;
+  StatementRunner& operator=(StatementRunner&&) noexcept = default;
+  ~StatementRunner() = default;
 };
 
 }  // namespace schemacht::postgres

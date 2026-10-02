@@ -82,12 +82,6 @@ class CompiledQuery {
   using row_type = schema_t::row_type;
   using param_type = Param<schema_t>;
 
-  CompiledQuery(const CompiledQuery&) = default;
-  CompiledQuery(CompiledQuery&&) noexcept = default;
-  CompiledQuery& operator=(const CompiledQuery&) = default;
-  CompiledQuery& operator=(CompiledQuery&&) noexcept = default;
-  ~CompiledQuery() = default;
-
   /** @return The statement, with `$n` placeholders for `params()`. */
   [[nodiscard]] std::string_view sql() const noexcept { return _sql; }
 
@@ -105,6 +99,10 @@ class CompiledQuery {
     requires IsQuerySource<std::remove_cvref_t<decltype(source)>> || IsCommandSource<std::remove_cvref_t<decltype(source)>>
   friend class Prepared;
 
+  std::string_view             _sql;
+  std::span<const std::size_t> _columns;
+  std::vector<param_type>      _params;
+
   /**
    * @param sql     The statement, in static storage.
    * @param columns The columns the statement returns, as indices into the schema's fields, in result order; in static storage.
@@ -113,9 +111,12 @@ class CompiledQuery {
   CompiledQuery(std::string_view sql, std::span<const std::size_t> columns, std::vector<param_type> params)
       : _sql(sql), _columns(columns), _params(std::move(params)) {}
 
-  std::string_view             _sql;
-  std::span<const std::size_t> _columns;
-  std::vector<param_type>      _params;
+ public:
+  CompiledQuery(const CompiledQuery&) = default;
+  CompiledQuery(CompiledQuery&&) noexcept = default;
+  CompiledQuery& operator=(const CompiledQuery&) = default;
+  CompiledQuery& operator=(CompiledQuery&&) noexcept = default;
+  ~CompiledQuery() = default;
 };
 
 /**
@@ -133,18 +134,19 @@ class TypedQuery : public CompiledQuery<schema_t> {
  public:
   using result_type = result_t;
 
-  TypedQuery(const TypedQuery&) = default;
-  TypedQuery(TypedQuery&&) noexcept = default;
-  TypedQuery& operator=(const TypedQuery&) = default;
-  TypedQuery& operator=(TypedQuery&&) noexcept = default;
-  ~TypedQuery() = default;
-
  private:
   template <auto source>
     requires IsQuerySource<std::remove_cvref_t<decltype(source)>> || IsCommandSource<std::remove_cvref_t<decltype(source)>>
   friend class Prepared;
 
   explicit TypedQuery(CompiledQuery<schema_t> query) : CompiledQuery<schema_t>(std::move(query)) {}
+
+ public:
+  TypedQuery(const TypedQuery&) = default;
+  TypedQuery(TypedQuery&&) noexcept = default;
+  TypedQuery& operator=(const TypedQuery&) = default;
+  TypedQuery& operator=(TypedQuery&&) noexcept = default;
+  ~TypedQuery() = default;
 };
 
 }  // namespace schemacht::query

@@ -28,8 +28,9 @@ using CodeRef = sch::Field<std::string, "feature_code">;
 using LabelRef = sch::Field<std::string, "feature_label">;
 using Index = sch::Schema<"feature_index", FeatureRef, CodeRef, LabelRef>;
 
-using Composite = sch::Schema<"composite", sch::Field<std::int64_t, "a", sch::KeyRole::Primary>, sch::Field<std::int64_t, "b", sch::KeyRole::Primary>,
-                              sch::Field<std::string, "c">>;
+using Composite = sch::Schema<
+    "composite", sch::Field<std::int64_t, "a", sch::KeyRole::Primary>, sch::Field<std::int64_t, "b", sch::KeyRole::Primary>,
+    sch::Field<std::string, "c">>;
 
 }  // namespace
 

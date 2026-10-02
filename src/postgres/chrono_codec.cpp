@@ -216,6 +216,7 @@ std::string format_timestamp(std::int64_t micros, bool zoned) {
   if ( micros == INFINITE_FUTURE ) {
     return "infinity";
   }
+
   if ( micros == INFINITE_PAST ) {
     return "-infinity";
   }
@@ -226,12 +227,15 @@ std::string format_timestamp(std::int64_t micros, bool zoned) {
 
   bool        before_common_era = false;
   std::string text = civil_text(civil_from_days(days), before_common_era);
-  text += std::format(" {:02}:{:02}:{:02}.{:06}", seconds / SECONDS_PER_HOUR, (seconds % SECONDS_PER_HOUR) / SECONDS_PER_MINUTE,
-                      seconds % SECONDS_PER_MINUTE, of_day % MICROS_PER_SECOND);
+  text += std::format(
+      " {:02}:{:02}:{:02}.{:06}", seconds / SECONDS_PER_HOUR, (seconds % SECONDS_PER_HOUR) / SECONDS_PER_MINUTE, seconds % SECONDS_PER_MINUTE,
+      of_day % MICROS_PER_SECOND
+  );
 
   if ( zoned ) {
     text += "+00";
   }
+
   if ( before_common_era ) {
     text += " BC";
   }
@@ -243,6 +247,7 @@ std::int64_t parse_timestamp(std::string_view text, bool zoned) {
   if ( text == "infinity" ) {
     return INFINITE_FUTURE;
   }
+
   if ( text == "-infinity" ) {
     return INFINITE_PAST;
   }
@@ -305,6 +310,7 @@ std::int64_t parse_binary_timestamp(std::span<const std::byte> bytes) {
   if ( since_2000 == std::numeric_limits<std::int64_t>::max() ) {
     return INFINITE_FUTURE;
   }
+
   if ( since_2000 == std::numeric_limits<std::int64_t>::min() ) {
     return INFINITE_PAST;
   }
@@ -316,6 +322,7 @@ std::string format_date(std::int64_t days) {
   if ( days == INFINITE_FUTURE ) {
     return "infinity";
   }
+
   if ( days == INFINITE_PAST ) {
     return "-infinity";
   }
@@ -329,6 +336,7 @@ std::int64_t parse_date(std::string_view text) {
   if ( text == "infinity" ) {
     return INFINITE_FUTURE;
   }
+
   if ( text == "-infinity" ) {
     return INFINITE_PAST;
   }
@@ -354,6 +362,7 @@ std::int64_t parse_binary_date(std::span<const std::byte> bytes) {
   if ( since_2000 == std::numeric_limits<std::int32_t>::max() ) {
     return INFINITE_FUTURE;
   }
+
   if ( since_2000 == std::numeric_limits<std::int32_t>::min() ) {
     return INFINITE_PAST;
   }
@@ -372,9 +381,11 @@ std::int64_t days_of(const std::chrono::year_month_day& date) {
   if ( date == LATEST_DATE ) {
     return INFINITE_FUTURE;
   }
+
   if ( date == EARLIEST_DATE ) {
     return INFINITE_PAST;
   }
+
   if ( ! date.ok() ) {
     throw std::invalid_argument("format_field: the date does not exist");
   }
@@ -386,6 +397,7 @@ std::chrono::year_month_day date_of(std::int64_t days) {
   if ( days == INFINITE_FUTURE ) {
     return LATEST_DATE;
   }
+
   if ( days == INFINITE_PAST ) {
     return EARLIEST_DATE;
   }

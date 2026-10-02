@@ -12,9 +12,9 @@
 #include <type_traits>
 #include <utility>
 
+#include "schemacht/schema/concepts/field.hpp"  // IWYU pragma: export
 #include "schemacht/util/compile_time.hpp"
 #include "schemacht/util/identifier.hpp"
-#include "schemacht/util/type_utils.hpp"
 
 namespace schemacht::schema {
 
@@ -77,11 +77,15 @@ struct Field {
   /// Whether the column can be NULL (its `data_type` is a `std::optional`).
   static constexpr bool NULLABLE = detail::Unwrapped<data_t>::NULLABLE;
 
-  static_assert(util::is_identifier(column_str.view()),
-                "a column name must be lowercase letters, digits and underscores, not start with a digit, and be at most 63 bytes");
+  static_assert(
+      util::is_identifier(column_str.view()),
+      "a column name must be lowercase letters, digits and underscores, not start with a digit, and be at most 63 bytes"
+  );
   static_assert(! detail::Unwrapped<value_type>::NULLABLE, "a Field's std::optional cannot be nested: NULL is one state");
-  static_assert(! std::unsigned_integral<value_type> || sizeof(value_type) < sizeof(std::int64_t),
-                "a 64-bit unsigned column does not fit PostgreSQL's largest integer type (bigint): use std::int64_t");
+  static_assert(
+      ! std::unsigned_integral<value_type> || sizeof(value_type) < sizeof(std::int64_t),
+      "a 64-bit unsigned column does not fit PostgreSQL's largest integer type (bigint): use std::int64_t"
+  );
   static_assert(! NULLABLE || key_role != KeyRole::Primary, "a primary key column cannot be NULL, so it cannot be a std::optional");
 
   static constexpr util::CTString COLUMN_NAME{column_str};
@@ -96,35 +100,6 @@ struct Field {
 };
 
 namespace detail {
-template <typename t>
-struct is_field : std::false_type {};
-
-template <typename data_t, util::CTString column_str, KeyRole key_role, bool generated>
-struct is_field<Field<data_t, column_str, key_role, generated>> : std::true_type {};
-}  // namespace detail
-
-/** @brief Detects whether `data_t` is a `Field<...>` specialization. */
-template <typename data_t>
-concept IsField = detail::is_field<data_t>::value;
-
-namespace detail {
-template <typename t>
-struct is_field_tuple : std::false_type {};
-
-template <IsField... field_ts>
-struct is_field_tuple<std::tuple<field_ts...>> : std::true_type {};
-}  // namespace detail
-
-/** @brief A row as queries return it: a `std::tuple` of `Field`s, one per returned column, in result order. */
-template <typename row_t>
-concept FieldTuple = detail::is_field_tuple<row_t>::value;
-
-namespace detail {
-
-template <util::CTString name, IsField... field_ts>
-[[nodiscard]] consteval std::size_t count_named(const std::tuple<field_ts...>* /*row*/) {
-  return ((field_ts::COLUMN_NAME.view() == name.view() ? 1U : 0U) + ... + 0U);
-}
 
 template <util::CTString name, IsField... field_ts>
 [[nodiscard]] consteval std::size_t index_of_named(const std::tuple<field_ts...>* /*row*/) {
@@ -137,25 +112,7 @@ template <util::CTString name, IsField... field_ts>
   return NAMES.size();
 }
 
-template <typename row_t, typename... arg_ts>
-inline constexpr bool ROW_VALUES = false;
-
-template <IsField... field_ts, typename... arg_ts>
-  requires(sizeof...(field_ts) == sizeof...(arg_ts))
-inline constexpr bool ROW_VALUES<std::tuple<field_ts...>, arg_ts...> = (util::NonNarrowingTo<arg_ts, typename field_ts::data_type> && ...);
-
 }  // namespace detail
-
-/** @brief Whether exactly one field of the row `row_t` (a `FieldTuple`) is the column `name`, so `get<name>` can find it. */
-template <typename row_t, util::CTString name>
-concept HasColumnNamed = FieldTuple<row_t> && (detail::count_named<name>(static_cast<const row_t*>(nullptr)) == 1);
-
-/**
- * @brief Whether `arg_ts` are a value for each field of the row `row_t`, in order: each converts to its field's `data_type`
- * without narrowing (`std::nullopt` for a column that can be NULL).
- */
-template <typename row_t, typename... arg_ts>
-concept RowValues = FieldTuple<row_t> && detail::ROW_VALUES<row_t, arg_ts...>;
 
 /**
  * @return The value of the column `name` in `row`, a row as a schema declares it or as a query returns it:

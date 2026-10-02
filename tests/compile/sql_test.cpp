@@ -53,17 +53,23 @@ TEST_CASE("operations are written as their operator or function", "[sql]") {
   STATIC_REQUIRE(q::Prepared<CONTAINS>::SQL == R"(SELECT "id", "count", "doc" FROM "counted" WHERE "doc" @> $1::jsonb)");
   STATIC_REQUIRE(
       q::Prepared<WITHIN>::SQL ==
-      R"(SELECT "id", "name", "nick", "score", "active" FROM "people" WHERE within_distance("score", $1::double precision, $2::double precision))");
+      R"(SELECT "id", "name", "nick", "score", "active" FROM "people" WHERE within_distance("score", $1::double precision, $2::double precision))"
+  );
 }
 
 TEST_CASE("AND and OR are parenthesized only where needed", "[sql]") {
-  STATIC_REQUIRE(q::Prepared<OR_INSIDE_AND>::SQL ==
-                 R"(SELECT "id", "name", "nick", "score", "active" FROM "people" WHERE ("id" = $1 OR "name" = $2) AND "active" = TRUE)");
-  STATIC_REQUIRE(q::Prepared<AND_INSIDE_OR>::SQL ==
-                 R"(SELECT "id", "name", "nick", "score", "active" FROM "people" WHERE "id" = $1 OR "name" = $2 AND "active" = FALSE)");
+  STATIC_REQUIRE(
+      q::Prepared<OR_INSIDE_AND>::SQL ==
+      R"(SELECT "id", "name", "nick", "score", "active" FROM "people" WHERE ("id" = $1 OR "name" = $2) AND "active" = TRUE)"
+  );
+  STATIC_REQUIRE(
+      q::Prepared<AND_INSIDE_OR>::SQL ==
+      R"(SELECT "id", "name", "nick", "score", "active" FROM "people" WHERE "id" = $1 OR "name" = $2 AND "active" = FALSE)"
+  );
   STATIC_REQUIRE(q::Prepared<NEGATED>::SQL == R"(SELECT "id", "name", "nick", "score", "active" FROM "people" WHERE NOT ("id" > -3))");
-  STATIC_REQUIRE(q::Prepared<NO_NICK>::SQL ==
-                 R"(SELECT "id", "name", "nick", "score", "active" FROM "people" WHERE "nick" IS NULL OR "nick" IS NOT NULL)");
+  STATIC_REQUIRE(
+      q::Prepared<NO_NICK>::SQL == R"(SELECT "id", "name", "nick", "score", "active" FROM "people" WHERE "nick" IS NULL OR "nick" IS NOT NULL)"
+  );
 }
 
 TEST_CASE("ordering, limits and projection", "[sql]") {
@@ -74,8 +80,9 @@ TEST_CASE("ordering, limits and projection", "[sql]") {
   STATIC_REQUIRE(Ordered::ARG_COUNT == 0);
 
   STATIC_REQUIRE(q::Prepared<LIMIT_ARG>::SQL == R"(SELECT "id", "name", "nick", "score", "active" FROM "people" LIMIT $1)");
-  STATIC_REQUIRE(q::Prepared<NEAREST>::SQL ==
-                 R"(SELECT "id", "name", "nick", "score", "active" FROM "people" ORDER BY "score" <-> $1::double precision LIMIT 3)");
+  STATIC_REQUIRE(
+      q::Prepared<NEAREST>::SQL == R"(SELECT "id", "name", "nick", "score", "active" FROM "people" ORDER BY "score" <-> $1::double precision LIMIT 3)"
+  );
 }
 
 TEST_CASE("a type's SelectExpression is used for the columns it returns", "[sql]") {

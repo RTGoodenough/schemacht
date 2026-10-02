@@ -11,7 +11,7 @@
 #include <vector>
 
 #include "schemacht/schema/column_type.hpp"
-#include "schemacht/util/type_utils.hpp"
+#include "schemacht/util/concepts/type_utils.hpp"
 
 namespace schemacht::query::sql {
 
@@ -62,26 +62,37 @@ template <typename data_t>
 [[nodiscard]] constexpr std::string_view builtin_type_name() {
   if constexpr ( std::same_as<data_t, bool> ) {
     return "boolean";
+
   } else if constexpr ( std::same_as<data_t, std::string> ) {
     return "text";
+
   } else if constexpr ( std::same_as<data_t, std::vector<std::byte>> ) {
     return "bytea";
+
   } else if constexpr ( util::SqlArray<data_t> ) {
     return ArrayTypeName<typename data_t::value_type>::VALUE;  // a `std::vector` is an array: `text[]`
+
   } else if constexpr ( std::same_as<data_t, float> ) {
     return "real";
+
   } else if constexpr ( std::same_as<data_t, double> ) {
     return "double precision";
+
   } else if constexpr ( IS_SYS_TIME<data_t> ) {
     return "timestamptz";
+
   } else if constexpr ( IS_LOCAL_TIME<data_t> ) {
     return "timestamp";
+
   } else if constexpr ( std::same_as<data_t, std::chrono::year_month_day> ) {
     return "date";
+
   } else if constexpr ( std::signed_integral<data_t> ) {
     return integer_type_name(sizeof(data_t));
+
   } else if constexpr ( std::unsigned_integral<data_t> && sizeof(data_t) < sizeof(std::int64_t) ) {
     return integer_type_name(sizeof(data_t) * 2);  // PostgreSQL has no unsigned types: the next wider signed one holds every value
+
   } else {
     return "";
   }

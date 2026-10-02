@@ -32,6 +32,7 @@ struct SessionSettings {
     if ( disable_jit && iso_dates ) {
       return "SET jit = off; SET DateStyle = 'ISO, YMD'";
     }
+
     if ( disable_jit ) {
       return "SET jit = off";
     }

@@ -4,14 +4,12 @@
 #include <concepts>
 #include <cstddef>
 #include <cstdint>
-#include <optional>
 #include <span>
 #include <stdexcept>
 #include <string_view>
 #include <tuple>
 #include <type_traits>
 #include <utility>
-#include <variant>
 #include <vector>
 
 #include "schemacht/query/command.hpp"
@@ -19,7 +17,8 @@
 #include "schemacht/query/predicate.hpp"
 #include "schemacht/query/query.hpp"
 #include "schemacht/query/sql.hpp"
-#include "schemacht/util/type_utils.hpp"
+#include "schemacht/schema/schema.hpp"
+#include "schemacht/util/concepts/type_utils.hpp"
 
 namespace schemacht::query {
 
@@ -94,7 +93,8 @@ constexpr void check_no_gaps(const Slots<capacity>& slots) {
  */
 template <schema::IsSchema schema_t, std::size_t predicate_capacity, std::size_t order_capacity>
 [[nodiscard]] constexpr Slots<(2 * predicate_capacity) + order_capacity + 1> collect_slots(
-    const Query<schema_t, predicate_capacity, order_capacity>& query) {
+    const Query<schema_t, predicate_capacity, order_capacity>& query
+) {
   Slots<(2 * predicate_capacity) + order_capacity + 1> slots;  // a call takes up to two, each ordering term one, and the limit one
   note_predicate_slots(slots, query.predicate);
 
@@ -116,7 +116,8 @@ template <schema::IsSchema schema_t, std::size_t predicate_capacity, std::size_t
 /** @brief As above, for an update: an argument a column is set to has that column's value type. */
 template <schema::IsSchema schema_t, std::size_t set_capacity, std::size_t predicate_capacity>
 [[nodiscard]] constexpr Slots<set_capacity + (2 * predicate_capacity) + 1> collect_slots(
-    const Update<schema_t, set_capacity, predicate_capacity>& update) {
+    const Update<schema_t, set_capacity, predicate_capacity>& update
+) {
   Slots<set_capacity + (2 * predicate_capacity) + 1> slots;
   for ( std::size_t i = 0; i < update.set_count; ++i ) {
     if ( const SetTerm& term = update.sets.at(i); ! term.is_null && term.value.kind == OperandKind::Arg ) {
@@ -198,8 +199,10 @@ template <typename statement_t>
 [[nodiscard]] consteval auto statement_text(const statement_t& statement) {
   if constexpr ( IsUpdate<statement_t> ) {
     return sql::update_statement(statement);
+
   } else if constexpr ( IsDelete<statement_t> ) {
     return sql::delete_statement(statement);
+
   } else {
     return sql::select_statement(statement);
   }
@@ -243,8 +246,10 @@ class Prepared {
   using row_type = schema_type::row_type;
   using param_type = Param<schema_type>;
 
-  static_assert(detail::rows_chosen(QUERY),
-                "an update or delete must say which rows it changes: .where(...), or .all_rows() / delete_all<Schema>() for every row");
+  static_assert(
+      detail::rows_chosen(QUERY),
+      "an update or delete must say which rows it changes: .where(...), or .all_rows() / delete_all<Schema>() for every row"
+  );
   static_assert(detail::sets_a_column(QUERY), "an update must set at least one column");
 
   /** @brief The columns the statement returns, in result order; none for an update or delete. */
@@ -295,8 +300,10 @@ class Prepared {
   template <std::size_t slot_idx, typename arg_t>
   [[nodiscard]] static param_type make_param(arg_t&& arg) {
     if constexpr ( SLOTS.info.at(slot_idx).is_limit ) {
-      static_assert(std::integral<std::remove_cvref_t<arg_t>> && util::NonNarrowingTo<arg_t, std::int64_t>,
-                    "a limit argument must be an integer that converts to std::int64_t without narrowing");
+      static_assert(
+          std::integral<std::remove_cvref_t<arg_t>> && util::NonNarrowingTo<arg_t, std::int64_t>,
+          "a limit argument must be an integer that converts to std::int64_t without narrowing"
+      );
 
       const std::int64_t count{std::forward<arg_t>(arg)};
       if ( count < 0 ) {
@@ -304,16 +311,22 @@ class Prepared {
       }
 
       return param_type{std::in_place_type<std::int64_t>, count};
+
     } else if constexpr ( SLOTS.info.at(slot_idx).is_real ) {
-      static_assert(! std::same_as<std::remove_cvref_t<arg_t>, bool> && util::NonNarrowingTo<arg_t, double>,
-                    "this argument is a number (such as a distance) that converts to double without narrowing: write 5.0, not 5");
+      static_assert(
+          ! std::same_as<std::remove_cvref_t<arg_t>, bool> && util::NonNarrowingTo<arg_t, double>,
+          "this argument is a number (such as a distance) that converts to double without narrowing: write 5.0, not 5"
+      );
 
       return param_type{std::in_place_type<double>, double{std::forward<arg_t>(arg)}};
+
     } else {
       using data_t = schema_type::template field_at<SLOTS.info.at(slot_idx).column>::value_type;
       using expected_t = std::conditional_t<SLOTS.info.at(slot_idx).is_list, std::vector<data_t>, data_t>;
-      static_assert(util::NonNarrowingTo<arg_t, expected_t>,
-                    "query argument has the wrong type for its column, or would be narrowed (e.g. -1 for an unsigned column)");
+      static_assert(
+          util::NonNarrowingTo<arg_t, expected_t>,
+          "query argument has the wrong type for its column, or would be narrowed (e.g. -1 for an unsigned column)"
+      );
 
       // NOLINTNEXTLINE(cppcoreguidelines-pro-bounds-array-to-pointer-decay) -- a string literal argument becomes a std::string here
       return param_type{std::in_place_type<expected_t>, expected_t{std::forward<arg_t>(arg)}};

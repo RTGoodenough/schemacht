@@ -7,13 +7,13 @@
 #include <cstdint>
 #include <stdexcept>
 #include <string_view>
-#include <type_traits>
 #include <utility>
 
+#include "schemacht/query/concepts/predicate.hpp"  // IWYU pragma: export
 #include "schemacht/schema/schema.hpp"
 #include "schemacht/util/compile_time.hpp"
+#include "schemacht/util/concepts/type_utils.hpp"
 #include "schemacht/util/identifier.hpp"
-#include "schemacht/util/type_utils.hpp"
 
 namespace schemacht::query {
 
@@ -134,22 +134,6 @@ struct Predicate {
   std::size_t                root = 0;   ///< Index of the top node.
 };
 
-/** @brief Whether `operation_t` names a SQL function (`FUNCTION`): the test is written `FUNCTION("column", $n)`. */
-template <typename operation_t>
-concept NamesFunction = requires {
-  { operation_t::FUNCTION } -> std::convertible_to<std::string_view>;
-};
-
-/** @brief Whether `operation_t` names a SQL operator (`OPERATOR`): the test is written `"column" OPERATOR $n`. */
-template <typename operation_t>
-concept NamesOperator = requires {
-  { operation_t::OPERATOR } -> std::convertible_to<std::string_view>;
-};
-
-/** @brief Whether `operation_t` takes a number as well as an argument: it says so with `static constexpr bool TAKES_NUMBER = true`. */
-template <typename operation_t>
-concept TakesNumber = requires { requires operation_t::TAKES_NUMBER; };
-
 /** @brief The SQL an operation writes around its argument: `ARGUMENT_PREFIX` before it and `ARGUMENT_SUFFIX` after it, both empty if it does not say. */
 template <typename operation_t>
 [[nodiscard]] constexpr std::string_view argument_prefix() {
@@ -173,27 +157,6 @@ template <typename operation_t>
   }
 }
 
-/**
- * @brief Whether `operation_t` is a test usable in a query (see `ColumnRef::apply`): it names the SQL that does the test, as a
- * function (`FUNCTION`) or as an operator (`OPERATOR`; the form an index can answer for `@>`, `&&`, `LIKE` and the like). Naming
- * both, or neither, is not a test.
- */
-template <typename operation_t>
-concept OperationOn = (NamesFunction<operation_t> != NamesOperator<operation_t>) && ! TakesNumber<operation_t>;
-
-/**
- * @brief Like `OperationOn`, for a test that also takes a number, such as "within this distance" (which says so with
- * `TAKES_NUMBER`). It is a function: an operator has only two sides.
- */
-template <typename operation_t>
-concept OperationWithReal = NamesFunction<operation_t> && ! NamesOperator<operation_t> && TakesNumber<operation_t>;
-
-/** @brief Whether `ranking_t` ranks rows by their distance from an argument: it names the SQL operator (`OPERATOR`), smaller sorting first. */
-template <typename ranking_t>
-concept RankingOn = requires {
-  { ranking_t::OPERATOR } -> std::convertible_to<std::string_view>;
-};
-
 namespace detail {
 
 /** @return The SQL name of `operation_t`: its operator if it has one, else its function. */
@@ -210,10 +173,14 @@ template <typename operation_t>
 template <typename operation_t>
 class BoundOperation {
  public:
-  static_assert(! NamesOperator<operation_t> || util::is_sql_operator(spelling<operation_t>()),
-                "an operation's OPERATOR must be a single SQL operator: only the characters <>-|#&~=@+*/%^!?, no -- or comment start");
-  static_assert(NamesOperator<operation_t> || util::is_sql_function_name(spelling<operation_t>()),
-                "an operation's FUNCTION must be a SQL function name: letters, digits and underscores, not starting with a digit");
+  static_assert(
+      ! NamesOperator<operation_t> || util::is_sql_operator(spelling<operation_t>()),
+      "an operation's OPERATOR must be a single SQL operator: only the characters <>-|#&~=@+*/%^!?, no -- or comment start"
+  );
+  static_assert(
+      NamesOperator<operation_t> || util::is_sql_function_name(spelling<operation_t>()),
+      "an operation's FUNCTION must be a SQL function name: letters, digits and underscores, not starting with a digit"
+  );
 
   static constexpr Operation VALUE{
       .name = spelling<operation_t>(),
@@ -228,42 +195,19 @@ class BoundOperation {
 template <typename ranking_t>
 class BoundRanking {
  public:
-  static_assert(util::is_sql_operator(ranking_t::OPERATOR),
-                "a ranking's OPERATOR must be a single SQL operator: only the characters <>-|#&~=@+*/%^!?, no -- or comment start");
+  static_assert(
+      util::is_sql_operator(ranking_t::OPERATOR),
+      "a ranking's OPERATOR must be a single SQL operator: only the characters <>-|#&~=@+*/%^!?, no -- or comment start"
+  );
 
   static constexpr Ranking VALUE{.op = ranking_t::OPERATOR};
 };
 
-template <typename data_t>
-struct is_predicate : std::false_type {};
-
-template <schema::IsSchema schema_t, std::size_t capacity>
-struct is_predicate<Predicate<schema_t, capacity>> : std::true_type {};
 }  // namespace detail
-
-/** @brief Detects whether `data_t` is a `Predicate<...>` specialization. */
-template <typename data_t>
-concept IsPredicate = detail::is_predicate<data_t>::value;
 
 // ============================================================================
 // Constants
 // ============================================================================
-
-/**
- * @brief Whether a column of `data_t` can be compared with a literal (rather than only with a bound argument).
- *
- * Only booleans and integers can: a literal is written into the statement, so it must be storable as bits and have an
- * obvious SQL spelling. Everything else (strings, doubles, bytes, and any column type a module adds) is compared with an `arg<N>()`.
- */
-template <typename data_t>
-concept ConstantData =
-    std::same_as<data_t, bool> || (std::integral<data_t> && ! std::same_as<data_t, char> && sizeof(data_t) <= sizeof(std::uint64_t));
-
-/** @brief Whether `value_t` is an acceptable literal for a column of `data_t`. */
-template <typename data_t, typename value_t>
-concept ConstantFor =
-    (std::same_as<data_t, bool> && std::same_as<value_t, bool>) || (ConstantData<data_t> && ! std::same_as<data_t, bool> && std::integral<value_t> &&
-                                                                    ! std::same_as<value_t, bool> && ! std::same_as<value_t, char>);
 
 /**
  * @brief Converts a literal to its stored form, checking it fits the column.
@@ -274,6 +218,7 @@ template <typename data_t, typename value_t>
 [[nodiscard]] constexpr Constant make_constant(const value_t& value) {
   if constexpr ( std::same_as<data_t, bool> ) {
     return Constant{.kind = ConstantKind::Bool, .bits = value ? 1U : 0U};
+
   } else {
     if ( ! std::in_range<data_t>(value) ) {
       throw std::out_of_range("query literal does not fit the column's type");
@@ -293,8 +238,10 @@ template <typename data_t>
 [[nodiscard]] constexpr data_t constant_value(const Constant& constant) {
   if constexpr ( std::same_as<data_t, bool> ) {
     return constant.bits != 0;
+
   } else if constexpr ( std::signed_integral<data_t> ) {
     return static_cast<data_t>(std::bit_cast<std::int64_t>(constant.bits));
+
   } else {
     return static_cast<data_t>(constant.bits);
   }
@@ -321,8 +268,9 @@ namespace detail {
 
 /** @brief Copies `source`'s nodes to the end of `dest`, shifting child indices; @return the copied root's new index. */
 template <schema::IsSchema schema_t, std::size_t dest_capacity, std::size_t source_capacity>
-constexpr std::size_t append_nodes(std::array<Node, dest_capacity>& dest, std::size_t& dest_count,
-                                   const Predicate<schema_t, source_capacity>& source) {
+constexpr std::size_t append_nodes(
+    std::array<Node, dest_capacity>& dest, std::size_t& dest_count, const Predicate<schema_t, source_capacity>& source
+) {
   const std::size_t offset = dest_count;
 
   for ( std::size_t i = 0; i < source.count; ++i ) {
@@ -330,6 +278,7 @@ constexpr std::size_t append_nodes(std::array<Node, dest_capacity>& dest, std::s
     if ( node.kind == NodeKind::And || node.kind == NodeKind::Or ) {
       node.lhs += offset;
       node.rhs += offset;
+
     } else if ( node.kind == NodeKind::Not ) {
       node.lhs += offset;
     }
@@ -340,8 +289,9 @@ constexpr std::size_t append_nodes(std::array<Node, dest_capacity>& dest, std::s
 }
 
 template <NodeKind kind, schema::IsSchema schema_t, std::size_t lhs_capacity, std::size_t rhs_capacity>
-[[nodiscard]] constexpr Predicate<schema_t, lhs_capacity + rhs_capacity + 1> join(const Predicate<schema_t, lhs_capacity>& lhs,
-                                                                                  const Predicate<schema_t, rhs_capacity>& rhs) {
+[[nodiscard]] constexpr Predicate<schema_t, lhs_capacity + rhs_capacity + 1> join(
+    const Predicate<schema_t, lhs_capacity>& lhs, const Predicate<schema_t, rhs_capacity>& rhs
+) {
   Predicate<schema_t, lhs_capacity + rhs_capacity + 1> result;
   std::size_t                                          count = 0;
   const std::size_t                                    lhs_root = append_nodes(result.nodes, count, lhs);
@@ -393,10 +343,6 @@ template <schema::IsSchema schema_t>
 [[nodiscard]] constexpr Predicate<schema_t, 1> match_none() {
   return Predicate<schema_t, 1>{.nodes = {Node{.kind = NodeKind::False}}, .count = 1, .root = 0};
 }
-
-/** @brief Whether rows can be sorted by a column of `data_t`. */
-template <typename data_t>
-concept Orderable = std::totally_ordered<data_t>;
 
 /** @brief One `ORDER BY` term: which column, and which way. */
 struct OrderTerm {
@@ -535,12 +481,14 @@ class ColumnRef {
   template <typename operation_t, std::size_t slot_idx>
     requires OperationOn<operation_t>
   [[nodiscard]] constexpr Predicate<schema_t, 1> apply(ArgRef<slot_idx> /*arg*/) const {
-    return single(Node{
-        .kind = NodeKind::Call,
-        .column = column_idx,
-        .operand = Operand{.kind = OperandKind::Arg, .slot = slot_idx},
-        .operation = &detail::BoundOperation<operation_t>::VALUE,
-    });
+    return single(
+        Node{
+            .kind = NodeKind::Call,
+            .column = column_idx,
+            .operand = Operand{.kind = OperandKind::Arg, .slot = slot_idx},
+            .operation = &detail::BoundOperation<operation_t>::VALUE,
+        }
+    );
   }
 
   /**
@@ -550,13 +498,15 @@ class ColumnRef {
   template <typename operation_t, std::size_t slot_idx, std::size_t real_slot_idx>
     requires OperationWithReal<operation_t>
   [[nodiscard]] constexpr Predicate<schema_t, 1> apply(ArgRef<slot_idx> /*arg*/, ArgRef<real_slot_idx> /*real*/) const {
-    return single(Node{
-        .kind = NodeKind::Call,
-        .column = column_idx,
-        .operand = Operand{.kind = OperandKind::Arg, .slot = slot_idx},
-        .operation = &detail::BoundOperation<operation_t>::VALUE,
-        .extra = Operand{.kind = OperandKind::Arg, .slot = real_slot_idx},
-    });
+    return single(
+        Node{
+            .kind = NodeKind::Call,
+            .column = column_idx,
+            .operand = Operand{.kind = OperandKind::Arg, .slot = slot_idx},
+            .operation = &detail::BoundOperation<operation_t>::VALUE,
+            .extra = Operand{.kind = OperandKind::Arg, .slot = real_slot_idx},
+        }
+    );
   }
 
   /**
@@ -578,14 +528,18 @@ class ColumnRef {
    */
   template <std::size_t slot_idx>
   [[nodiscard]] constexpr Predicate<schema_t, 1> in(ArgRef<slot_idx> /*arg*/) const {
-    static_assert(! util::SqlArray<typename schema_t::template field_at<column_idx>::value_type>,
-                  "in(...) can't test a column that is itself an array (a std::vector): compare it with == instead");
+    static_assert(
+        ! util::SqlArray<typename schema_t::template field_at<column_idx>::value_type>,
+        "in(...) can't test a column that is itself an array (a std::vector): compare it with == instead"
+    );
 
-    return single(Node{
-        .kind = NodeKind::InList,
-        .column = column_idx,
-        .operand = Operand{.kind = OperandKind::Arg, .slot = slot_idx},
-    });
+    return single(
+        Node{
+            .kind = NodeKind::InList,
+            .column = column_idx,
+            .operand = Operand{.kind = OperandKind::Arg, .slot = slot_idx},
+        }
+    );
   }
 
  private:
@@ -595,22 +549,26 @@ class ColumnRef {
 
   template <std::size_t slot_idx>
   [[nodiscard]] static constexpr Predicate<schema_t, 1> compare_arg(Comparison comparison) {
-    return single(Node{
-        .kind = NodeKind::Compare,
-        .comparison = comparison,
-        .column = column_idx,
-        .operand = Operand{.kind = OperandKind::Arg, .slot = slot_idx},
-    });
+    return single(
+        Node{
+            .kind = NodeKind::Compare,
+            .comparison = comparison,
+            .column = column_idx,
+            .operand = Operand{.kind = OperandKind::Arg, .slot = slot_idx},
+        }
+    );
   }
 
   template <typename value_t>
   [[nodiscard]] static constexpr Predicate<schema_t, 1> compare_constant(Comparison comparison, const value_t& value) {
-    return single(Node{
-        .kind = NodeKind::Compare,
-        .comparison = comparison,
-        .column = column_idx,
-        .operand = Operand{.kind = OperandKind::Constant, .constant = make_constant<data_type>(value)},
-    });
+    return single(
+        Node{
+            .kind = NodeKind::Compare,
+            .comparison = comparison,
+            .column = column_idx,
+            .operand = Operand{.kind = OperandKind::Constant, .constant = make_constant<data_type>(value)},
+        }
+    );
   }
 };
 

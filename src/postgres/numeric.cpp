@@ -86,6 +86,7 @@ std::int64_t parse_scaled_numeric(std::string_view text, unsigned scale) {
   for ( const char digit : integer ) {
     units = append_digit(units, digit);
   }
+
   for ( std::size_t place = 0; place < scale; ++place ) {
     units = append_digit(units, place < fraction.size() ? fraction.at(place) : '0');
   }
@@ -126,6 +127,7 @@ std::int64_t parse_binary_scaled_numeric(std::span<const std::byte> bytes, unsig
   if ( sign == NUMERIC_NAN || sign == NUMERIC_POSITIVE_INFINITY || sign == NUMERIC_NEGATIVE_INFINITY ) {
     throw std::invalid_argument("parse_binary: a NaN or infinite numeric is not an amount");
   }
+
   if ( (sign != NUMERIC_POSITIVE && sign != NUMERIC_NEGATIVE) || count < 0 ) {
     throw std::invalid_argument("parse_binary: not a numeric");
   }
@@ -149,8 +151,10 @@ std::int64_t parse_binary_scaled_numeric(std::span<const std::byte> bytes, unsig
 
     if ( exponent >= 0 ) {
       units = checked_add(units, checked_multiply(digit, POWERS_OF_TEN.at(static_cast<std::size_t>(exponent))));
+
     } else if ( -exponent < DIGITS_PER_NUMERIC_DIGIT && digit % POWERS_OF_TEN.at(static_cast<std::size_t>(-exponent)) == 0 ) {
       units = checked_add(units, digit / POWERS_OF_TEN.at(static_cast<std::size_t>(-exponent)));  // the digits past `scale` places are zeros
+
     } else {
       throw std::invalid_argument("parse_binary: the numeric has more than " + std::to_string(scale) + " decimal places");
     }

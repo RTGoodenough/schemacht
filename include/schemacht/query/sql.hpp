@@ -3,14 +3,11 @@
 #include <algorithm>
 #include <array>
 #include <bit>
-#include <concepts>
 #include <cstddef>
 #include <cstdint>
 #include <functional>
-#include <string>
 #include <string_view>
 #include <utility>
-#include <vector>
 
 #include "schemacht/query/command.hpp"
 #include "schemacht/query/predicate.hpp"
@@ -73,6 +70,7 @@ class Text {
     if ( value < 0 ) {
       push('-');
       append_unsigned(std::uint64_t{0} - std::bit_cast<std::uint64_t>(value));
+
     } else {
       append_unsigned(static_cast<std::uint64_t>(value));
     }
@@ -222,12 +220,6 @@ class Emitter {
  public:
   consteval Emitter(const Predicate<schema_t, predicate_capacity>* predicate, Text<text_capacity>* text) : _predicate(predicate), _text(text) {}
 
-  Emitter(const Emitter&) = delete;
-  Emitter(Emitter&&) = delete;
-  Emitter& operator=(const Emitter&) = delete;
-  Emitter& operator=(Emitter&&) = delete;
-  constexpr ~Emitter() = default;
-
   consteval void node(std::size_t index) { write(index, ANY_LEVEL); }
 
  private:
@@ -236,6 +228,9 @@ class Emitter {
   static constexpr std::size_t ANY_LEVEL = 0;
   static constexpr std::size_t OR_LEVEL = 1;
   static constexpr std::size_t AND_LEVEL = 2;
+
+  const Predicate<schema_t, predicate_capacity>* _predicate;
+  Text<text_capacity>*                           _text;
 
   /** @param context The level of the junction this expression is an operand of. */
   // NOLINTNEXTLINE(bugprone-easily-swappable-parameters) -- a node index and a precedence level, in that order at every call.
@@ -353,8 +348,12 @@ class Emitter {
 
   consteval void operand(const Operand& value) { append_operand(*_text, value); }
 
-  const Predicate<schema_t, predicate_capacity>* _predicate;
-  Text<text_capacity>*                           _text;
+ public:
+  Emitter(const Emitter&) = delete;
+  Emitter(Emitter&&) = delete;
+  Emitter& operator=(const Emitter&) = delete;
+  Emitter& operator=(Emitter&&) = delete;
+  constexpr ~Emitter() = default;
 };
 
 }  // namespace detail
@@ -379,6 +378,7 @@ consteval void append_select_from(Text<text_capacity>& text, const std::array<st
     const std::string_view function = detail::COLUMN_SELECT_FUNCTIONS<schema_t>.at(columns.at(i));
     if ( function.empty() ) {
       text.append_identifier(name);
+
     } else {
       text.append_function(function);
       text.push('(');
@@ -496,10 +496,14 @@ template <schema::IsSchema schema_t, std::size_t predicate_capacity>
  */
 template <schema::IsSchema schema_t>
 [[nodiscard]] consteval Text<STATEMENT_CAPACITY> create_table_statement() {
-  static_assert(! std::ranges::any_of(detail::COLUMN_TYPE_NAMES<schema_t>, &std::string_view::empty),
-                "create_table: a column's type has no SQL name; give it one (ColumnType::SQL_TYPE, or a query::sql::SqlType specialization)");
-  static_assert(! std::ranges::any_of(detail::COLUMN_GENERATED<schema_t>, std::identity{}),
-                "create_table can't write a generated column's expression: create a table with one yourself");
+  static_assert(
+      ! std::ranges::any_of(detail::COLUMN_TYPE_NAMES<schema_t>, &std::string_view::empty),
+      "create_table: a column's type has no SQL name; give it one (ColumnType::SQL_TYPE, or a query::sql::SqlType specialization)"
+  );
+  static_assert(
+      ! std::ranges::any_of(detail::COLUMN_GENERATED<schema_t>, std::identity{}),
+      "create_table can't write a generated column's expression: create a table with one yourself"
+  );
 
   Text<STATEMENT_CAPACITY> text;
   text.append("CREATE TABLE ");

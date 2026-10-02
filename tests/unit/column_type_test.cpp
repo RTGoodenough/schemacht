@@ -119,13 +119,15 @@ struct schemacht::ColumnType<Price> : schemacht::ScaledNumericColumn<&Price::cen
 
 template <>
 struct schemacht::ColumnType<std::filesystem::path>
-    : schemacht::ConvertedColumn<std::filesystem::path, std::string, [](const std::filesystem::path& path) { return path.string(); },
-                                 [](const std::string& text) { return std::filesystem::path(text); }> {};
+    : schemacht::ConvertedColumn<
+          std::filesystem::path, std::string, [](const std::filesystem::path& path) { return path.string(); },
+          [](const std::string& text) { return std::filesystem::path(text); }> {};
 
 template <>
 struct schemacht::ColumnType<std::chrono::milliseconds>
-    : schemacht::ConvertedColumn<std::chrono::milliseconds, std::int64_t, [](std::chrono::milliseconds span) { return span.count(); },
-                                 [](std::int64_t count) { return std::chrono::milliseconds(count); }> {};
+    : schemacht::ConvertedColumn<
+          std::chrono::milliseconds, std::int64_t, [](std::chrono::milliseconds span) { return span.count(); },
+          [](std::int64_t count) { return std::chrono::milliseconds(count); }> {};
 
 template <>
 struct schemacht::ColumnType<Half> {

@@ -29,14 +29,14 @@ struct CTString {
   // NOLINTNEXTLINE(cppcoreguidelines-avoid-c-arrays, modernize-avoid-c-arrays, google-explicit-constructor, hicpp-explicit-conversions, cppcoreguidelines-explicit-constructor, misc-explicit-constructor, cppcoreguidelines-pro-bounds-array-to-pointer-decay)
   constexpr CTString(const char (&str)[n_sz]) { std::copy_n(str, n_sz, value.begin()); }
 
+  /** @return The string's contents, without the trailing null terminator. */
+  [[nodiscard]] constexpr std::string_view view() const { return {value.data(), n_sz - 1}; }
+
   constexpr CTString(const CTString&) = default;
   constexpr CTString(CTString&&) noexcept = default;
   constexpr CTString& operator=(const CTString&) = default;
   constexpr CTString& operator=(CTString&&) noexcept = default;
   constexpr ~CTString() = default;
-
-  /** @return The string's contents, without the trailing null terminator. */
-  [[nodiscard]] constexpr std::string_view view() const { return {value.data(), n_sz - 1}; }
 };
 
 /**

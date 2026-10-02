@@ -1,7 +1,6 @@
 #pragma once
 
 #include <chrono>
-#include <concepts>
 #include <cstddef>
 #include <cstdint>
 #include <limits>
@@ -12,6 +11,7 @@
 #include <string_view>
 
 #include "schemacht/postgres/binary_form.hpp"
+#include "schemacht/postgres/concepts/chrono_codec.hpp"  // IWYU pragma: export
 
 // field_codec.hpp includes this at its end, so these codecs are seen wherever `FieldCodec` is.
 
@@ -62,14 +62,6 @@ inline constexpr std::int64_t INFINITE_PAST = std::numeric_limits<std::int64_t>:
 
 }  // namespace detail
 
-/**
- * @brief Whether a `std::chrono::duration` holds every microsecond exactly: an integer count of microseconds or of a whole
- * fraction of one (`std::chrono::microseconds`, `std::chrono::nanoseconds`, `system_clock::duration`).
- */
-template <typename duration_t>
-concept MicrosecondExact = std::same_as<duration_t, std::chrono::duration<typename duration_t::rep, typename duration_t::period>> &&
-                           std::integral<typename duration_t::rep> && std::ratio_divide<std::micro, typename duration_t::period>::den == 1;
-
 namespace detail {
 
 /** @return `time` in microseconds since 1970-01-01, truncated toward the past; `max()` and `min()` are infinite. */
@@ -79,6 +71,7 @@ template <typename clock_t, MicrosecondExact duration_t>
   if ( time == point_t::max() ) {
     return INFINITE_FUTURE;
   }
+
   if ( time == point_t::min() ) {
     return INFINITE_PAST;
   }
@@ -95,6 +88,7 @@ template <typename clock_t, MicrosecondExact duration_t>
   if ( micros == INFINITE_FUTURE ) {
     return point_t::max();
   }
+
   if ( micros == INFINITE_PAST ) {
     return point_t::min();
   }

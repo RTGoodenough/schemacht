@@ -1,47 +1,25 @@
 #pragma once
 
 #include <array>
-#include <concepts>
 #include <cstddef>
 #include <cstdint>
 #include <span>
 #include <string_view>
 #include <tuple>
-#include <type_traits>
 #include <utility>
 
+#include "schemacht/query/concepts/raw_statement.hpp"  // IWYU pragma: export
 #include "schemacht/schema/field.hpp"
 #include "schemacht/util/compile_time.hpp"
-#include "schemacht/util/type_utils.hpp"
+#include "schemacht/util/concepts/type_utils.hpp"
 
 namespace schemacht::query {
-
-/**
- * @brief A type a raw statement's argument can have: a value type (not a reference, not `const`), which the bound statement
- * holds. Whether a backend can send it (`postgres::HasTextForm`) is checked where the statement is run.
- */
-template <typename data_t>
-concept RawArgument = std::same_as<data_t, std::remove_cvref_t<data_t>> && std::move_constructible<data_t>;
 
 /** @brief The C++ types of a `RawStatement`'s arguments, in the order of its `$1`, `$2`, ... */
 template <RawArgument... argument_ts>
 struct RawArguments {
   using types = std::tuple<argument_ts...>;
 };
-
-namespace detail {
-
-template <typename type_t>
-struct is_raw_arguments : std::false_type {};
-
-template <typename... argument_ts>
-struct is_raw_arguments<RawArguments<argument_ts...>> : std::true_type {};
-
-}  // namespace detail
-
-/** @brief Detects whether `type_t` is a `RawArguments<...>`: the argument list of a `RawStatement`. */
-template <typename type_t>
-concept IsRawArguments = detail::is_raw_arguments<type_t>::value;
 
 /** @brief What is wrong with a raw statement's placeholders, if anything; see `check_placeholders`. */
 enum class PlaceholderProblem : std::uint8_t {
@@ -90,12 +68,6 @@ class SqlScanner {
  public:
   explicit constexpr SqlScanner(std::string_view sql) : _sql(sql) {}
 
-  constexpr SqlScanner(const SqlScanner&) = default;
-  constexpr SqlScanner(SqlScanner&&) noexcept = default;
-  constexpr SqlScanner& operator=(const SqlScanner&) = default;
-  constexpr SqlScanner& operator=(SqlScanner&&) noexcept = default;
-  constexpr ~SqlScanner() = default;
-
   [[nodiscard]] constexpr bool done() const { return _at >= _sql.size(); }
   [[nodiscard]] constexpr char peek(std::size_t ahead = 0) const { return _at + ahead < _sql.size() ? _sql.at(_at + ahead) : '\0'; }
   constexpr void               advance(std::size_t count = 1) { _at += count; }
@@ -108,14 +80,18 @@ class SqlScanner {
 
     if ( chr == '\'' ) {
       ended = skip_quoted('\'', escape_strings());
+
     } else if ( chr == '"' ) {
       ended = skip_quoted('"', false);
+
     } else if ( chr == '-' && peek(1) == '-' ) {
       while ( ! done() && peek() != '\n' ) {
         advance();
       }
+
     } else if ( chr == '/' && peek(1) == '*' ) {
       ended = skip_block_comment();
+
     } else {
       return Skipped::Nothing;
     }
@@ -124,6 +100,9 @@ class SqlScanner {
   }
 
  private:
+  std::string_view _sql;
+  std::size_t      _at = 0;
+
   /** @brief Whether the quote here opens an `E'...'` string, in which a backslash escapes the next character. */
   [[nodiscard]] constexpr bool escape_strings() const {
     return _at > 0 && (_sql.at(_at - 1) == 'e' || _sql.at(_at - 1) == 'E') && (_at < 2 || ! is_name_char(_sql.at(_at - 2)));
@@ -136,9 +115,11 @@ class SqlScanner {
     while ( ! done() ) {
       if ( (backslash_escapes && peek() == '\\') || (peek() == quote && peek(1) == quote) ) {
         advance(2);  // a backslash escapes the next character (in an E'' string), and a doubled quote is one quote inside the text
+
       } else if ( peek() == quote ) {
         advance();
         return true;
+
       } else {
         advance();
       }
@@ -154,12 +135,14 @@ class SqlScanner {
       if ( peek() == '/' && peek(1) == '*' ) {
         ++depth;
         advance(2);
+
       } else if ( peek() == '*' && peek(1) == '/' ) {
         --depth;
         advance(2);
         if ( depth == 0 ) {
           return true;
         }
+
       } else {
         advance();
       }
@@ -168,8 +151,12 @@ class SqlScanner {
     return false;
   }
 
-  std::string_view _sql;
-  std::size_t      _at = 0;
+ public:
+  constexpr SqlScanner(const SqlScanner&) = default;
+  constexpr SqlScanner(SqlScanner&&) noexcept = default;
+  constexpr SqlScanner& operator=(const SqlScanner&) = default;
+  constexpr SqlScanner& operator=(SqlScanner&&) noexcept = default;
+  constexpr ~SqlScanner() = default;
 };
 
 }  // namespace detail
@@ -191,6 +178,7 @@ class SqlScanner {
     if ( skipped == detail::Skipped::Unterminated ) {
       return {.problem = PlaceholderProblem::Unterminated};
     }
+
     if ( skipped == detail::Skipped::Text ) {
       continue;
     }
@@ -230,9 +218,6 @@ class SqlScanner {
   return {};
 }
 
-template <util::CTString sql_text, IsRawArguments arguments_t, schema::IsField... field_ts>
-class RawStatement;
-
 /**
  * @brief A `RawStatement` with its arguments bound: what a backend runs, as it runs a `TypedQuery`.
  *
@@ -252,12 +237,6 @@ class BoundRawStatement {
 
   explicit BoundRawStatement(arguments_type arguments) : _arguments(std::move(arguments)) {}
 
-  BoundRawStatement(const BoundRawStatement&) = default;
-  BoundRawStatement(BoundRawStatement&&) noexcept = default;
-  BoundRawStatement& operator=(const BoundRawStatement&) = default;
-  BoundRawStatement& operator=(BoundRawStatement&&) noexcept = default;
-  ~BoundRawStatement() = default;
-
   /** @return The statement, with `$n` placeholders for `arguments()`. */
   [[nodiscard]] static constexpr std::string_view sql() noexcept { return statement_t::SQL; }
 
@@ -269,6 +248,13 @@ class BoundRawStatement {
 
  private:
   arguments_type _arguments;
+
+ public:
+  BoundRawStatement(const BoundRawStatement&) = default;
+  BoundRawStatement(BoundRawStatement&&) noexcept = default;
+  BoundRawStatement& operator=(const BoundRawStatement&) = default;
+  BoundRawStatement& operator=(BoundRawStatement&&) noexcept = default;
+  ~BoundRawStatement() = default;
 };
 
 /**
@@ -331,8 +317,10 @@ class RawStatement {
  private:
   template <std::size_t... idx, typename... arg_ts>
   [[nodiscard]] static BoundRawStatement<RawStatement> bind_in_order(std::index_sequence<idx...> /*indices*/, arg_ts&&... args) {
-    static_assert((util::NonNarrowingTo<arg_ts, std::tuple_element_t<idx, argument_types>> && ...),
-                  "an argument does not have the type its raw statement declares, or would be narrowed");
+    static_assert(
+        (util::NonNarrowingTo<arg_ts, std::tuple_element_t<idx, argument_types>> && ...),
+        "an argument does not have the type its raw statement declares, or would be narrowed"
+    );
 
     return BoundRawStatement<RawStatement>(argument_types{std::tuple_element_t<idx, argument_types>{std::forward<arg_ts>(args)}...});
   }
@@ -342,33 +330,11 @@ class RawStatement {
   static_assert(ARGUMENT_COUNT <= MAX_RAW_ARGUMENTS, "a raw statement takes at most MAX_RAW_ARGUMENTS arguments");
   static_assert(PLACEHOLDERS.problem != PlaceholderProblem::Unused, "a declared argument of the raw statement has no $n placeholder in it");
   static_assert(PLACEHOLDERS.problem != PlaceholderProblem::Beyond, "the raw statement has a $n (or $0) beyond the arguments it declares");
-  static_assert(PLACEHOLDERS.problem != PlaceholderProblem::DollarQuote,
-                "the raw statement has $ that is not a placeholder: dollar-quoted text is not supported, write the string with quotes");
+  static_assert(
+      PLACEHOLDERS.problem != PlaceholderProblem::DollarQuote,
+      "the raw statement has $ that is not a placeholder: dollar-quoted text is not supported, write the string with quotes"
+  );
   static_assert(PLACEHOLDERS.problem != PlaceholderProblem::Unterminated, "the raw statement has a string, quoted name or comment that never ends");
 };
-
-namespace detail {
-
-template <typename type_t>
-struct is_raw_statement : std::false_type {};
-
-template <util::CTString sql_text, IsRawArguments arguments_t, schema::IsField... field_ts>
-struct is_raw_statement<RawStatement<sql_text, arguments_t, field_ts...>> : std::true_type {};
-
-template <typename type_t>
-struct is_bound_raw_statement : std::false_type {};
-
-template <typename statement_t>
-struct is_bound_raw_statement<BoundRawStatement<statement_t>> : std::true_type {};
-
-}  // namespace detail
-
-/** @brief Detects whether `type_t` is a `RawStatement<...>` specialization. */
-template <typename type_t>
-concept IsRawStatement = detail::is_raw_statement<type_t>::value;
-
-/** @brief Detects whether `type_t` is a `BoundRawStatement<...>`: a raw statement with its arguments. */
-template <typename type_t>
-concept IsBoundRawStatement = detail::is_bound_raw_statement<type_t>::value;
 
 }  // namespace schemacht::query

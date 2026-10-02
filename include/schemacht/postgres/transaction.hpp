@@ -1,6 +1,5 @@
 #pragma once
 
-#include <concepts>
 #include <cstdint>
 #include <exception>
 #include <future>
@@ -10,6 +9,7 @@
 #include <utility>
 
 #include "schemacht/postgres/async_client.hpp"
+#include "schemacht/postgres/concepts/transaction.hpp"  // IWYU pragma: export
 #include "schemacht/postgres/statement_runner.hpp"
 
 namespace schemacht::postgres {
@@ -77,12 +77,6 @@ namespace detail {
  */
 class Transaction : public StatementRunner {
  public:
-  Transaction(const Transaction&) = delete;
-  Transaction& operator=(const Transaction&) = delete;
-
-  /** @brief Takes over `other`'s transaction; `other` is then ended, and refuses every statement. */
-  Transaction(Transaction&& other) noexcept = default;
-
   /** @brief Rolls back this transaction if it is still open (as the destructor does), then takes over `other`'s. */
   Transaction& operator=(Transaction&& other) noexcept {
     if ( this != &other ) {
@@ -150,14 +144,16 @@ class Transaction : public StatementRunner {
     // Let go of at the end of this call: the connection goes back once this is done. An empty lease (the transaction had
     // already ended) gets std::logic_error.
     const AsyncClient::Lease lease = take_lease();
-    client().run(lease, committing ? "COMMIT" : "ROLLBACK", {},
-                 [done = std::move(done), committing](const QueryResult& result, const std::exception_ptr& error) mutable {
-                   if ( ! error && committing && result.command_tag() == "ROLLBACK" ) {
-                     done(std::make_exception_ptr(detail::rolled_back()));
-                   } else {
-                     done(error);
-                   }
-                 });
+    client().run(
+        lease, committing ? "COMMIT" : "ROLLBACK", {},
+        [done = std::move(done), committing](const QueryResult& result, const std::exception_ptr& error) mutable {
+          if ( ! error && committing && result.command_tag() == "ROLLBACK" ) {
+            done(std::make_exception_ptr(detail::rolled_back()));
+          } else {
+            done(error);
+          }
+        }
+    );
   }
 
   /**
@@ -175,15 +171,13 @@ class Transaction : public StatementRunner {
     } catch ( ... ) {  // NOLINT(bugprone-empty-catch) -- see above: letting go of the lease is enough
     }
   }
+
+ public:
+  Transaction(const Transaction&) = delete;
+  Transaction& operator=(const Transaction&) = delete;
+
+  /** @brief Takes over `other`'s transaction; `other` is then ended, and refuses every statement. */
+  Transaction(Transaction&& other) noexcept = default;
 };
-
-namespace detail {
-
-/** @brief Whether `done_t` can finish a `begin_into`: called once with the transaction and the error (null on success; on failure, the transaction is ended). */
-template <typename done_t>
-concept TransactionCallback =
-    std::invocable<done_t&, Transaction, std::exception_ptr> && std::same_as<std::invoke_result_t<done_t&, Transaction, std::exception_ptr>, void>;
-
-}  // namespace detail
 
 }  // namespace schemacht::postgres

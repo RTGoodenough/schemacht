@@ -62,6 +62,7 @@ std::string_view trimmed(std::string_view text) {
   while ( ! text.empty() && is_space(text.front()) ) {
     text.remove_prefix(1);
   }
+
   while ( ! text.empty() && is_space(text.back()) ) {
     text.remove_suffix(1);
   }
@@ -129,9 +130,11 @@ ArrayReader::ArrayReader(std::string_view text) : _text(text) {
   if ( ! whole.empty() && whole.front() == '[' ) {
     fail("has a dimension prefix ([lower:upper]=), which is not supported");
   }
+
   if ( whole.empty() || whole.front() != '{' ) {
     fail("does not start with '{'");
   }
+
   if ( whole.back() != '}' ) {
     fail("does not end with '}'");
   }
@@ -167,6 +170,7 @@ std::string_view ArrayReader::bare_element() {
   if ( token.empty() ) {
     fail("has an empty element (an empty string is written \"\")");
   }
+
   if ( is_null_word(token) ) {
     fail("has a NULL element, which a std::vector cannot hold");
   }

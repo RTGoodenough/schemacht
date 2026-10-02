@@ -10,11 +10,13 @@
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <system_error>
 #include <type_traits>
 #include <utility>
 #include <vector>
 
-#include "schemacht/postgres/binary_form.hpp"  // IWYU pragma: export
+#include "schemacht/postgres/binary_form.hpp"           // IWYU pragma: export
+#include "schemacht/postgres/concepts/field_codec.hpp"  // IWYU pragma: export
 #include "schemacht/schema/column_type.hpp"
 #include "schemacht/schema/field.hpp"
 
@@ -39,12 +41,6 @@ class ArrayReader {
   /** @throws std::invalid_argument if `text` is not a one-dimensional array. */
   explicit ArrayReader(std::string_view text);
 
-  ArrayReader(const ArrayReader&) = default;
-  ArrayReader(ArrayReader&&) noexcept = default;
-  ArrayReader& operator=(const ArrayReader&) = default;
-  ArrayReader& operator=(ArrayReader&&) noexcept = default;
-  ~ArrayReader() = default;
-
   /** @return At least how many elements there are (a count of the commas, so it may be more): to reserve for. */
   [[nodiscard]] std::size_t element_estimate() const noexcept { return _estimate; }
 
@@ -52,17 +48,24 @@ class ArrayReader {
   [[nodiscard]] std::optional<std::string_view> next();
 
  private:
-  [[noreturn]] void fail(std::string_view reason) const;
-  void              skip_spaces();
-  std::string_view  bare_element();
-  std::string_view  quoted_element();
-
   std::string_view _text;  // all of it, for the messages
   std::string_view _body;  // between the braces
   std::size_t      _at = 0;
   std::size_t      _estimate = 0;
   bool             _after_comma = false;
   std::string      _unescaped;
+
+  [[noreturn]] void fail(std::string_view reason) const;
+  void              skip_spaces();
+  std::string_view  bare_element();
+  std::string_view  quoted_element();
+
+ public:
+  ArrayReader(const ArrayReader&) = default;
+  ArrayReader(ArrayReader&&) noexcept = default;
+  ArrayReader& operator=(const ArrayReader&) = default;
+  ArrayReader& operator=(ArrayReader&&) noexcept = default;
+  ~ArrayReader() = default;
 };
 
 namespace detail {
@@ -97,21 +100,28 @@ class FieldCodec {
   {
     if constexpr ( UserColumnType<data_t> ) {
       return ColumnType<data_t>::parse(text);
+
     } else if constexpr ( std::same_as<data_t, bool> ) {
       if ( text == "t" || text == "true" ) {
         return true;
       }
+
       if ( text == "f" || text == "false" ) {
         return false;
       }
+
       throw std::invalid_argument("parse_field: '" + std::string(text) + "' is not a boolean (t, f, true or false)");
+
     } else if constexpr ( std::same_as<data_t, std::string> ) {
       return std::string(text);
+
     } else if constexpr ( std::same_as<data_t, std::vector<std::byte>> ) {
       if ( text.starts_with("\\x") ) {
         text.remove_prefix(2);  // what a PostgreSQL `bytea` prints: `\x` and then the hex
       }
+
       return detail::parse_hex_bytes(text);
+
     } else {  // a number
       data_t            value{};
       const char* const end = text.data() + text.size();  // NOLINT(cppcoreguidelines-pro-bounds-pointer-arithmetic)
@@ -130,13 +140,17 @@ class FieldCodec {
   {
     if constexpr ( UserColumnType<data_t> ) {
       return ColumnType<data_t>::format(value);
+
     } else if constexpr ( std::same_as<data_t, bool> ) {
       return value ? "t" : "f";
+
     } else if constexpr ( std::same_as<data_t, std::string> ) {
       return value;
+
     } else if constexpr ( std::same_as<data_t, std::vector<std::byte>> ) {
       return "\\x" + detail::format_hex_bytes(value);  // the `\x` says hex: without it, PostgreSQL would store the hex digits as text
-    } else {                                           // a number
+
+    } else {  // a number
       static constexpr std::size_t            NUMERIC_TEXT_CAPACITY = 64;
       std::array<char, NUMERIC_TEXT_CAPACITY> buffer{};
       const auto                              result = std::to_chars(buffer.begin(), buffer.end(), value);
@@ -156,16 +170,20 @@ class FieldCodec {
   {
     if constexpr ( UserColumnTypeWithBinaryForm<data_t> ) {
       return ColumnType<data_t>::parse_binary(bytes);
+
     } else if constexpr ( std::same_as<data_t, bool> ) {
       if ( bytes.size() != 1 ) {
         throw std::invalid_argument("parse_binary: a bool is one byte, not " + std::to_string(bytes.size()));
       }
 
       return bytes.front() != std::byte{0};
+
     } else if constexpr ( std::same_as<data_t, std::string> ) {
       return std::string(as_text(bytes));
+
     } else if constexpr ( std::same_as<data_t, std::vector<std::byte>> ) {
       return std::vector<std::byte>(bytes.begin(), bytes.end());
+
     } else if constexpr ( std::integral<data_t> ) {
       const std::int64_t value = binary_integer(bytes);
       if ( ! std::in_range<data_t>(value) ) {
@@ -173,6 +191,7 @@ class FieldCodec {
       }
 
       return static_cast<data_t>(value);
+
     } else {
       return static_cast<data_t>(binary_real(bytes));
     }
@@ -188,35 +207,23 @@ class FieldCodec {
   {
     if constexpr ( UserColumnTypeWithTypeCheck<data_t> ) {
       return ColumnType<data_t>::binary_accepts(type_oid);
+
     } else if constexpr ( std::same_as<data_t, bool> ) {
       return type_oid == OID_BOOL;
+
     } else if constexpr ( std::same_as<data_t, std::string> ) {
       return type_oid == OID_TEXT || type_oid == OID_VARCHAR || type_oid == OID_BPCHAR || type_oid == OID_NAME;
+
     } else if constexpr ( std::same_as<data_t, std::vector<std::byte>> ) {
       return type_oid == OID_BYTEA;
+
     } else if constexpr ( std::integral<data_t> ) {
       return type_oid == OID_INT2 || type_oid == OID_INT4 || type_oid == OID_INT8;
+
     } else {
       return type_oid == OID_FLOAT4 || type_oid == OID_FLOAT8;
     }
   }
-};
-
-/**
- * @brief Whether `data_t` has a text form: its `FieldCodec` has `parse` and `format`. The built-in types do, as does a
- * `std::vector` of a type that does (an array); any other type needs a `ColumnType` specialization (or a `FieldCodec` one)
- * to be a column's type or a statement's argument.
- */
-template <typename data_t>
-concept HasTextForm = requires(const data_t& value, std::string_view text) {
-  { FieldCodec<data_t>::format(value) } -> std::same_as<std::string>;
-  { FieldCodec<data_t>::parse(text) } -> std::same_as<data_t>;
-};
-
-/** @brief Whether `data_t` can be read from PostgreSQL's binary form: its `FieldCodec` has `parse_binary`. */
-template <typename data_t>
-concept HasBinaryForm = requires(std::span<const std::byte> bytes) {
-  { FieldCodec<data_t>::parse_binary(bytes) } -> std::same_as<data_t>;
 };
 
 /**
@@ -349,8 +356,9 @@ class FieldCodec<std::vector<element_t>> {
     BinaryArrayReader reader(bytes);
     if constexpr ( requires { FieldCodec<element_t>::binary_accepts(reader.element_type()); } ) {
       if ( ! FieldCodec<element_t>::binary_accepts(reader.element_type()) ) {
-        throw std::invalid_argument("parse_binary: the array's elements have the type with OID " + std::to_string(reader.element_type()) +
-                                    ", which this column cannot read");
+        throw std::invalid_argument(
+            "parse_binary: the array's elements have the type with OID " + std::to_string(reader.element_type()) + ", which this column cannot read"
+        );
       }
     }
 

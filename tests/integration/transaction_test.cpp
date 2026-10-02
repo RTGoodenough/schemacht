@@ -329,10 +329,12 @@ TEST_CASE("integration: a lease let go of inside a transaction comes back out of
 
     std::promise<void> inserted;
     database.pool().run(lease, "BEGIN", {}, [](const pg::QueryResult& /*result*/, const std::exception_ptr& /*error*/) {});
-    database.pool().run(lease, "INSERT INTO schemacht_it_tx_lease VALUES (1, 1)", {},
-                        [&inserted](const pg::QueryResult& /*result*/, const std::exception_ptr& error) {
-                          error ? inserted.set_exception(error) : inserted.set_value();
-                        });
+    database.pool().run(
+        lease, "INSERT INTO schemacht_it_tx_lease VALUES (1, 1)", {},
+        [&inserted](const pg::QueryResult& /*result*/, const std::exception_ptr& error) {
+          error ? inserted.set_exception(error) : inserted.set_value();
+        }
+    );
 
     inserted.get_future().get();
   }  // let go of without COMMIT or ROLLBACK

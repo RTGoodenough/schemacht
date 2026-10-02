@@ -6,6 +6,10 @@ UseTab: Never
 ColumnLimit: 150
 # A blank line separates the steps of a function; one is kept, more are folded into one.
 MaxEmptyLinesToKeep: 1
+# Arguments, parameters and lambda captures that do not fit break after the opening bracket and are indented one step, with
+# the closing bracket on a line of its own: a lambda's captures wrap among themselves instead of pushing its parameters
+# to the far right.
+AlignAfterOpenBracket: BlockIndent
 PointerAlignment: Left
 ReflowComments:  false
 IncludeBlocks: Preserve

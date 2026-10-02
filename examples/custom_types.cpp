@@ -176,14 +176,19 @@ int main(int argc, char** argv) {
     const auto morning = std::chrono::sys_days{2026y / 10 / 1} + 9h;
     database
         .insert<Orders>({
-            Orders::make_row(shop::OrderId{1}, Uuid::from_string("0e9cd3a8-3f43-4f4e-9b5c-6b6f8f6f0a1d"), morning, shop::Money{1999}, Mood::Happy,
-                             "gift wrap"),
-            Orders::make_row(shop::OrderId{2}, Uuid::from_string("51c1c4a2-77d4-4b0e-8a39-2c4b1f0de9f3"), morning + 2h, shop::Money{-500}, Mood::Sad,
-                             "refund"),
-            Orders::make_row(shop::OrderId{3}, Uuid::from_string("9a0b7f6e-1d2c-4e3f-8a9b-0c1d2e3f4a5b"), morning + 26h, shop::Money{120050},
-                             Mood::Ok, std::nullopt),
-            Orders::make_row(shop::OrderId{4}, Uuid::from_string("c3d4e5f6-a7b8-4c9d-8e0f-1a2b3c4d5e6f"), morning + 50h, shop::Money{5}, Mood::Happy,
-                             std::nullopt),
+            Orders::make_row(
+                shop::OrderId{1}, Uuid::from_string("0e9cd3a8-3f43-4f4e-9b5c-6b6f8f6f0a1d"), morning, shop::Money{1999}, Mood::Happy, "gift wrap"
+            ),
+            Orders::make_row(
+                shop::OrderId{2}, Uuid::from_string("51c1c4a2-77d4-4b0e-8a39-2c4b1f0de9f3"), morning + 2h, shop::Money{-500}, Mood::Sad, "refund"
+            ),
+            Orders::make_row(
+                shop::OrderId{3}, Uuid::from_string("9a0b7f6e-1d2c-4e3f-8a9b-0c1d2e3f4a5b"), morning + 26h, shop::Money{120050}, Mood::Ok,
+                std::nullopt
+            ),
+            Orders::make_row(
+                shop::OrderId{4}, Uuid::from_string("c3d4e5f6-a7b8-4c9d-8e0f-1a2b3c4d5e6f"), morning + 50h, shop::Money{5}, Mood::Happy, std::nullopt
+            ),
         })
         .get();
 
