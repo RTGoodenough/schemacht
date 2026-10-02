@@ -14,6 +14,7 @@ namespace t = schemacht::test;
 
 TEST_CASE("make_row builds a row from plain values", "[row]") {
   const t::People::row_type row = t::People::make_row(7, "ann", std::nullopt, 1.5, true);
+
   CHECK(std::get<t::Id>(row).value == 7);
   CHECK(std::get<t::Name>(row).value == "ann");
   CHECK_FALSE(std::get<t::Nick>(row).value.has_value());
@@ -26,6 +27,7 @@ TEST_CASE("make_row builds a row from plain values", "[row]") {
 
 TEST_CASE("get reads a column by its name", "[row]") {
   t::People::row_type row = t::People::make_row(7, "ann", "a", 1.5, true);
+
   CHECK(sch::get<"id">(row) == 7);
   CHECK(sch::get<"nick">(row) == "a");
 
@@ -42,6 +44,7 @@ TEST_CASE("get reads a column by its name", "[row]") {
 
 TEST_CASE("get keeps the row's value category", "[row]") {
   using Row = t::People::row_type;
+
   STATIC_REQUIRE(std::same_as<decltype(sch::get<"name">(std::declval<Row&>())), std::string&>);
   STATIC_REQUIRE(std::same_as<decltype(sch::get<"name">(std::declval<const Row&>())), const std::string&>);
   STATIC_REQUIRE(std::same_as<decltype(sch::get<"name">(std::declval<Row&&>())), std::string&&>);

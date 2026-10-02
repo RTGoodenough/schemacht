@@ -20,6 +20,7 @@ inline std::string test_db() {
   if ( conninfo == nullptr ) {
     SKIP("SCHEMACHT_TEST_DB is not set");
   }
+
   return conninfo;
 }
 
@@ -33,6 +34,7 @@ inline void exec(postgres::Database& database, std::string sql) {
       done.set_value();
     }
   });
+
   done.get_future().get();
 }
 

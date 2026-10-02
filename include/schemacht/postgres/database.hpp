@@ -90,6 +90,7 @@ class Database : private detail::ClientHolder, public StatementRunner {
         done(Transaction(*client, {}, read), error);
         return;
       }
+
       // The lease goes with the BEGIN's completion: to the transaction, or (if the BEGIN failed) back to the pool.
       const auto held = std::make_shared<AsyncClient::Lease>(std::move(lease));
       client->run(*held, std::move(sql), {},
@@ -112,6 +113,7 @@ class Database : private detail::ClientHolder, public StatementRunner {
   [[nodiscard]] std::future<Transaction> begin(const TransactionOptions& options = {}) {
     const auto               promise = std::make_shared<std::promise<Transaction>>();
     std::future<Transaction> future = promise->get_future();
+
     begin_into(
         [promise](Transaction transaction, const std::exception_ptr& error) {
           if ( error ) {
@@ -121,6 +123,7 @@ class Database : private detail::ClientHolder, public StatementRunner {
           }
         },
         options);
+
     return future;
   }
 };

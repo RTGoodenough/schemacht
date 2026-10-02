@@ -35,6 +35,7 @@ constexpr int NOT_A_NUMBER = 0xC000;
 TEST_CASE("BinaryReader reads big-endian fields in turn", "[binary]") {
   const std::vector<std::byte> bytes = words({1, -2, 0, 7, 0xABCD});
   pg::BinaryReader             reader(bytes);
+
   CHECK(reader.int16() == 1);
   CHECK(reader.int16() == -2);
   CHECK(reader.int32() == 7);
@@ -55,6 +56,7 @@ TEST_CASE("a numeric's text form as a count of units", "[numeric]") {
   CHECK(pg::parse_scaled_numeric<2>("1.5") == 150);
   CHECK(pg::parse_scaled_numeric<2>("1.50000") == 150);  // zeros past the scale lose nothing
   CHECK(pg::parse_scaled_numeric<0>("42") == 42);
+
   CHECK_THROWS_AS(pg::parse_scaled_numeric<2>("0.001"), std::invalid_argument);
   CHECK_THROWS_AS(pg::parse_scaled_numeric<2>("NaN"), std::invalid_argument);
   CHECK_THROWS_AS(pg::parse_scaled_numeric<2>("Infinity"), std::invalid_argument);

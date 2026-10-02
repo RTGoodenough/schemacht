@@ -28,13 +28,16 @@ constexpr std::uint8_t NOT_A_DIGIT = 0xFF;
 constexpr std::array<std::uint8_t, CHAR_VALUES> make_nibble_table() {
   std::array<std::uint8_t, CHAR_VALUES> table{};
   table.fill(NOT_A_DIGIT);
+
   for ( unsigned int digit = 0; digit < DECIMAL_DIGIT_COUNT; ++digit ) {
     table.at('0' + digit) = static_cast<std::uint8_t>(digit);
   }
+
   for ( unsigned int digit = 0; digit <= HEX_NIBBLE_MASK - DECIMAL_DIGIT_COUNT; ++digit ) {
     table.at('a' + digit) = static_cast<std::uint8_t>(DECIMAL_DIGIT_COUNT + digit);
     table.at('A' + digit) = static_cast<std::uint8_t>(DECIMAL_DIGIT_COUNT + digit);
   }
+
   return table;
 }
 
@@ -79,6 +82,7 @@ std::vector<std::byte> parse_hex_bytes(std::string_view text) {
   if ( text.size() % 2 != 0 ) {
     throw std::invalid_argument("field_codec: hex byte string must have even length");
   }
+
   std::vector<std::byte> bytes(text.size() / 2);
   unsigned int           seen = 0;  // every nibble read, or-ed: a non-digit (NOT_A_DIGIT) leaves a bit above the nibble
   for ( std::size_t i = 0; i < bytes.size(); ++i ) {
@@ -87,9 +91,11 @@ std::vector<std::byte> parse_hex_bytes(std::string_view text) {
     seen |= high | low;
     bytes.at(i) = static_cast<std::byte>((high << BITS_PER_HEX_DIGIT) | low);
   }
+
   if ( seen > HEX_NIBBLE_MASK ) {
     throw std::invalid_argument("field_codec: invalid hex digit");
   }
+
   return bytes;
 }
 
@@ -97,11 +103,13 @@ std::string format_hex_bytes(const std::vector<std::byte>& bytes) {
   static constexpr std::string_view DIGITS = "0123456789abcdef";
   std::string                       text;
   text.reserve(bytes.size() * 2);
+
   for ( const std::byte byte : bytes ) {
     const auto value = static_cast<unsigned int>(byte);
     text.push_back(DIGITS.at(value >> BITS_PER_HEX_DIGIT));
     text.push_back(DIGITS.at(value & HEX_NIBBLE_MASK));
   }
+
   return text;
 }
 
@@ -112,6 +120,7 @@ void ArrayReader::fail(std::string_view reason) const {
   if ( _text.size() > MESSAGE_TEXT_LIMIT ) {
     text += "...";
   }
+
   throw std::invalid_argument("parse_field: the array " + std::string(reason) + ": '" + text + "'");
 }
 
@@ -126,6 +135,7 @@ ArrayReader::ArrayReader(std::string_view text) : _text(text) {
   if ( whole.back() != '}' ) {
     fail("does not end with '}'");
   }
+
   _body = trimmed(whole.substr(1, whole.size() - 2));
   if ( ! _body.empty() ) {
     _estimate = static_cast<std::size_t>(std::ranges::count(_body, ',')) + 1;
@@ -145,18 +155,22 @@ std::string_view ArrayReader::bare_element() {
   const auto             length = static_cast<std::size_t>(stop - rest.begin());
   std::string_view       token = rest.substr(0, length);
   _at += length;  // at the comma, if there is one: `next` looks at it
+
   if ( stop != rest.end() && *stop != ',' ) {
     fail(*stop == '"' ? "has a quote inside an unquoted element" : "is nested or has a brace inside an unquoted element");
   }
+
   if ( ! token.empty() && (is_space(token.front()) || is_space(token.back())) ) {
     token = trimmed(token);
   }
+
   if ( token.empty() ) {
     fail("has an empty element (an empty string is written \"\")");
   }
   if ( is_null_word(token) ) {
     fail("has a NULL element, which a std::vector cannot hold");
   }
+
   return token;
 }
 
@@ -171,14 +185,18 @@ std::string_view ArrayReader::quoted_element() {
     }
     ++end;
   }
+
   if ( end >= _body.size() ) {
     fail("has a string that is never closed");
   }
+
   const std::string_view raw = _body.substr(start, end - start);
   _at = end + 1;
+
   if ( ! escaped ) {
     return raw;
   }
+
   _unescaped.clear();
   for ( std::size_t i = 0; i < raw.size(); ++i ) {
     if ( raw.at(i) == '\\' && i + 1 < raw.size() ) {
@@ -186,6 +204,7 @@ std::string_view ArrayReader::quoted_element() {
     }
     _unescaped += raw.at(i);
   }
+
   return _unescaped;
 }
 
@@ -197,8 +216,10 @@ std::optional<std::string_view> ArrayReader::next() {
     }
     return std::nullopt;
   }
+
   _after_comma = false;
   const std::string_view element = _body.at(_at) == '"' ? quoted_element() : bare_element();
+
   skip_spaces();
   if ( _at < _body.size() ) {
     if ( _body.at(_at) != ',' ) {
@@ -207,6 +228,7 @@ std::optional<std::string_view> ArrayReader::next() {
     ++_at;
     _after_comma = true;
   }
+
   return element;
 }
 

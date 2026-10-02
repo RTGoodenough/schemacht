@@ -21,6 +21,7 @@ TEST_CASE("rows are inserted with one array per column", "[insert]") {
       {t::Id{2}, t::Name{"bo"}, t::Nick{std::nullopt}, t::Score{-2}, t::Active{false}},
   };
   const std::vector<pg::detail::InsertStatement> statements = pg::detail::build_insert<t::People>(rows);
+
   REQUIRE(statements.size() == 1);
   CHECK(statements[0].sql == R"(INSERT INTO "people" ("id", "name", "nick", "score", "active") )"
                              R"(SELECT * FROM unnest($1::bigint[], $2::text[], $3::text[], $4::double precision[], $5::boolean[]))");
@@ -31,6 +32,7 @@ TEST_CASE("rows are inserted with one array per column", "[insert]") {
 TEST_CASE("generated columns are not inserted", "[insert]") {
   const std::vector<t::WithGenerated::row_type> rows{{t::Id{1}, t::Doubled{0}, t::Name{"x"}}};
   const auto                                    statements = pg::detail::build_insert<t::WithGenerated>(rows);
+
   CHECK(statements[0].sql == R"(INSERT INTO "with_generated" ("id", "name") SELECT * FROM unnest($1::bigint[], $2::text[]))");
   CHECK(statements[0].values.size() == 2);
 }
@@ -41,7 +43,9 @@ TEST_CASE("an array-typed column falls back to VALUES, split to fit the paramete
   for ( std::int64_t id = 0; id < 40000; ++id ) {
     rows.push_back({t::Id{id}, t::Tags{{"a", "b"}}});
   }
+
   const auto statements = pg::detail::build_insert<t::Tagged>(rows);
+
   REQUIRE(statements.size() == 2);  // 32767 rows of 2 parameters fit in one statement
   CHECK(statements[0].values.size() == std::size_t{2} * 32767);
   CHECK(statements[1].values.size() == std::size_t{2} * (40000 - 32767));

@@ -278,6 +278,7 @@ template <typename data_t, typename value_t>
     if ( ! std::in_range<data_t>(value) ) {
       throw std::out_of_range("query literal does not fit the column's type");
     }
+
     if constexpr ( std::signed_integral<data_t> ) {
       return Constant{.kind = ConstantKind::Signed, .bits = std::bit_cast<std::uint64_t>(static_cast<std::int64_t>(value))};
     } else {
@@ -323,6 +324,7 @@ template <schema::IsSchema schema_t, std::size_t dest_capacity, std::size_t sour
 constexpr std::size_t append_nodes(std::array<Node, dest_capacity>& dest, std::size_t& dest_count,
                                    const Predicate<schema_t, source_capacity>& source) {
   const std::size_t offset = dest_count;
+
   for ( std::size_t i = 0; i < source.count; ++i ) {
     Node node = source.nodes.at(i);
     if ( node.kind == NodeKind::And || node.kind == NodeKind::Or ) {
@@ -333,6 +335,7 @@ constexpr std::size_t append_nodes(std::array<Node, dest_capacity>& dest, std::s
     }
     dest.at(dest_count++) = node;
   }
+
   return source.root + offset;
 }
 
@@ -343,9 +346,11 @@ template <NodeKind kind, schema::IsSchema schema_t, std::size_t lhs_capacity, st
   std::size_t                                          count = 0;
   const std::size_t                                    lhs_root = append_nodes(result.nodes, count, lhs);
   const std::size_t                                    rhs_root = append_nodes(result.nodes, count, rhs);
+
   result.nodes.at(count) = Node{.kind = kind, .lhs = lhs_root, .rhs = rhs_root};
   result.root = count;
   result.count = count + 1;
+
   return result;
 }
 
@@ -369,9 +374,11 @@ template <schema::IsSchema schema_t, std::size_t capacity>
   Predicate<schema_t, capacity + 1> result;
   std::size_t                       count = 0;
   const std::size_t                 operand_root = detail::append_nodes(result.nodes, count, operand);
+
   result.nodes.at(count) = Node{.kind = NodeKind::Not, .lhs = operand_root};
   result.root = count;
   result.count = count + 1;
+
   return result;
 }
 
@@ -573,6 +580,7 @@ class ColumnRef {
   [[nodiscard]] constexpr Predicate<schema_t, 1> in(ArgRef<slot_idx> /*arg*/) const {
     static_assert(! util::SqlArray<typename schema_t::template field_at<column_idx>::value_type>,
                   "in(...) can't test a column that is itself an array (a std::vector): compare it with == instead");
+
     return single(Node{
         .kind = NodeKind::InList,
         .column = column_idx,
@@ -621,6 +629,7 @@ struct On {
   [[nodiscard]] static constexpr auto col() {
     constexpr std::size_t IDX = schema_t::template field_index<name>();
     static_assert(IDX != schema_t::FIELD_COUNT, "query::On::col: the schema has no column with that name");
+
     return ColumnRef<schema_t, IDX>{};
   }
 };

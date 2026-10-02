@@ -157,6 +157,7 @@ struct EnumColumn {
     if ( found == LABELS.end() ) {
       throw std::invalid_argument("'" + std::string(label) + "' is not a label of the enum " + std::string(SQL_TYPE));
     }
+
     return static_cast<enum_t>(found - LABELS.begin());
   }
 
@@ -166,6 +167,7 @@ struct EnumColumn {
     if ( index < 0 || static_cast<std::size_t>(index) >= LABELS.size() ) {
       throw std::invalid_argument("the value " + std::to_string(index) + " has no label in the enum " + std::string(SQL_TYPE));
     }
+
     return std::string(LABELS.at(static_cast<std::size_t>(index)));
   }
 

@@ -157,6 +157,7 @@ TEST_CASE("a WrappedColumn is stored as the type it wraps", "[column_type]") {
 
   CHECK(pg::format_field(OrderId{42}) == "42");
   CHECK(pg::parse_field<OrderId>("-3") == OrderId{-3});
+
   const std::vector<std::byte> eight{std::byte{0}, std::byte{0}, std::byte{0}, std::byte{0}, std::byte{0}, std::byte{0}, std::byte{1}, std::byte{0}};
   CHECK(pg::FieldCodec<OrderId>::parse_binary(eight) == OrderId{256});
   CHECK(pg::FieldCodec<OrderId>::binary_accepts(pg::OID_INT8));
@@ -170,6 +171,7 @@ TEST_CASE("an EnumColumn is stored as its labels", "[column_type]") {
   CHECK(pg::format_field(Color::Green) == "green");
   CHECK(pg::parse_field<Color>("red") == Color::Red);
   CHECK(pg::FieldCodec<Color>::parse_binary(bytes_of("green")) == Color::Green);
+
   CHECK_THROWS_AS(pg::parse_field<Color>("blue"), std::invalid_argument);
   CHECK_THROWS_AS(pg::format_field(static_cast<Color>(7)), std::invalid_argument);
 }
@@ -178,8 +180,10 @@ TEST_CASE("a column of an own type is inserted with its SQL type", "[column_type
   using Id = sch::Field<OrderId, "id", sch::KeyRole::Primary>;
   using Shade = sch::Field<Color, "shade">;
   using Paints = sch::Schema<"paints", Id, Shade>;
+
   const std::vector<Paints::row_type> rows{Paints::make_row(OrderId{1}, Color::Red)};
   const auto                          statements = pg::detail::build_insert<Paints>(rows);
+
   CHECK(statements.at(0).sql == R"(INSERT INTO "paints" ("id", "shade") SELECT * FROM unnest($1::bigint[], $2::color[]))");
   CHECK(statements.at(0).values == std::vector<std::string>{R"({"1"})", R"({"red"})"});
 }
@@ -193,8 +197,10 @@ TEST_CASE("as_text views bytes as the characters they are", "[column_type]") {
 TEST_CASE("an EnumIntegerColumn is stored as its number", "[column_type]") {
   STATIC_REQUIRE(sql::type_name<Priority>() == "smallint");  // a uint8_t's values fit the next wider signed type
   STATIC_REQUIRE(pg::HasBinaryForm<Priority>);
+
   CHECK(pg::format_field(Priority::High) == "2");
   CHECK(pg::parse_field<Priority>("1") == Priority::Normal);
+
   CHECK(pg::FieldCodec<Priority>::parse_binary(words({2})) == Priority::High);
   CHECK(pg::FieldCodec<Priority>::binary_accepts(pg::OID_INT2));
   CHECK_FALSE(pg::FieldCodec<Priority>::binary_accepts(pg::OID_TEXT));
@@ -204,10 +210,13 @@ TEST_CASE("a ScaledNumericColumn is stored as a numeric", "[column_type]") {
   STATIC_REQUIRE(schemacht::ScaledMember<&Price::cents>);
   STATIC_REQUIRE_FALSE(schemacht::ScaledMember<&Narrow::value>);  // an int32 count would overflow long before a numeric(12,2) does
   STATIC_REQUIRE(sql::type_name<Price>() == "numeric(10,2)");
+
   CHECK(pg::format_field(Price{-5}) == "-0.05");
   CHECK(pg::parse_field<Price>("19.99") == Price{1999});
+
   CHECK(pg::FieldCodec<Price>::parse_binary(words({2, 0, 0, 2, 19, 9900})) == Price{1999});
   CHECK(pg::FieldCodec<Price>::binary_accepts(pg::OID_NUMERIC));
+
   CHECK_THROWS_AS(pg::parse_field<Price>("0.001"), std::invalid_argument);
 }
 
@@ -218,6 +227,7 @@ TEST_CASE("a ConvertedColumn is stored as another type", "[column_type]") {
 
   CHECK(pg::format_field(std::filesystem::path("/var/log/app.log")) == "/var/log/app.log");
   CHECK(pg::parse_field<std::filesystem::path>("a/b") == std::filesystem::path("a/b"));
+
   CHECK(pg::format_field(std::chrono::milliseconds(1500)) == "1500");
   CHECK(pg::FieldCodec<std::chrono::milliseconds>::parse_binary(words({0, 0, 0, 7})) == std::chrono::milliseconds(7));
   CHECK(pg::FieldCodec<std::chrono::milliseconds>::binary_accepts(pg::OID_INT8));

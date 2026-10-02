@@ -42,6 +42,7 @@ std::int64_t checked_add(std::int64_t left, std::int64_t right) {
        (right < 0 && left < std::numeric_limits<std::int64_t>::min() - right) ) {
     throw std::invalid_argument("the time is outside what can be held in microseconds");
   }
+
   return left + right;
 }
 
@@ -50,6 +51,7 @@ std::int64_t checked_multiply(std::int64_t left, std::int64_t right) {
   if ( left > std::numeric_limits<std::int64_t>::max() / right || left < std::numeric_limits<std::int64_t>::min() / right ) {
     throw std::invalid_argument("the time is outside what can be held in microseconds");
   }
+
   return left * right;
 }
 
@@ -76,6 +78,7 @@ std::int64_t days_from_civil(const Civil& date) {
   const std::uint64_t shifted_month = date.month > 2 ? date.month - 3 : date.month + 9;
   const std::uint64_t day_of_year = (((153 * shifted_month) + 2) / 5) + date.day - 1;
   const std::uint64_t day_of_era = (year_of_era * 365) + (year_of_era / 4) - (year_of_era / 100) + day_of_year;
+
   return (era * 146'097) + static_cast<std::int64_t>(day_of_era) - 719'468;
 }
 
@@ -89,6 +92,7 @@ Civil civil_from_days(std::int64_t days) {
   const auto          day = static_cast<unsigned>(day_of_year - (((153 * shifted_month) + 2) / 5) + 1);
   const auto          month = static_cast<unsigned>(shifted_month < 10 ? shifted_month + 3 : shifted_month - 9);
   const std::int64_t  year = static_cast<std::int64_t>(year_of_era) + (era * 400) + (month <= 2 ? 1 : 0);
+
   return Civil{.year = year, .month = month, .day = day};
 }
 
@@ -98,6 +102,7 @@ bool valid_civil(const Civil& date) {
   if ( date.month < 1 || date.month > MONTHS_PER_YEAR || date.day < 1 ) {
     return false;
   }
+
   const Civil after = civil_from_days(days_from_civil(date));
   return after.year == date.year && after.month == date.month && after.day == date.day;  // rejects Feb 30 and the like
 }
@@ -121,6 +126,7 @@ class Reader {
     if ( ! next_is(chr) ) {
       refuse(_what, _text);
     }
+
     _rest.remove_prefix(1);
   }
 
@@ -129,6 +135,7 @@ class Reader {
     if ( ! _rest.starts_with(word) ) {
       return false;
     }
+
     _rest.remove_prefix(word.size());
     return true;
   }
@@ -139,19 +146,23 @@ class Reader {
     while ( length < _rest.size() && length < width.most && _rest.at(length) >= '0' && _rest.at(length) <= '9' ) {
       ++length;
     }
+
     if ( length < width.least ) {
       refuse(_what, _text);
     }
+
     std::int64_t value = 0;
     const char*  begin = _rest.data();
     // NOLINTNEXTLINE(cppcoreguidelines-pro-bounds-pointer-arithmetic) -- the end of the digits just counted
     if ( const auto [end, error] = std::from_chars(begin, begin + length, value); error != std::errc{} ) {
       refuse(_what, _text);
     }
+
     _rest.remove_prefix(length);
     if ( count != nullptr ) {
       *count = length;
     }
+
     return value;
   }
 
@@ -175,11 +186,13 @@ constexpr Width TWO_DIGITS{.least = 2, .most = 2};
 Civil read_civil(Reader& reader) {
   constexpr std::size_t MAX_YEAR_DIGITS = 7;
   Civil                 date;
+
   date.year = reader.digits({.least = 4, .most = MAX_YEAR_DIGITS});
   reader.expect('-');
   date.month = static_cast<unsigned>(reader.digits(TWO_DIGITS));
   reader.expect('-');
   date.day = static_cast<unsigned>(reader.digits(TWO_DIGITS));
+
   return date;
 }
 
@@ -206,19 +219,23 @@ std::string format_timestamp(std::int64_t micros, bool zoned) {
   if ( micros == INFINITE_PAST ) {
     return "-infinity";
   }
+
   const std::int64_t days = floor_divide(micros, MICROS_PER_DAY);
   const std::int64_t of_day = micros - (days * MICROS_PER_DAY);
   const std::int64_t seconds = of_day / MICROS_PER_SECOND;
-  bool               before_common_era = false;
-  std::string        text = civil_text(civil_from_days(days), before_common_era);
+
+  bool        before_common_era = false;
+  std::string text = civil_text(civil_from_days(days), before_common_era);
   text += std::format(" {:02}:{:02}:{:02}.{:06}", seconds / SECONDS_PER_HOUR, (seconds % SECONDS_PER_HOUR) / SECONDS_PER_MINUTE,
                       seconds % SECONDS_PER_MINUTE, of_day % MICROS_PER_SECOND);
+
   if ( zoned ) {
     text += "+00";
   }
   if ( before_common_era ) {
     text += " BC";
   }
+
   return text;
 }
 
@@ -229,17 +246,20 @@ std::int64_t parse_timestamp(std::string_view text, bool zoned) {
   if ( text == "-infinity" ) {
     return INFINITE_PAST;
   }
+
   Reader reader(text, zoned ? "a timestamptz in ISO form" : "a timestamp in ISO form");
   Civil  date = read_civil(reader);
   if ( ! reader.take(" ") && ! reader.take("T") ) {
     reader.refuse_here();
   }
+
   const std::int64_t hours = reader.digits(TWO_DIGITS);
   reader.expect(':');
   const std::int64_t minutes = reader.digits(TWO_DIGITS);
   reader.expect(':');
   const std::int64_t seconds = reader.digits(TWO_DIGITS);
-  std::int64_t       fraction = 0;
+
+  std::int64_t fraction = 0;
   if ( reader.take(".") ) {
     std::size_t count = 0;
     fraction = reader.digits({.least = 1, .most = MAX_FRACTION_DIGITS}, &count);
@@ -247,6 +267,7 @@ std::int64_t parse_timestamp(std::string_view text, bool zoned) {
       fraction *= DECIMAL_BASE;
     }
   }
+
   std::int64_t offset_seconds = 0;
   if ( zoned ) {
     const bool behind = reader.next_is('-');
@@ -262,11 +283,13 @@ std::int64_t parse_timestamp(std::string_view text, bool zoned) {
     }
     offset_seconds = behind ? -offset_seconds : offset_seconds;
   }
+
   read_era(reader, date);
   reader.refuse_if_not_at_end();
   if ( ! valid_civil(date) || hours > LAST_HOUR || minutes > LAST_MINUTE || seconds > LAST_SECOND ) {
     reader.refuse_here();
   }
+
   const std::int64_t of_day =
       (((hours * SECONDS_PER_HOUR) + (minutes * SECONDS_PER_MINUTE) + seconds - offset_seconds) * MICROS_PER_SECOND) + fraction;
   return checked_add(checked_multiply(days_from_civil(date), MICROS_PER_DAY), of_day);
@@ -277,6 +300,7 @@ std::int64_t parse_binary_timestamp(std::span<const std::byte> bytes) {
   if ( bytes.size() != TIMESTAMP_BYTES ) {
     throw std::invalid_argument("parse_binary: a timestamp is 8 bytes, not " + std::to_string(bytes.size()));
   }
+
   const std::int64_t since_2000 = binary_integer(bytes);
   if ( since_2000 == std::numeric_limits<std::int64_t>::max() ) {
     return INFINITE_FUTURE;
@@ -284,6 +308,7 @@ std::int64_t parse_binary_timestamp(std::span<const std::byte> bytes) {
   if ( since_2000 == std::numeric_limits<std::int64_t>::min() ) {
     return INFINITE_PAST;
   }
+
   return checked_add(since_2000, MICROS_TO_POSTGRES_EPOCH);
 }
 
@@ -294,6 +319,7 @@ std::string format_date(std::int64_t days) {
   if ( days == INFINITE_PAST ) {
     return "-infinity";
   }
+
   bool              before_common_era = false;
   const std::string text = civil_text(civil_from_days(days), before_common_era);
   return before_common_era ? text + " BC" : text;
@@ -306,6 +332,7 @@ std::int64_t parse_date(std::string_view text) {
   if ( text == "-infinity" ) {
     return INFINITE_PAST;
   }
+
   Reader reader(text, "a date in ISO form");
   Civil  date = read_civil(reader);
   read_era(reader, date);
@@ -313,6 +340,7 @@ std::int64_t parse_date(std::string_view text) {
   if ( ! valid_civil(date) ) {
     reader.refuse_here();
   }
+
   return days_from_civil(date);
 }
 
@@ -321,6 +349,7 @@ std::int64_t parse_binary_date(std::span<const std::byte> bytes) {
   if ( bytes.size() != DATE_BYTES ) {
     throw std::invalid_argument("parse_binary: a date is 4 bytes, not " + std::to_string(bytes.size()));
   }
+
   const std::int64_t since_2000 = binary_integer(bytes);
   if ( since_2000 == std::numeric_limits<std::int32_t>::max() ) {
     return INFINITE_FUTURE;
@@ -328,6 +357,7 @@ std::int64_t parse_binary_date(std::span<const std::byte> bytes) {
   if ( since_2000 == std::numeric_limits<std::int32_t>::min() ) {
     return INFINITE_PAST;
   }
+
   return since_2000 + DAYS_TO_POSTGRES_EPOCH;
 }
 
@@ -348,6 +378,7 @@ std::int64_t days_of(const std::chrono::year_month_day& date) {
   if ( ! date.ok() ) {
     throw std::invalid_argument("format_field: the date does not exist");
   }
+
   return std::chrono::sys_days(date).time_since_epoch().count();
 }
 
@@ -358,11 +389,13 @@ std::chrono::year_month_day date_of(std::int64_t days) {
   if ( days == INFINITE_PAST ) {
     return EARLIEST_DATE;
   }
+
   const std::int64_t latest = std::chrono::sys_days(LATEST_DATE).time_since_epoch().count();
   const std::int64_t earliest = std::chrono::sys_days(EARLIEST_DATE).time_since_epoch().count();
   if ( days >= latest || days <= earliest ) {  // those two stand for infinity
     throw std::invalid_argument("the date is outside the years std::chrono::year holds");
   }
+
   return std::chrono::year_month_day{std::chrono::sys_days{std::chrono::days{days}}};
 }
 

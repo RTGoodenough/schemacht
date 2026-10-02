@@ -149,11 +149,14 @@ bool read_rows(const chunk_t& chunk, handler_t& on_row) {
         std::invoke(on_row, read_row<result_t, format>(chunk, row));
       }
     }
+
     return true;
   };
+
   if ( ! chunk.is_binary() ) {
     return each_row.template operator()<ResultFormat::Text>();
   }
+
   if constexpr ( BinaryReadableRow<result_t> ) {
     check_column_types<result_t>(chunk);
     return each_row.template operator()<ResultFormat::Binary>();

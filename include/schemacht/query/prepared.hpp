@@ -46,11 +46,13 @@ constexpr void note_slot(Slots<capacity>& slots, std::size_t slot, const SlotInf
   if ( slot >= capacity ) {
     throw std::logic_error("query arguments must be numbered from 0 without gaps");
   }
+
   SlotInfo& known = slots.info.at(slot);
   if ( known.seen &&
        (known.column != use.column || known.is_list != use.is_list || known.is_limit != use.is_limit || known.is_real != use.is_real) ) {
     throw std::logic_error("query argument is used with columns or list-ness that disagree");
   }
+
   known = use;
   known.seen = true;
   if ( slot + 1 > slots.count ) {
@@ -66,6 +68,7 @@ constexpr void note_predicate_slots(Slots<capacity>& slots, const Predicate<sche
     if ( (node.kind == NodeKind::Compare || node.kind == NodeKind::InList || node.kind == NodeKind::Call) && node.operand.kind == OperandKind::Arg ) {
       note_slot(slots, node.operand.slot, SlotInfo{.column = node.column, .is_list = node.kind == NodeKind::InList});
     }
+
     if ( node.kind == NodeKind::Call && node.operation->takes_real ) {
       note_slot(slots, node.extra.slot, SlotInfo{.is_real = true});
     }
@@ -94,15 +97,19 @@ template <schema::IsSchema schema_t, std::size_t predicate_capacity, std::size_t
     const Query<schema_t, predicate_capacity, order_capacity>& query) {
   Slots<(2 * predicate_capacity) + order_capacity + 1> slots;  // a call takes up to two, each ordering term one, and the limit one
   note_predicate_slots(slots, query.predicate);
+
   for ( std::size_t i = 0; i < query.order_count; ++i ) {
     if ( const OrderTerm& term = query.order.at(i); term.ranking != nullptr ) {
       note_slot(slots, term.slot, SlotInfo{.column = term.column});
     }
   }
+
   if ( query.row_limit.kind == LimitKind::Arg ) {
     note_slot(slots, query.row_limit.slot, SlotInfo{.is_limit = true});
   }
+
   check_no_gaps(slots);
+
   return slots;
 }
 
@@ -116,8 +123,11 @@ template <schema::IsSchema schema_t, std::size_t set_capacity, std::size_t predi
       note_slot(slots, term.value.slot, SlotInfo{.column = term.column});
     }
   }
+
   note_predicate_slots(slots, update.predicate);
+
   check_no_gaps(slots);
+
   return slots;
 }
 
@@ -126,7 +136,9 @@ template <schema::IsSchema schema_t, std::size_t predicate_capacity>
 [[nodiscard]] constexpr Slots<(2 * predicate_capacity) + 1> collect_slots(const Delete<schema_t, predicate_capacity>& del) {
   Slots<(2 * predicate_capacity) + 1> slots;
   note_predicate_slots(slots, del.predicate);
+
   check_no_gaps(slots);
+
   return slots;
 }
 
@@ -275,6 +287,7 @@ class Prepared {
   template <typename... arg_ts>
   [[nodiscard]] static TypedQuery<schema_type, result_type> bind(arg_ts&&... args) {
     static_assert(sizeof...(arg_ts) == ARG_COUNT, "wrong number of arguments for this query");
+
     return bind_in_order(std::index_sequence_for<arg_ts...>{}, std::forward<arg_ts>(args)...);
   }
 
@@ -284,20 +297,24 @@ class Prepared {
     if constexpr ( SLOTS.info.at(slot_idx).is_limit ) {
       static_assert(std::integral<std::remove_cvref_t<arg_t>> && util::NonNarrowingTo<arg_t, std::int64_t>,
                     "a limit argument must be an integer that converts to std::int64_t without narrowing");
+
       const std::int64_t count{std::forward<arg_t>(arg)};
       if ( count < 0 ) {
         throw std::out_of_range("query limit argument is negative");
       }
+
       return param_type{std::in_place_type<std::int64_t>, count};
     } else if constexpr ( SLOTS.info.at(slot_idx).is_real ) {
       static_assert(! std::same_as<std::remove_cvref_t<arg_t>, bool> && util::NonNarrowingTo<arg_t, double>,
                     "this argument is a number (such as a distance) that converts to double without narrowing: write 5.0, not 5");
+
       return param_type{std::in_place_type<double>, double{std::forward<arg_t>(arg)}};
     } else {
       using data_t = schema_type::template field_at<SLOTS.info.at(slot_idx).column>::value_type;
       using expected_t = std::conditional_t<SLOTS.info.at(slot_idx).is_list, std::vector<data_t>, data_t>;
       static_assert(util::NonNarrowingTo<arg_t, expected_t>,
                     "query argument has the wrong type for its column, or would be narrowed (e.g. -1 for an unsigned column)");
+
       // NOLINTNEXTLINE(cppcoreguidelines-pro-bounds-array-to-pointer-decay) -- a string literal argument becomes a std::string here
       return param_type{std::in_place_type<expected_t>, expected_t{std::forward<arg_t>(arg)}};
     }

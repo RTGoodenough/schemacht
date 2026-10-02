@@ -105,6 +105,7 @@ class SqlScanner {
   constexpr Skipped skip_non_code() {
     const char chr = peek();
     bool       ended = true;
+
     if ( chr == '\'' ) {
       ended = skip_quoted('\'', escape_strings());
     } else if ( chr == '"' ) {
@@ -118,6 +119,7 @@ class SqlScanner {
     } else {
       return Skipped::Nothing;
     }
+
     return ended ? Skipped::Text : Skipped::Unterminated;
   }
 
@@ -130,6 +132,7 @@ class SqlScanner {
   /** @return Whether the quoted text ended (false: the statement ran out first). */
   constexpr bool skip_quoted(char quote, bool backslash_escapes) {
     advance();
+
     while ( ! done() ) {
       if ( (backslash_escapes && peek() == '\\') || (peek() == quote && peek(1) == quote) ) {
         advance(2);  // a backslash escapes the next character (in an E'' string), and a doubled quote is one quote inside the text
@@ -140,6 +143,7 @@ class SqlScanner {
         advance();
       }
     }
+
     return false;
   }
 
@@ -160,6 +164,7 @@ class SqlScanner {
         advance();
       }
     }
+
     return false;
   }
 
@@ -180,6 +185,7 @@ class SqlScanner {
 [[nodiscard]] constexpr PlaceholderCheck check_placeholders(std::string_view sql, std::size_t argument_count) {
   std::array<bool, MAX_RAW_ARGUMENTS + 1> used{};
   detail::SqlScanner                      scanner(sql);
+
   while ( ! scanner.done() ) {
     const detail::Skipped skipped = scanner.skip_non_code();
     if ( skipped == detail::Skipped::Unterminated ) {
@@ -188,14 +194,17 @@ class SqlScanner {
     if ( skipped == detail::Skipped::Text ) {
       continue;
     }
+
     if ( scanner.peek() != '$' || scanner.after_name_char() ) {
       scanner.advance();
       continue;
     }
+
     scanner.advance();
     if ( ! detail::is_digit(scanner.peek()) ) {
       return {.problem = PlaceholderProblem::DollarQuote};
     }
+
     std::size_t number = 0;
     while ( detail::is_digit(scanner.peek()) ) {
       number = (number * detail::DECIMAL_BASE) + static_cast<std::size_t>(scanner.peek() - '0');
@@ -204,16 +213,20 @@ class SqlScanner {
         return {.problem = PlaceholderProblem::Beyond, .number = number};
       }
     }
+
     if ( number == 0 || number > argument_count ) {
       return {.problem = PlaceholderProblem::Beyond, .number = number};
     }
+
     used.at(number) = true;
   }
+
   for ( std::size_t number = 1; number <= argument_count; ++number ) {
     if ( ! used.at(number) ) {
       return {.problem = PlaceholderProblem::Unused, .number = number};
     }
   }
+
   return {};
 }
 
@@ -311,6 +324,7 @@ class RawStatement {
   template <typename... arg_ts>
   [[nodiscard]] static BoundRawStatement<RawStatement> bind(arg_ts&&... args) {
     static_assert(sizeof...(arg_ts) == ARGUMENT_COUNT, "wrong number of arguments for this raw statement");
+
     return bind_in_order(std::index_sequence_for<arg_ts...>{}, std::forward<arg_ts>(args)...);
   }
 
@@ -319,6 +333,7 @@ class RawStatement {
   [[nodiscard]] static BoundRawStatement<RawStatement> bind_in_order(std::index_sequence<idx...> /*indices*/, arg_ts&&... args) {
     static_assert((util::NonNarrowingTo<arg_ts, std::tuple_element_t<idx, argument_types>> && ...),
                   "an argument does not have the type its raw statement declares, or would be narrowed");
+
     return BoundRawStatement<RawStatement>(argument_types{std::tuple_element_t<idx, argument_types>{std::forward<arg_ts>(args)}...});
   }
 

@@ -22,9 +22,11 @@ template <std::unsigned_integral value_t>
 value_t load_big_endian(std::span<const std::byte> bytes) {
   value_t value = 0;
   std::memcpy(&value, bytes.data(), sizeof(value_t));
+
   if constexpr ( std::endian::native == std::endian::little ) {
     value = std::byteswap(value);
   }
+
   return value;
 }
 
@@ -61,8 +63,10 @@ std::span<const std::byte> BinaryReader::bytes(std::size_t count) {
   if ( count > _rest.size() ) {
     throw std::invalid_argument("parse_binary: the value ends " + std::to_string(count - _rest.size()) + " bytes early");
   }
+
   const std::span<const std::byte> taken = _rest.first(count);
   _rest = _rest.subspan(count);
+
   return taken;
 }
 
@@ -87,18 +91,21 @@ BinaryArrayReader::BinaryArrayReader(std::span<const std::byte> bytes) : _reader
   [[maybe_unused]] const std::int32_t has_null = _reader.int32();  // a NULL element is found, and refused, where it is
   // NOLINTNEXTLINE(cppcoreguidelines-prefer-member-initializer) -- the header is read in order, and the element type is its third field
   _element_type = _reader.uint32();
+
   if ( dimensions == 0 ) {
     return;  // an empty array has no dimension entry
   }
   if ( dimensions != 1 ) {
     throw std::invalid_argument("parse_binary: a multi-dimensional array does not fit a list");
   }
+
   const std::int32_t                  length = _reader.int32();
   [[maybe_unused]] const std::int32_t lower_bound = _reader.int32();
   // Every element takes at least its length field, so a count above that is a lie (and would be a huge reserve).
   if ( length < 0 || static_cast<std::size_t>(length) > _reader.remaining() / ELEMENT_LENGTH_BYTES ) {
     throw std::invalid_argument("parse_binary: the array says it has " + std::to_string(length) + " elements, more than its bytes can hold");
   }
+
   _size = static_cast<std::size_t>(length);
 }
 
@@ -107,6 +114,7 @@ std::span<const std::byte> BinaryArrayReader::next() {
   if ( length < 0 ) {
     throw std::invalid_argument("parse_binary: a NULL element does not fit a list");
   }
+
   return _reader.bytes(static_cast<std::size_t>(length));
 }
 

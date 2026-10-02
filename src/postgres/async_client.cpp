@@ -39,6 +39,7 @@ std::string trimmed(const char* message) {
   while ( ! text.empty() && (text.back() == '\n' || text.back() == '\r') ) {
     text.pop_back();
   }
+
   return text;
 }
 
@@ -77,10 +78,12 @@ std::string apply_session(PGconn* connection, std::string_view setup) {
   if ( setup.empty() ) {
     return "";
   }
+
   pg_result*        result = PQexec(connection, std::string(setup).c_str());
   const bool        worked = result != nullptr && PQresultStatus(result) == PGRES_COMMAND_OK;
   const std::string message = worked ? "" : trimmed(result != nullptr ? PQresultErrorMessage(result) : PQerrorMessage(connection));
   PQclear(result);
+
   return message;
 }
 
@@ -99,10 +102,12 @@ std::uint64_t affected_rows_of(pg_result* raw) {
   if ( raw == nullptr ) {
     return 0;
   }
+
   const std::string_view text = PQcmdTuples(raw);
   std::uint64_t          count = 0;
   // NOLINTNEXTLINE(cppcoreguidelines-pro-bounds-pointer-arithmetic) -- the end of the tag's digits
   [[maybe_unused]] const auto parsed = std::from_chars(text.data(), text.data() + text.size(), count);  // no digits: stays 0
+
   return count;
 }
 
@@ -128,6 +133,7 @@ QueryResult& QueryResult::operator=(QueryResult&& other) noexcept {
   _column_count = std::exchange(other._column_count, 0);
   _binary = std::exchange(other._binary, false);
   _affected_rows = std::exchange(other._affected_rows, 0);
+
   return *this;
 }
 
@@ -137,6 +143,7 @@ std::string_view QueryResult::column_name(std::size_t column) const {
   if ( column >= _column_count ) {
     throw std::out_of_range("QueryResult::column_name: no such column");
   }
+
   return PQfname(_raw.get(), static_cast<int>(column));
 }
 
@@ -144,6 +151,7 @@ std::uint32_t QueryResult::column_type(std::size_t column) const {
   if ( column >= _column_count ) {
     throw std::out_of_range("QueryResult::column_type: no such column");
   }
+
   return PQftype(_raw.get(), static_cast<int>(column));
 }
 
@@ -151,11 +159,14 @@ std::optional<std::string_view> QueryResult::field(std::size_t row, std::size_t 
   if ( row >= _row_count || column >= _column_count ) {
     throw std::out_of_range("QueryResult::field: no such field");
   }
+
   const int row_index = static_cast<int>(row);
   const int column_index = static_cast<int>(column);
+
   if ( PQgetisnull(_raw.get(), row_index, column_index) != 0 ) {
     return std::nullopt;
   }
+
   return std::string_view{PQgetvalue(_raw.get(), row_index, column_index),
                           static_cast<std::size_t>(PQgetlength(_raw.get(), row_index, column_index))};
 }
@@ -225,6 +236,7 @@ class AsyncClient::Impl {
     if ( options.connections == 0 ) {
       throw std::invalid_argument("AsyncClient needs at least one connection");
     }
+
     _workers = std::make_unique<async::ThreadPool>(options.workers);
 
     try {
@@ -234,6 +246,7 @@ class AsyncClient::Impl {
       close_everything();
       throw;
     }
+
     _idle = _connections;
     _reactor = std::thread([this] { reactor_loop(); });
   }
@@ -249,8 +262,10 @@ class AsyncClient::Impl {
       _stopping = true;
     }
     wake();
+
     _reactor.join();
     _workers->shutdown();  // runs every completion still posted, while `_workers` is still valid for the ones that post more
+
     // A reconnect still in progress is dropped: its connection is closed below with the others.
     close_everything();
   }
@@ -276,6 +291,7 @@ class AsyncClient::Impl {
       });
       return;
     }
+
     enqueue(Operation{
         .sql = std::move(sql),
         .params = std::move(params),
@@ -341,6 +357,7 @@ class AsyncClient::Impl {
         throw std::runtime_error("could not connect to Postgres: " + message);
       }
       _connections.push_back(connection);
+
       if ( const std::string message = apply_session(connection, _session_sql); ! message.empty() ) {
         throw std::runtime_error("could not apply the session settings to a Postgres connection: " + message);
       }
@@ -356,10 +373,12 @@ class AsyncClient::Impl {
     if ( ! impl->_on_notice ) {
       return;
     }
+
     const auto field = [result](int code) {
       const char* value = PQresultErrorField(result, code);
       return value != nullptr ? std::string_view(value) : std::string_view();
     };
+
     try {
       impl->_on_notice(Notice{.severity = field(PG_DIAG_SEVERITY), .sqlstate = field(PG_DIAG_SQLSTATE), .message = field(PG_DIAG_MESSAGE_PRIMARY)});
     } catch ( ... ) {  // NOLINT(bugprone-empty-catch) -- a notice handler's error has nowhere to go: it must not reach libpq
@@ -371,6 +390,7 @@ class AsyncClient::Impl {
     if ( pipe2(ends.data(), O_NONBLOCK | O_CLOEXEC) != 0 ) {
       throw std::runtime_error("could not create the reactor's wake-up pipe");
     }
+
     _wake_read = ends.at(0);
     _wake_write = ends.at(1);
   }
@@ -380,6 +400,7 @@ class AsyncClient::Impl {
       PQfinish(connection);
     }
     _connections.clear();
+
     for ( const int descriptor : {_wake_read, _wake_write} ) {
       if ( descriptor >= 0 ) {
         close(descriptor);
@@ -434,6 +455,7 @@ class AsyncClient::Impl {
     if ( operation.lease && operation.lease->lost ) {
       return runtime_error_ptr(LEASE_LOST);
     }
+
     return nullptr;
   }
 
@@ -446,6 +468,7 @@ class AsyncClient::Impl {
         reject(std::move(operation), error);
         return;
       }
+
       if ( operation.lease ) {
         const std::shared_ptr<LeaseState> lease = operation.lease;
         lease->queued.push_back(std::move(operation));
@@ -468,12 +491,15 @@ class AsyncClient::Impl {
     std::vector<Active> active;
     std::vector<pollfd> descriptors;
     PollLayout          layout;
+
     while ( true ) {
       const bool stopping = start_queued(active);
       serve_streams(active, stopping);
+
       if ( stopping && active.empty() ) {
         return;
       }
+
       collect_descriptors(active, descriptors, layout);
       if ( poll(descriptors.data(), static_cast<nfds_t>(descriptors.size()), -1) < 0 ) {
         if ( errno != EINTR ) {
@@ -481,6 +507,7 @@ class AsyncClient::Impl {
         }
         continue;
       }
+
       if ( descriptors.front().revents != 0 ) {
         drain_wake();
       }
@@ -493,16 +520,19 @@ class AsyncClient::Impl {
   void collect_descriptors(const std::vector<Active>& active, std::vector<pollfd>& descriptors, PollLayout& layout) const {
     descriptors.clear();
     layout.cancel_at.clear();
+
     descriptors.push_back(pollfd{.fd = _wake_read, .events = poll_events(POLLIN), .revents = 0});
     for ( const Active& statement : active ) {
       descriptors.push_back(pollfd{.fd = PQsocket(statement.connection), .events = interest_of(statement), .revents = 0});
     }
+
     for ( const Active& statement : active ) {
       layout.cancel_at.push_back(statement.cancel != nullptr ? descriptors.size() : 0);
       if ( statement.cancel != nullptr ) {
         descriptors.push_back(pollfd{.fd = PQcancelSocket(statement.cancel), .events = statement.cancel_events, .revents = 0});
       }
     }
+
     layout.reconnects_at = descriptors.size();
     for ( const Reconnecting& reconnect : _reconnecting ) {
       descriptors.push_back(pollfd{.fd = PQsocket(reconnect.connection), .events = reconnect.events, .revents = 0});
@@ -516,6 +546,7 @@ class AsyncClient::Impl {
       finish(statement);
     }
     active.clear();
+
     for ( const Reconnecting& reconnect : _reconnecting ) {
       push_idle(reconnect.connection);  // the next statement on it fails, and tries again
     }
@@ -540,6 +571,7 @@ class AsyncClient::Impl {
       if ( const std::int16_t events = descriptors.at(i + 1).revents; ! done && events != 0 ) {
         done = advance(statement, events);
       }
+
       if ( done ) {
         finish(statement);
         active.erase(active.begin() + static_cast<std::ptrdiff_t>(i));
@@ -555,6 +587,7 @@ class AsyncClient::Impl {
     if ( statement.paused || statement.read_done ) {
       return 0;  // a paused stream leaves the rows in the socket, so the server has to wait
     }
+
     return poll_events(POLLIN);
   }
 
@@ -570,13 +603,16 @@ class AsyncClient::Impl {
         lock.lock();
         continue;
       }
+
       if ( _idle.empty() ) {
         break;
       }
+
       Operation operation = std::move(_queued.front());
       _queued.pop_front();
       PGconn* connection = _idle.back();
       _idle.pop_back();
+
       lock.unlock();
       if ( operation.granted ) {
         grant(std::move(operation.granted), connection);
@@ -585,9 +621,11 @@ class AsyncClient::Impl {
       }
       lock.lock();
     }
+
     lock.unlock();
     start_leased(active);
     lock.lock();
+
     return _stopping;
   }
 
@@ -595,6 +633,7 @@ class AsyncClient::Impl {
   void grant(LeaseCompletion granted, PGconn* connection) {
     const auto lease = std::make_shared<LeaseState>();
     lease->connection = connection;
+
     _workers->post([this, granted = std::move(granted), lease] mutable { granted(Lease(this, lease), nullptr); });
     _leases.push_back(lease);
   }
@@ -616,14 +655,17 @@ class AsyncClient::Impl {
           }
           break;
         }
+
         Operation operation = std::move(lease->queued.front());
         lease->queued.pop_front();
         const bool stopping = _stopping;
         lock.unlock();
+
         if ( stopping ) {
           reject(std::move(operation), "the Postgres client is shutting down");
           continue;
         }
+
         lease->busy = true;
         begin(std::move(operation), lease->connection, active);  // a statement that fails at once is finished, and the lease free, on return
       }
@@ -638,6 +680,7 @@ class AsyncClient::Impl {
       lease->lost = true;
       queued.swap(lease->queued);
     }
+
     for ( Operation& operation : queued ) {
       reject(std::move(operation), LEASE_LOST);
     }
@@ -655,6 +698,7 @@ class AsyncClient::Impl {
     const int sent = PQsendQueryParams(connection, operation.sql.c_str(), static_cast<int>(values.size()), nullptr, values.data(), nullptr, nullptr,
                                        binary_results);
     Active    statement{.operation = std::move(operation), .connection = connection};
+
     // A stream asks for its results a chunk at a time; that has to be said after the statement is sent and before its first result is read.
     const bool chunked = sent != 0 && (! statement.operation.stream ||
                                        PQsetChunkedRowsMode(connection, static_cast<int>(statement.operation.stream->options.chunk_rows)) != 0);
@@ -692,8 +736,10 @@ class AsyncClient::Impl {
         statement.error = runtime_error_ptr(trimmed(PQerrorMessage(connection)));
         return true;
       }
+
       return read_results(statement);
     }
+
     return false;
   }
 
@@ -709,13 +755,16 @@ class AsyncClient::Impl {
         statement.paused = true;
         return false;
       }
+
       pg_result* result = PQgetResult(connection);
       if ( result == nullptr ) {
         statement.read_done = true;  // every result has been read: the statement is done, once a cancel it sent has been
         return ! is_cancelling(statement);
       }
+
       take(statement, result);
     }
+
     return false;
   }
 
@@ -725,6 +774,7 @@ class AsyncClient::Impl {
       enqueue_chunk(statement.operation.stream, QueryResult(result));
       return;
     }
+
     record(statement, result);
   }
 
@@ -738,11 +788,13 @@ class AsyncClient::Impl {
       statement.result = result;
       return;
     }
+
     if ( ! statement.error ) {
       statement.error = query_error_ptr(result);
       const char* state = PQresultErrorField(result, PG_DIAG_SQLSTATE);
       statement.query_canceled = state != nullptr && std::string_view(state) == CANCELED_SQLSTATE;
     }
+
     PQclear(result);
   }
 
@@ -751,10 +803,12 @@ class AsyncClient::Impl {
     if ( statement.cancel != nullptr ) {  // only when poll failed: a finished statement normally waits for its cancel
       end_cancel(statement);
     }
+
     if ( statement.operation.stream ) {
       finish_stream(statement);
       return;
     }
+
     PGconn* const      connection = statement.connection;
     QueryResult        result;
     std::exception_ptr error = statement.error;
@@ -784,7 +838,9 @@ class AsyncClient::Impl {
       if ( stream->stop ) {
         return;
       }
+
       stream->ready.push_back(std::move(chunk));
+
       if ( stream->delivering ) {
         return;
       }
@@ -809,6 +865,7 @@ class AsyncClient::Impl {
         chunk = std::move(stream->ready.front());
         stream->ready.pop_front();
       }
+
       bool               more = true;
       std::exception_ptr failure;
       try {
@@ -817,6 +874,7 @@ class AsyncClient::Impl {
         failure = std::current_exception();
         more = false;
       }
+
       {
         const std::scoped_lock lock(stream->mutex);
         if ( failure ) {
@@ -826,6 +884,7 @@ class AsyncClient::Impl {
       }
       wake();  // there is room for another chunk, or the stream is to be stopped: the reactor looks again
     }
+
     complete_if_done(stream);
     wake();
   }
@@ -838,6 +897,7 @@ class AsyncClient::Impl {
       if ( stream->completed || ! stream->finished || stream->delivering || (! stream->stop && ! stream->ready.empty()) ) {
         return;
       }
+
       stream->completed = true;
       stream->ready.clear();
       if ( stream->handler_error ) {
@@ -858,7 +918,9 @@ class AsyncClient::Impl {
       PQclear(statement.result);
       statement.result = nullptr;
     }
+
     return_connection(statement.operation.lease, statement.connection);
+
     {
       const std::scoped_lock lock(stream->mutex);
       stream->finished = true;
@@ -895,17 +957,21 @@ class AsyncClient::Impl {
       stop = stream.stop;
       room = stream.ready.size() < stream.options.max_buffered_chunks;
     }
+
     // A cancel would abort a transaction on a lease, so a leased stream reads on and drops its rows; on shutdown it is cancelled.
     if ( stop && ! statement.read_done && ! statement.cancel_sent && (! statement.operation.lease || stopping) ) {
       cancel(statement);
     }
+
     if ( statement.read_done ) {
       return ! is_cancelling(statement);
     }
+
     if ( statement.paused && (room || stop) ) {
       statement.paused = false;
       return read_results(statement);  // libpq may hold the next results already, and then no socket event would say so
     }
+
     return false;
   }
 
@@ -920,10 +986,12 @@ class AsyncClient::Impl {
     if ( request == nullptr ) {
       return;  // no memory for it: the statement runs to its end and its rows are dropped
     }
+
     if ( PQcancelStart(request) == 0 || PQcancelSocket(request) < 0 ) {
       PQcancelFinish(request);  // it could not even start: likewise
       return;
     }
+
     statement.cancel = request;
     statement.cancel_events = poll_events(POLLOUT);  // a cancel starts by connecting, as if the last poll said "writing"
   }
@@ -943,6 +1011,7 @@ class AsyncClient::Impl {
       case PGRES_POLLING_FAILED:  // if it failed, the statement just runs on
         break;
     }
+
     end_cancel(statement);
     return statement.read_done;
   }
@@ -961,6 +1030,7 @@ class AsyncClient::Impl {
       return_to_pool(connection);
       return;
     }
+
     lease->busy = false;
     if ( PQstatus(connection) == CONNECTION_BAD ) {
       lose(lease);
@@ -977,10 +1047,12 @@ class AsyncClient::Impl {
       push_idle(connection);
       return;
     }
+
     if ( PQresetStart(connection) == 0 || PQsocket(connection) < 0 ) {
       push_idle(connection);  // the reset could not start: the next statement on it fails, and tries again
       return;
     }
+
     _reconnecting.push_back(Reconnecting{.connection = connection, .resetting = true, .events = poll_events(POLLOUT)});
   }
 
@@ -1002,11 +1074,13 @@ class AsyncClient::Impl {
         case PGRES_POLLING_OK:
           break;
       }
+
       // A reset connection is a new session: apply the settings again, without blocking.
       PQsetnonblocking(connection, 1);
       if ( _session_sql.empty() || PQsendQuery(connection, _session_sql.c_str()) == 0 ) {
         return true;
       }
+
       reconnect.resetting = false;
       reconnect.events = poll_events(POLLIN, POLLOUT);
       return false;
@@ -1017,14 +1091,17 @@ class AsyncClient::Impl {
       if ( flushed < 0 ) {
         return true;
       }
+
       if ( flushed == 0 ) {
         reconnect.events = poll_events(POLLIN);
       }
     }
+
     if ( has_any(events, READABLE) ) {
       if ( PQconsumeInput(connection) == 0 ) {
         return true;
       }
+
       while ( PQisBusy(connection) == 0 ) {
         pg_result* result = PQgetResult(connection);
         if ( result == nullptr ) {
@@ -1033,6 +1110,7 @@ class AsyncClient::Impl {
         PQclear(result);  // if the SET failed, the session keeps the server's defaults
       }
     }
+
     return false;
   }
 
@@ -1087,6 +1165,7 @@ void AsyncClient::run(const Lease& lease, std::string sql, std::vector<std::stri
     _impl->post([done = std::move(done)] mutable { done(QueryResult{}, empty_lease()); });
     return;
   }
+
   _impl->run(lease._state, std::move(sql), std::move(params), std::move(done));
 }
 
@@ -1096,6 +1175,7 @@ void AsyncClient::stream(const Lease& lease, std::string sql, std::vector<std::s
     _impl->post([done = std::move(done)] mutable { done(empty_lease()); });
     return;
   }
+
   _impl->stream(lease._state, std::move(sql), std::move(params), options, std::move(on_chunk), std::move(done));
 }
 
@@ -1111,6 +1191,7 @@ AsyncClient::Lease& AsyncClient::Lease::operator=(Lease&& other) noexcept {
     _impl = other._impl;
     _state = std::move(other._state);
   }
+
   return *this;
 }
 

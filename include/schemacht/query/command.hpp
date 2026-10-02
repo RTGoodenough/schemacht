@@ -107,6 +107,7 @@ struct Update {
     if ( scope != RowScope::Unset ) {
       throw std::logic_error("an update says which rows it changes once: a single where(...) or all_rows()");
     }
+
     Update<schema_t, set_capacity, capacity> result{.sets = sets, .set_count = set_count, .predicate = rows, .scope = RowScope::Matching};
     return result;
   }
@@ -119,8 +120,10 @@ struct Update {
     if ( scope != RowScope::Unset ) {
       throw std::logic_error("an update says which rows it changes once: a single where(...) or all_rows()");
     }
+
     Update result = *this;
     result.scope = RowScope::All;
+
     return result;
   }
 
@@ -132,11 +135,13 @@ struct Update {
         throw std::logic_error("an update can set a column only once");
       }
     }
+
     Update<schema_t, set_capacity + 1, predicate_capacity> result{.set_count = set_count + 1, .predicate = predicate, .scope = scope};
     for ( std::size_t i = 0; i < set_count; ++i ) {
       result.sets.at(i) = sets.at(i);
     }
     result.sets.at(set_count) = term;
+
     return result;
   }
 };
@@ -166,6 +171,7 @@ template <schema::IsSchema schema_t, std::size_t capacity>
   if ( rows.count == 0 || rows.nodes.at(rows.root).kind == NodeKind::True ) {
     throw std::logic_error("delete_where(match_all()) would delete every row: write delete_all<Schema>() for that");
   }
+
   return Delete<schema_t, capacity>{.predicate = rows, .scope = RowScope::Matching};
 }
 

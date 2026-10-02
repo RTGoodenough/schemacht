@@ -13,6 +13,7 @@ ThreadPool::ThreadPool(std::size_t threads) {
   if ( threads == 0 ) {
     throw std::invalid_argument("ThreadPool needs at least one thread");
   }
+
   _threads.reserve(threads);
   for ( std::size_t i = 0; i < threads; ++i ) {
     _threads.emplace_back([this] { work(); });
@@ -30,9 +31,11 @@ void ThreadPool::shutdown() {
     _stopping = true;
   }
   _wake.notify_all();
+
   for ( std::thread& thread : _threads ) {
     thread.join();
   }
+
   const std::scoped_lock lock(_mutex);
   _joined = true;
   _tasks.clear();  // posted after the last worker left: nothing will run them
@@ -61,6 +64,7 @@ void ThreadPool::work() {
       task = std::move(_tasks.front());
       _tasks.pop_front();
     }
+
     try {
       task();
     } catch ( ... ) {  // NOLINT(bugprone-empty-catch) -- see `post`: tasks report their own errors

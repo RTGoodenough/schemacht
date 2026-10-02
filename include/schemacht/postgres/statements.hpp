@@ -65,9 +65,11 @@ template <schema::IsSchema schema_t>
 [[nodiscard]] std::vector<std::string> param_texts(const query::CompiledQuery<schema_t>& query) {
   std::vector<std::string> texts;
   texts.reserve(query.params().size());
+
   for ( const auto& param : query.params() ) {
     std::visit(TextBinder{&texts}, param);
   }
+
   return texts;
 }
 
@@ -130,18 +132,22 @@ template <schema::IsSchema schema_t, std::size_t idx>
   using field_t = schema_t::template field_at<idx>;
   std::string literal = "{";
   bool        first = true;
+
   for ( const typename schema_t::row_type& row : rows ) {
     if ( ! first ) {
       literal += ',';
     }
     first = false;
+
     if ( const auto* value = schema::value_if_present(std::get<idx>(row)); value != nullptr ) {
       postgres::detail::append_array_element(literal, format_field<typename field_t::value_type>(*value));
     } else {
       literal += "NULL";
     }
   }
+
   literal += '}';
+
   return literal;
 }
 
@@ -149,6 +155,7 @@ template <schema::IsSchema schema_t, std::size_t... idx>
 [[nodiscard]] InsertStatement build_unnest(std::span<const typename schema_t::row_type> rows, std::index_sequence<idx...> /*indices*/) {
   InsertStatement statement{.sql = std::string(UnnestSql<schema_t>::VALUE), .values = {}};
   statement.values.reserve(schema_t::INSERTABLE_FIELD_COUNT);
+
   (
       [&] {
         if constexpr ( ! schema_t::template field_at<idx>::GENERATED ) {
@@ -156,6 +163,7 @@ template <schema::IsSchema schema_t, std::size_t... idx>
         }
       }(),
       ...);
+
   return statement;
 }
 
@@ -167,6 +175,7 @@ void append_one_value(const typename schema_t::row_type& row, InsertStatement& s
       statement.sql += ", ";
     }
     first = false;
+
     if ( const auto* value = schema::value_if_present(std::get<idx>(row)); value != nullptr ) {
       statement.values.push_back(format_field<typename field_t::value_type>(*value));
       statement.sql += "$" + std::to_string(statement.values.size());
@@ -186,14 +195,17 @@ void append_row_values(const typename schema_t::row_type& row, InsertStatement& 
 template <schema::IsSchema schema_t>
 [[nodiscard]] InsertStatement build_values(std::span<const typename schema_t::row_type> rows) {
   InsertStatement statement{.sql = std::string(ValuesHeadSql<schema_t>::VALUE), .values = {}};
+
   for ( std::size_t row = 0; row < rows.size(); ++row ) {
     if ( row != 0 ) {
       statement.sql += ", ";
     }
+
     statement.sql += '(';
     append_row_values<schema_t>(rows[row], statement, std::make_index_sequence<schema_t::FIELD_COUNT>{});
     statement.sql += ')';
   }
+
   return statement;
 }
 
@@ -235,10 +247,12 @@ class DropTableSql {
 template <TextSchema schema_t>
 [[nodiscard]] std::vector<InsertStatement> build_insert(std::span<const typename schema_t::row_type> rows) {
   static_assert(schema_t::INSERTABLE_FIELD_COUNT > 0, "insert: the schema has no column that is not GENERATED");
+
   if constexpr ( insert_detail::USES_UNNEST<schema_t> ) {
     static_assert(insert_detail::every_insertable_has_sql_type<schema_t>(std::make_index_sequence<schema_t::FIELD_COUNT>{}),
                   "insert: every inserted column's type needs a SQL type name (it is sent as an array of that type): give it "
                   "one (ColumnType::SQL_TYPE, or a query::sql::SqlType specialization)");
+
     return {insert_detail::build_unnest<schema_t>(rows, std::make_index_sequence<schema_t::FIELD_COUNT>{})};
   } else {
     constexpr std::size_t        ROWS_PER_STATEMENT = MAX_STATEMENT_PARAMETERS / schema_t::INSERTABLE_FIELD_COUNT;
@@ -246,6 +260,7 @@ template <TextSchema schema_t>
     for ( std::size_t first = 0; first < rows.size(); first += ROWS_PER_STATEMENT ) {
       statements.push_back(insert_detail::build_values<schema_t>(rows.subspan(first, std::min(ROWS_PER_STATEMENT, rows.size() - first))));
     }
+
     return statements;
   }
 }
@@ -314,19 +329,23 @@ template <SendableStatement statement_t>
 [[nodiscard]] WireStatement wire(const statement_t& statement) {
   WireStatement wired;
   wired.sql = statement.sql();
+
   if constexpr ( query::IsBoundRawStatement<statement_t> ) {
     wired.params.reserve(std::tuple_size_v<typename statement_t::arguments_type>);
     std::apply([&wired](const auto&... arguments) { (TextBinder{&wired.params}(arguments), ...); }, statement.arguments());
+
     wired.column_names.assign(statement.column_names().begin(), statement.column_names().end());
   } else {
     using schema_t = statement_t::schema_type;
     wired.params = param_texts<schema_t>(statement);
+
     const auto names = schema_t::column_names();
     wired.column_names.reserve(statement.columns().size());
     for ( const std::size_t column : statement.columns() ) {
       wired.column_names.push_back(names.at(column));
     }
   }
+
   return wired;
 }
 
@@ -344,6 +363,7 @@ void check_result_columns(std::span<const std::string_view> column_names, const 
     }
     return;
   }
+
   for ( std::size_t column = 0; const std::string_view expected : column_names ) {
     if ( const std::string_view name = result.column_name(column++); name != expected ) {  // `column` is now its 1-based position
       throw std::runtime_error("the statement returned the column '" + std::string(name) + "' at position " + std::to_string(column) +

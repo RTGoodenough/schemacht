@@ -49,6 +49,7 @@ template <std::size_t selected, std::size_t count>
       result.at(next++) = names.at(i);
     }
   }
+
   return result;
 }
 
@@ -121,6 +122,7 @@ class Schema {
   template <util::CTString name>
   [[nodiscard]] static consteval std::size_t checked_field_index() {
     static_assert(has_column<name>(), "the schema has no column with that name");
+
     return has_column<name>() ? field_index<name>() : 0;  // 0 after the assertion fails, so no second error follows
   }
 

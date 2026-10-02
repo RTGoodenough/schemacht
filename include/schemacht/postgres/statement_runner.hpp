@@ -75,9 +75,11 @@ class Countdown {
       _failed_at = index;
       _error = error;
     }
+
     if ( --_remaining != 0 ) {
       return;
     }
+
     lock.unlock();
     _done(_error);
   }
@@ -98,10 +100,12 @@ class Countdown {
 template <StreamCallback done_t>
 void send_all(AsyncClient& client, const AsyncClient::Lease* lease, std::vector<InsertStatement> statements, done_t done) {
   const auto countdown = std::make_shared<Countdown<done_t>>(statements.size(), std::move(done));
+
   for ( std::size_t index = 0; index < statements.size(); ++index ) {
     AsyncClient::Completion completion = [countdown, index](const QueryResult& /*result*/, const std::exception_ptr& error) {
       countdown->finish(index, error);
     };
+
     InsertStatement& statement = statements.at(index);
     if ( lease != nullptr ) {
       client.run(*lease, std::move(statement.sql), std::move(statement.values), std::move(completion));
@@ -124,8 +128,10 @@ void run_atomically(AsyncClient& client, std::vector<InsertStatement> statements
       done(error);
       return;
     }
+
     statements.insert(statements.begin(), InsertStatement{.sql = "BEGIN", .values = {}});
     statements.push_back(InsertStatement{.sql = "COMMIT", .values = {}});
+
     send_all(*client, &lease, std::move(statements), std::move(done));
   });  // the lease goes back once the COMMIT is done
 }
@@ -167,6 +173,7 @@ class StatementRunner {
   void execute_into(const statement_t& statement, done_t done, const std::optional<ReadOptions>& read = std::nullopt) {
     using result_t = statement_t::result_type;
     const auto rows = std::make_shared<std::vector<result_t>>();
+
     stream_into(
         statement, [rows](result_t&& row) { rows->push_back(std::move(row)); },
         [rows, done = std::move(done)](const std::exception_ptr& error) mutable { done(error ? std::vector<result_t>{} : std::move(*rows), error); },
@@ -186,6 +193,7 @@ class StatementRunner {
     using result_t = statement_t::result_type;
     const auto                         promise = std::make_shared<std::promise<std::vector<result_t>>>();
     std::future<std::vector<result_t>> future = promise->get_future();
+
     execute_into(
         statement,
         [promise](std::vector<result_t> rows, const std::exception_ptr& error) {
@@ -196,6 +204,7 @@ class StatementRunner {
           }
         },
         read);
+
     return future;
   }
 
@@ -216,6 +225,7 @@ class StatementRunner {
     using result_t = statement_t::result_type;
     ReadOptions options = read.value_or(_read);
     options.format = BinaryReadableRow<result_t> ? options.format : ResultFormat::Text;
+
     detail::WireStatement wired;
     try {
       wired = detail::wire(statement);  // formats the arguments, which a codec may refuse
@@ -223,6 +233,7 @@ class StatementRunner {
       _client->post([done = std::move(done), error = std::current_exception()] mutable { done(error); });
       return;
     }
+
     send_stream(
         std::string(wired.sql), std::move(wired.params), options,
         [column_names = std::move(wired.column_names), on_row = std::move(on_row)](QueryResult chunk) mutable {
@@ -240,7 +251,9 @@ class StatementRunner {
   [[nodiscard]] std::future<void> stream(const statement_t& statement, handler_t on_row, const std::optional<ReadOptions>& read = std::nullopt) {
     const auto        promise = std::make_shared<std::promise<void>>();
     std::future<void> future = promise->get_future();
+
     stream_into(statement, std::move(on_row), [promise](const std::exception_ptr& error) { detail::settle(*promise, error); }, read);
+
     return future;
   }
 
@@ -258,6 +271,7 @@ class StatementRunner {
       _client->post([done = std::move(done), error = std::current_exception()] mutable { done(0, error); });
       return;
     }
+
     command_into(std::string(wired.sql), std::move(wired.params), std::move(done));
   }
 
@@ -269,6 +283,7 @@ class StatementRunner {
   [[nodiscard]] std::future<std::uint64_t> execute(const statement_t& command) {
     const auto                 promise = std::make_shared<std::promise<std::uint64_t>>();
     std::future<std::uint64_t> future = promise->get_future();
+
     execute_into(command, [promise](std::uint64_t affected, const std::exception_ptr& error) {
       if ( error ) {
         promise->set_exception(error);
@@ -276,6 +291,7 @@ class StatementRunner {
         promise->set_value(affected);
       }
     });
+
     return future;
   }
 
@@ -302,6 +318,7 @@ class StatementRunner {
     if ( keys.empty() ) {
       return detail::ready_future(std::vector<typename schema_t::row_type>{});
     }
+
     return execute(by_key_values<schema_t, key_col>(keys));
   }
 
@@ -324,15 +341,18 @@ class StatementRunner {
   [[nodiscard]] std::future<void> insert(std::vector<typename schema_t::row_type> rows) {
     const auto        promise = std::make_shared<std::promise<void>>();
     std::future<void> future = promise->get_future();
+
     try {
       if ( rows.empty() ) {
         promise->set_value();
         return future;
       }
+
       run_inserts(detail::build_insert<schema_t>(rows), [promise](const std::exception_ptr& error) { detail::settle(*promise, error); });
     } catch ( ... ) {
       promise->set_exception(std::current_exception());
     }
+
     return future;
   }
 
@@ -404,7 +424,9 @@ class StatementRunner {
   [[nodiscard]] std::future<void> run_without_rows(std::string_view sql) {
     const auto        promise = std::make_shared<std::promise<void>>();
     std::future<void> future = promise->get_future();
+
     command_into(std::string(sql), {}, [promise](std::uint64_t /*affected*/, const std::exception_ptr& error) { detail::settle(*promise, error); });
+
     return future;
   }
 

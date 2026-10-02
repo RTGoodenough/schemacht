@@ -34,6 +34,7 @@ class Uuid {
     if ( text.size() != TEXT_SIZE ) {
       refuse(text);
     }
+
     std::array<std::byte, SIZE> bytes{};
     std::size_t                 next = 0;
     for ( std::size_t i = 0; i < TEXT_SIZE; ) {
@@ -44,9 +45,11 @@ class Uuid {
         ++i;
         continue;
       }
+
       bytes.at(next++) = static_cast<std::byte>((hex_value(text, i) << 4U) | hex_value(text, i + 1));
       i += 2;
     }
+
     return Uuid(bytes);
   }
 
@@ -55,14 +58,17 @@ class Uuid {
     constexpr std::string_view DIGITS = "0123456789abcdef";
     std::string                text;
     text.reserve(TEXT_SIZE);
+
     for ( std::size_t i = 0; i < SIZE; ++i ) {
       if ( i == 4 || i == 6 || i == 8 || i == 10 ) {
         text += '-';
       }
+
       const auto value = std::to_integer<unsigned>(_bytes.at(i));
       text += DIGITS.at(value >> 4U);
       text += DIGITS.at(value & 0xFU);
     }
+
     return text;
   }
 
@@ -86,6 +92,7 @@ class Uuid {
     if ( chr >= 'A' && chr <= 'F' ) {
       return static_cast<unsigned>(chr - 'A') + 10U;
     }
+
     refuse(text);
   }
 
@@ -105,6 +112,7 @@ struct ColumnType<Uuid> {
     if ( bytes.size() != Uuid::SIZE ) {
       throw std::invalid_argument("parse_binary: a uuid is 16 bytes, not " + std::to_string(bytes.size()));
     }
+
     std::array<std::byte, Uuid::SIZE> copy{};
     std::ranges::copy(bytes, copy.begin());
     return Uuid(copy);

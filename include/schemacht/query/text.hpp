@@ -20,12 +20,14 @@ namespace schemacht::query {
 [[nodiscard]] inline std::string escape_like(std::string_view text) {
   std::string escaped;
   escaped.reserve(text.size());
+
   for ( const char chr : text ) {
     if ( chr == '%' || chr == '_' || chr == '\\' ) {
       escaped.push_back('\\');
     }
     escaped.push_back(chr);
   }
+
   return escaped;
 }
 

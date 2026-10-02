@@ -20,9 +20,9 @@ enum class LimitKind : std::uint8_t {
 };
 
 struct Limit {
-  LimitKind     kind = LimitKind::None;
-  std::int64_t  count = 0;  ///< `Constant` only.
-  std::size_t   slot = 0;   ///< `Arg` only.
+  LimitKind    kind = LimitKind::None;
+  std::int64_t count = 0;  ///< `Constant` only.
+  std::size_t  slot = 0;   ///< `Arg` only.
 
   [[nodiscard]] constexpr bool operator==(const Limit&) const = default;
 };
@@ -91,9 +91,11 @@ struct Query {
     for ( std::size_t i = 0; i < order_count; ++i ) {
       result.order.at(i) = order.at(i);
     }
+
     std::size_t next = order_count;
     ((result.order.at(next++) = terms.term), ...);
     result.order_count = next;
+
     return result;
   }
 
@@ -106,8 +108,10 @@ struct Query {
     if ( count < 0 || ! std::in_range<std::int64_t>(count) ) {
       throw std::out_of_range("query limit is negative or too large");
     }
+
     Query result = *this;
     result.row_limit = Limit{.kind = LimitKind::Constant, .count = static_cast<std::int64_t>(count)};
+
     return result;
   }
 
@@ -123,6 +127,7 @@ struct Query {
     Query result = *this;
     result.columns = std::array<std::size_t, schema_t::FIELD_COUNT>{column_idxs...};
     result.column_count = sizeof...(column_idxs);
+
     for ( std::size_t i = 0; i < result.column_count; ++i ) {
       for ( std::size_t j = i + 1; j < result.column_count; ++j ) {
         if ( result.columns.at(i) == result.columns.at(j) ) {
@@ -130,6 +135,7 @@ struct Query {
         }
       }
     }
+
     return result;
   }
 

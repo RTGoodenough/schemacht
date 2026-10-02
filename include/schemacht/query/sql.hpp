@@ -46,6 +46,7 @@ class Text {
     if ( _size == capacity ) {
       detail::sql_statement_capacity_exceeded();
     }
+
     _chars.at(_size++) = chr;
   }
 
@@ -62,6 +63,7 @@ class Text {
       digits.at(count++) = static_cast<char>('0' + (value % DECIMAL_BASE));
       value /= DECIMAL_BASE;
     }
+
     while ( count > 0 ) {
       push(digits.at(--count));
     }
@@ -81,6 +83,7 @@ class Text {
     if ( ! util::is_identifier(name) ) {
       detail::sql_identifier_not_validated();
     }
+
     push('"');
     append(name);
     push('"');
@@ -91,6 +94,7 @@ class Text {
     if ( ! util::is_sql_function_name(name) ) {
       detail::sql_spelling_not_validated();
     }
+
     append(name);
   }
 
@@ -99,6 +103,7 @@ class Text {
     if ( ! util::is_sql_operator(name) ) {
       detail::sql_spelling_not_validated();
     }
+
     append(name);
   }
 
@@ -197,6 +202,7 @@ consteval void append_operand(Text<text_capacity>& text, const Operand& value) {
     text.append_unsigned(value.slot + 1);
     return;
   }
+
   switch ( value.constant.kind ) {
     case ConstantKind::Bool:
       text.append(value.constant.bits != 0 ? "TRUE" : "FALSE");
@@ -286,9 +292,11 @@ class Emitter {
     if ( wrap ) {
       _text->push('(');
     }
+
     write(current.lhs, level);
     _text->append(word);
     write(current.rhs, level);
+
     if ( wrap ) {
       _text->push(')');
     }
@@ -297,6 +305,7 @@ class Emitter {
   /** @brief `function("column", $n::type[, $m::double precision])`, or `"column" operator $n::type` (the argument written inside the operation's `ARGUMENT_PREFIX` and `ARGUMENT_SUFFIX`, if it has them). */
   consteval void call(const Node& current) {
     const std::string_view type = column_type_name<schema_t>(current.column);
+
     if ( current.operation->infix ) {
       _text->append_identifier(schema_t::column_names().at(current.column));
       _text->push(' ');
@@ -305,11 +314,13 @@ class Emitter {
       argument(current, type);
       return;
     }
+
     _text->append_function(current.operation->name);
     _text->push('(');
     _text->append_identifier(schema_t::column_names().at(current.column));
     _text->append(", ");
     argument(current, type);
+
     if ( current.operation->takes_real ) {
       _text->append(", ");
       operand(current.extra);
@@ -358,10 +369,12 @@ inline constexpr std::size_t STATEMENT_CAPACITY = 4096;
 template <schema::IsSchema schema_t, std::size_t text_capacity, std::size_t columns_capacity>
 consteval void append_select_from(Text<text_capacity>& text, const std::array<std::size_t, columns_capacity>& columns, std::size_t count) {
   text.append("SELECT ");
+
   for ( std::size_t i = 0; i < count; ++i ) {
     if ( i != 0 ) {
       text.append(", ");
     }
+
     const std::string_view name = schema_t::column_names().at(columns.at(i));
     const std::string_view function = detail::COLUMN_SELECT_FUNCTIONS<schema_t>.at(columns.at(i));
     if ( function.empty() ) {
@@ -374,6 +387,7 @@ consteval void append_select_from(Text<text_capacity>& text, const std::array<st
       text.append_identifier(name);
     }
   }
+
   text.append(" FROM ");
   text.append_identifier(schema_t::TABLE_NAME);
 }
@@ -396,6 +410,7 @@ template <schema::IsSchema schema_t, std::size_t predicate_capacity, std::size_t
     text.append(i == 0 ? " ORDER BY " : ", ");
     const OrderTerm& term = query.order.at(i);
     text.append_identifier(schema_t::column_names().at(term.column));
+
     if ( term.ranking != nullptr ) {
       text.push(' ');
       text.append_operator(term.ranking->op);
@@ -406,6 +421,7 @@ template <schema::IsSchema schema_t, std::size_t predicate_capacity, std::size_t
         text.append(type);
       }
     }
+
     if ( term.descending ) {
       text.append(" DESC");
     }
@@ -423,6 +439,7 @@ template <schema::IsSchema schema_t, std::size_t predicate_capacity, std::size_t
       text.append_unsigned(query.row_limit.slot + 1);
       break;
   }
+
   return text;
 }
 
@@ -441,18 +458,22 @@ template <schema::IsSchema schema_t, std::size_t set_capacity, std::size_t predi
   Text<STATEMENT_CAPACITY> text;
   text.append("UPDATE ");
   text.append_identifier(schema_t::TABLE_NAME);
+
   for ( std::size_t i = 0; i < update.set_count; ++i ) {
     const SetTerm& term = update.sets.at(i);
     text.append(i == 0 ? " SET " : ", ");
     text.append_identifier(schema_t::column_names().at(term.column));
     text.append(" = ");
+
     if ( term.is_null ) {
       text.append("NULL");
     } else {
       detail::append_operand(text, term.value);
     }
   }
+
   append_where(text, update.predicate);
+
   return text;
 }
 
@@ -462,7 +483,9 @@ template <schema::IsSchema schema_t, std::size_t predicate_capacity>
   Text<STATEMENT_CAPACITY> text;
   text.append("DELETE FROM ");
   text.append_identifier(schema_t::TABLE_NAME);
+
   append_where(text, del.predicate);
+
   return text;
 }
 
@@ -477,14 +500,17 @@ template <schema::IsSchema schema_t>
                 "create_table: a column's type has no SQL name; give it one (ColumnType::SQL_TYPE, or a query::sql::SqlType specialization)");
   static_assert(! std::ranges::any_of(detail::COLUMN_GENERATED<schema_t>, std::identity{}),
                 "create_table can't write a generated column's expression: create a table with one yourself");
+
   Text<STATEMENT_CAPACITY> text;
   text.append("CREATE TABLE ");
   text.append_identifier(schema_t::TABLE_NAME);
   text.append(" (");
+
   for ( std::size_t column = 0; column < schema_t::FIELD_COUNT; ++column ) {
     if ( column != 0 ) {
       text.append(", ");
     }
+
     text.append_identifier(schema_t::column_names().at(column));
     text.push(' ');
     text.append(detail::COLUMN_TYPE_NAMES<schema_t>.at(column));
@@ -492,17 +518,21 @@ template <schema::IsSchema schema_t>
       text.append(" NOT NULL");
     }
   }
+
   if constexpr ( schema_t::HAS_PRIMARY_KEY ) {
     text.append(", PRIMARY KEY (");
     text.append_identifier_list(schema_t::primary_key_column_names());
     text.push(')');
   }
+
   for ( const std::string_view column : schema_t::unique_column_names() ) {  // each unique on its own (see `KeyRole`)
     text.append(", UNIQUE (");
     text.append_identifier(column);
     text.push(')');
   }
+
   text.push(')');
+
   return text;
 }
 
@@ -512,6 +542,7 @@ template <schema::IsSchema schema_t>
   Text<STATEMENT_CAPACITY> text;
   text.append("DROP TABLE IF EXISTS ");
   text.append_identifier(schema_t::TABLE_NAME);
+
   return text;
 }
 
@@ -534,21 +565,26 @@ template <schema::IsSchema schema_t>
   Text<STATEMENT_CAPACITY> text;
   append_insert_into<schema_t>(text);
   text.append(" SELECT * FROM unnest(");
+
   std::uint64_t placeholder = 0;
   for ( std::size_t column = 0; column < schema_t::FIELD_COUNT; ++column ) {
     if ( detail::COLUMN_GENERATED<schema_t>.at(column) ) {
       continue;
     }
+
     if ( placeholder != 0 ) {
       text.append(", ");
     }
+
     text.push('$');
     text.append_unsigned(++placeholder);
     text.append("::");
     text.append(detail::COLUMN_TYPE_NAMES<schema_t>.at(column));
     text.append("[]");
   }
+
   text.push(')');
+
   return text;
 }
 
@@ -558,6 +594,7 @@ template <schema::IsSchema schema_t>
   Text<STATEMENT_CAPACITY> text;
   append_insert_into<schema_t>(text);
   text.append(" VALUES ");
+
   return text;
 }
 

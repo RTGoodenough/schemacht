@@ -4,6 +4,8 @@ Standard: Latest
 TabWidth: 2
 UseTab: Never
 ColumnLimit: 150
+# A blank line separates the steps of a function; one is kept, more are folded into one.
+MaxEmptyLinesToKeep: 1
 PointerAlignment: Left
 ReflowComments:  false
 IncludeBlocks: Preserve

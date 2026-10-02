@@ -25,6 +25,7 @@ namespace detail {
   if ( name.empty() || name.size() > MAX_IDENTIFIER_LENGTH || detail::is_digit(name.front()) ) {
     return false;
   }
+
   return std::ranges::all_of(name, [](char chr) { return detail::is_lower(chr) || detail::is_digit(chr) || chr == '_'; });
 }
 
@@ -33,6 +34,7 @@ namespace detail {
   if ( name.empty() || detail::is_digit(name.front()) ) {
     return false;
   }
+
   return std::ranges::all_of(name, [](char chr) { return detail::is_lower(chr) || detail::is_upper(chr) || detail::is_digit(chr) || chr == '_'; });
 }
 
@@ -46,12 +48,14 @@ namespace detail {
 [[nodiscard]] constexpr bool is_sql_operator(std::string_view name) {
   constexpr std::string_view OPERATOR_CHARS = "<>-|#&~=@+*/%^!?";
   constexpr std::string_view SIGN_ALLOWING_CHARS = "~!@#%^&|?";
+
   if ( name.empty() || ! std::ranges::all_of(name, [&](char chr) { return OPERATOR_CHARS.contains(chr); }) ) {
     return false;
   }
   if ( name.contains("--") || name.contains("/*") ) {
     return false;
   }
+
   const bool ends_in_sign = name.back() == '+' || name.back() == '-';
   return name.size() == 1 || ! ends_in_sign || name.find_first_of(SIGN_ALLOWING_CHARS) != std::string_view::npos;
 }

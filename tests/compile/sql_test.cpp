@@ -68,6 +68,7 @@ TEST_CASE("AND and OR are parenthesized only where needed", "[sql]") {
 
 TEST_CASE("ordering, limits and projection", "[sql]") {
   using Ordered = q::Prepared<ORDERED>;
+
   STATIC_REQUIRE(Ordered::SQL == R"(SELECT "name", "id" FROM "people" WHERE "active" = TRUE ORDER BY "score" DESC, "id" LIMIT 10)");
   STATIC_REQUIRE(std::same_as<Ordered::result_type, std::tuple<t::Name, t::Id>>);
   STATIC_REQUIRE(Ordered::ARG_COUNT == 0);
@@ -86,6 +87,7 @@ TEST_CASE("argument slots take their type from where they are used", "[sql]") {
   STATIC_REQUIRE(q::Prepared<NAME_IN>::SLOTS.info.at(0).is_list);
   STATIC_REQUIRE(q::Prepared<LIMIT_ARG>::SLOTS.info.at(0).is_limit);
   STATIC_REQUIRE(q::Prepared<WITHIN>::SLOTS.info.at(1).is_real);
+
   STATIC_REQUIRE(std::same_as<q::Prepared<BY_ID>::result_type, t::People::row_type>);
 }
 
@@ -107,6 +109,7 @@ TEST_CASE("which columns an update can set", "[sql][command]") {
   using NameRef = decltype(People::col<"name">());
   using NickRef = decltype(People::col<"nick">());
   using Generated = decltype(q::On<t::WithGenerated>::col<"doubled">());
+
   STATIC_REQUIRE(q::SettableColumn<NameRef, t::People>);
   STATIC_REQUIRE_FALSE(q::NullableColumn<NameRef, t::People>);
   STATIC_REQUIRE(q::NullableColumn<NickRef, t::People>);

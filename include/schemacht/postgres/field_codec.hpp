@@ -120,6 +120,7 @@ class FieldCodec {
       if ( result.ec != std::errc{} || result.ptr != end ) {
         throw std::invalid_argument("parse_field: could not parse '" + std::string(text) + "' as a number of the column's type");
       }
+
       return value;
     }
   }
@@ -139,6 +140,7 @@ class FieldCodec {
       static constexpr std::size_t            NUMERIC_TEXT_CAPACITY = 64;
       std::array<char, NUMERIC_TEXT_CAPACITY> buffer{};
       const auto                              result = std::to_chars(buffer.begin(), buffer.end(), value);
+
       return std::string(buffer.data(), result.ptr);
     }
   }
@@ -158,6 +160,7 @@ class FieldCodec {
       if ( bytes.size() != 1 ) {
         throw std::invalid_argument("parse_binary: a bool is one byte, not " + std::to_string(bytes.size()));
       }
+
       return bytes.front() != std::byte{0};
     } else if constexpr ( std::same_as<data_t, std::string> ) {
       return std::string(as_text(bytes));
@@ -168,6 +171,7 @@ class FieldCodec {
       if ( ! std::in_range<data_t>(value) ) {
         throw std::invalid_argument("parse_binary: " + std::to_string(value) + " does not fit the column's type");
       }
+
       return static_cast<data_t>(value);
     } else {
       return static_cast<data_t>(binary_real(bytes));
@@ -294,14 +298,18 @@ template <HasTextForm data_t>
 [[nodiscard]] std::string format_array(const std::vector<data_t>& values) {
   std::string literal = "{";
   bool        first = true;
+
   for ( const data_t& value : values ) {
     if ( ! first ) {
       literal += ',';
     }
     first = false;
+
     detail::append_array_element(literal, format_field<data_t>(value));
   }
+
   literal += '}';
+
   return literal;
 }
 
@@ -321,9 +329,11 @@ class FieldCodec<std::vector<element_t>> {
     ArrayReader            reader(text);
     std::vector<element_t> values;
     values.reserve(reader.element_estimate());
+
     while ( const std::optional<std::string_view> element = reader.next() ) {
       values.push_back(FieldCodec<element_t>::parse(*element));
     }
+
     return values;
   }
 
@@ -343,11 +353,13 @@ class FieldCodec<std::vector<element_t>> {
                                     ", which this column cannot read");
       }
     }
+
     std::vector<element_t> values;
     values.reserve(reader.size());
     for ( std::size_t i = 0; i < reader.size(); ++i ) {
       values.push_back(FieldCodec<element_t>::parse_binary(reader.next()));
     }
+
     return values;
   }
 };

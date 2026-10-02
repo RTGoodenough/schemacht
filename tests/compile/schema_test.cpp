@@ -69,6 +69,7 @@ TEST_CASE("unique columns are each unique on their own", "[schema]") {
 
 TEST_CASE("rows are made from a plain value per column", "[schema]") {
   using Row = t::People::row_type;
+
   STATIC_REQUIRE(sch::RowValues<Row, int, const char*, std::nullopt_t, double, bool>);
   STATIC_REQUIRE(sch::RowValues<Row, std::int64_t, std::string, std::string, float, bool>);      // a float widens to the double
   STATIC_REQUIRE_FALSE(sch::RowValues<Row, int, const char*, std::nullopt_t, double>);           // too few

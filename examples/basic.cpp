@@ -34,6 +34,7 @@ int main(int argc, char** argv) {
 
     database.drop_table<EmployeeSchema>().get();
     database.create_table<EmployeeSchema>().get();
+
     database
         .insert<EmployeeSchema>({
             EmployeeSchema::make_row(1, "john smith", 52000.0F),
@@ -50,6 +51,7 @@ int main(int argc, char** argv) {
     }
 
     database.drop_table<EmployeeSchema>().get();
+
     return EXIT_SUCCESS;
   } catch ( const std::exception& error ) {
     std::cerr << "error: " << error.what() << '\n';

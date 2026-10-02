@@ -27,8 +27,10 @@ class ArrayTypeName {
   static constexpr auto             CHARS = [] {
     std::array<char, ELEMENT.size() + 3> chars{};  // the element's name, "[]", and a terminating null
     std::ranges::copy(ELEMENT, chars.begin());
+
     chars.at(ELEMENT.size()) = '[';
     chars.at(ELEMENT.size() + 1) = ']';
+
     return chars;
   }();
 

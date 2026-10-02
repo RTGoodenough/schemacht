@@ -210,6 +210,7 @@ int main(int argc, char** argv) {
     }
 
     drop_everything(database);
+
     return EXIT_SUCCESS;
   } catch ( const std::exception& error ) {
     std::cerr << "error: " << error.what() << '\n';

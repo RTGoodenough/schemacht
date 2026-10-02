@@ -82,6 +82,7 @@ template <typename clock_t, MicrosecondExact duration_t>
   if ( time == point_t::min() ) {
     return INFINITE_PAST;
   }
+
   return std::chrono::floor<std::chrono::microseconds>(time.time_since_epoch()).count();
 }
 
@@ -90,16 +91,19 @@ template <typename clock_t, MicrosecondExact duration_t>
 [[nodiscard]] std::chrono::time_point<clock_t, duration_t> time_of(std::int64_t micros) {
   using point_t = std::chrono::time_point<clock_t, duration_t>;
   using rep_t = duration_t::rep;
+
   if ( micros == INFINITE_FUTURE ) {
     return point_t::max();
   }
   if ( micros == INFINITE_PAST ) {
     return point_t::min();
   }
+
   constexpr auto TICKS_PER_MICRO = static_cast<rep_t>(std::ratio_divide<std::micro, typename duration_t::period>::num);
   if ( micros > std::numeric_limits<rep_t>::max() / TICKS_PER_MICRO || micros < std::numeric_limits<rep_t>::min() / TICKS_PER_MICRO ) {
     throw std::invalid_argument("the time is outside what its C++ type holds");
   }
+
   return point_t(duration_t(static_cast<rep_t>(micros) * TICKS_PER_MICRO));
 }
 

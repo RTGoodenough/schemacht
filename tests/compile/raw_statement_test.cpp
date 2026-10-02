@@ -20,6 +20,7 @@ constexpr q::PlaceholderCheck problem(q::PlaceholderProblem kind, std::size_t nu
 TEST_CASE("placeholders are matched against the declared arguments", "[raw]") {
   STATIC_REQUIRE(q::check_placeholders("SELECT $1, $2, $1", 2) == OK);
   STATIC_REQUIRE(q::check_placeholders("SELECT 1", 0) == OK);
+
   STATIC_REQUIRE(q::check_placeholders("SELECT $1", 2) == problem(q::PlaceholderProblem::Unused, 2));
   STATIC_REQUIRE(q::check_placeholders("SELECT $3", 2) == problem(q::PlaceholderProblem::Beyond, 3));
   STATIC_REQUIRE(q::check_placeholders("SELECT $0", 1) == problem(q::PlaceholderProblem::Beyond, 0));
@@ -47,6 +48,7 @@ TEST_CASE("a raw statement's arguments are value types", "[raw]") {
   STATIC_REQUIRE_FALSE(q::RawArgument<const int>);
   STATIC_REQUIRE_FALSE(q::RawArgument<int&>);
   STATIC_REQUIRE_FALSE(q::RawArgument<void>);
+
   STATIC_REQUIRE(q::IsRawArguments<q::RawArguments<int, std::string>>);
   STATIC_REQUIRE_FALSE(q::IsRawArguments<int>);
 }

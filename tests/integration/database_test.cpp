@@ -96,6 +96,7 @@ std::vector<Types::row_type> sample_rows() {
 void check_sample(const std::vector<Types::row_type>& rows) {
   const std::vector<Types::row_type> expected = sample_rows();
   REQUIRE(rows.size() == expected.size());
+
   for ( std::size_t i = 0; i < rows.size(); ++i ) {
     CHECK(std::get<Id>(rows[i]).value == std::get<Id>(expected[i]).value);
     CHECK(std::get<Flag>(rows[i]).value == std::get<Flag>(expected[i]).value);
@@ -219,6 +220,7 @@ TEST_CASE("integration: an insert larger than one statement's parameter limit", 
   for ( std::int64_t id = 0; id < 10000; ++id ) {  // 9 columns: 90,000 values in one unnest statement
     rows.push_back({Id{id}, Flag{true}, Small{1}, Count{2}, Real{3}, Precise{4}, Text{"t"}, Bytes{bytes({1})}, Doc{std::nullopt}});
   }
+
   database.insert<Bulk>(std::move(rows)).get();
   CHECK(std::get<0>(database.execute(CountBulk::bind()).get().at(0)).value == 10000);
 
@@ -227,6 +229,7 @@ TEST_CASE("integration: an insert larger than one statement's parameter limit", 
   for ( std::int64_t id = 0; id < 40000; ++id ) {  // array column: VALUES statements of at most 65,535 parameters
     tagged.push_back({Id{id}, Tags{{"a", "b,c"}}});
   }
+
   database.insert<Tagged>(std::move(tagged)).get();
   CHECK(std::get<0>(database.execute(CountTagged::bind()).get().at(0)).value == 40000);
 }
@@ -234,8 +237,10 @@ TEST_CASE("integration: an insert larger than one statement's parameter limit", 
 TEST_CASE("integration: stopping a stream cancels the query and frees the connection", "[integration]") {
   // One connection: the query after the stream only runs if the stream's connection came back.
   pg::Database database(test_db(), pg::Database::Options{.pool = {.connections = 1, .workers = 2, .session = {}}, .read = {.chunk_rows = 100}});
-  std::size_t  seen = 0;
+
+  std::size_t seen = 0;
   database.stream(Series::bind(100000000), [&seen](auto&& /*row*/) { return ++seen < 250; }).get();
+
   CHECK(seen == 250);
   CHECK(std::get<0>(database.execute(Series::bind(3)).get().at(2)).value == 3);
 }
@@ -247,10 +252,13 @@ TEST_CASE("integration: destroying the database mid-stream ends the stream", "[i
     ++seen;
     std::this_thread::sleep_for(100us);  // a slow consumer: chunks are still being handled when the database goes
   });
+
   while ( seen < 50 ) {
     std::this_thread::sleep_for(1ms);
   }
+
   database.reset();
+
   REQUIRE(streamed.wait_for(10s) == std::future_status::ready);
   CHECK_THROWS_WITH(streamed.get(), "the Postgres client is shutting down");
 }
@@ -341,6 +349,7 @@ TEST_CASE("integration: typed updates and deletes", "[integration]") {
 
   CHECK(database.execute(q::Prepared<RAISE_UP_TO>::bind(2.5, 2)).get() == 2);
   CHECK(database.execute(q::Prepared<CLEAR_NOTES>::bind()).get() == 3);
+
   const auto rows = database.execute(q::Prepared<ALL_SCORED>::bind()).get();
   REQUIRE(rows.size() == 3);
   CHECK(sch::get<"score">(rows[0]) == 2.5);
@@ -349,6 +358,7 @@ TEST_CASE("integration: typed updates and deletes", "[integration]") {
 
   CHECK(database.execute(q::Prepared<DROP_BELOW>::bind(3.0)).get() == 2);
   CHECK(database.execute(q::Prepared<DROP_ALL>::bind()).get() == 1);
+
   database.drop_table<Scored>().get();
   database.drop_table<Scored>().get();  // already gone: nothing to do
 }
@@ -399,6 +409,7 @@ TEST_CASE("integration: dates, times and UUIDs round-trip, in binary and in text
 
   // The server's own output, with a session time zone that is not UTC: its text has an offset of +05:30.
   CHECK(database.execute(q::RawStatement<"SET TIME ZONE 'Asia/Kolkata'", q::RawArguments<>>::bind()).get() == 0);
+
   for ( const pg::ResultFormat format : {pg::ResultFormat::Binary, pg::ResultFormat::Text} ) {
     const auto rows = database.execute(ServerTimes::bind(), pg::ReadOptions{.format = format}).get();
     REQUIRE(rows.size() == 1);
@@ -407,6 +418,7 @@ TEST_CASE("integration: dates, times and UUIDs round-trip, in binary and in text
     CHECK(sch::get<"wall">(rows[0]) == local_days{2026y / 10 / 1} + 12h + 500ms);
     CHECK(sch::get<"day">(rows[0]) == year_month_day{year{-43}, March, day{15}});
   }
+
   database.drop_table<Times>().get();
 }
 
@@ -420,7 +432,9 @@ TEST_CASE("integration: notices go to the handler, or nowhere", "[integration]")
                                                         const std::scoped_lock lock(mutex);
                                                         received.push_back(std::string(notice.severity) + ": " + std::string(notice.message));
                                                                   }}});
+
   heard.execute(Raise::bind()).get();
+
   {
     const std::scoped_lock lock(mutex);
     REQUIRE(received.size() == 1);
@@ -433,16 +447,20 @@ TEST_CASE("integration: notices go to the handler, or nowhere", "[integration]")
   REQUIRE(capture != nullptr);
   const int saved = dup(STDERR_FILENO);
   REQUIRE(dup2(fileno(capture.get()), STDERR_FILENO) >= 0);
+
   quiet.execute(Raise::bind()).get();
   quiet.execute(Skip::bind()).get();
+
   REQUIRE(std::fflush(stderr) == 0);
   REQUIRE(dup2(saved, STDERR_FILENO) >= 0);
   close(saved);
+
   CHECK(std::ftell(capture.get()) == 0);
 }
 
 TEST_CASE("integration: a numeric is read exactly, in binary and in text", "[integration]") {
   pg::Database database(test_db());
+
   using Amount = sch::Field<Cents, "amount">;
   using Amounts = q::RawStatement<
       "SELECT v::numeric(12,2) AS amount FROM unnest(ARRAY['19.99', '-0.05', '0.05', '1200.5', '9999999999.99', '0']) "
@@ -458,6 +476,7 @@ TEST_CASE("integration: a numeric is read exactly, in binary and in text", "[int
     for ( const auto& row : rows ) {
       cents.push_back(sch::get<"amount">(row).value);
     }
+
     CHECK(cents == std::vector<std::int64_t>{1999, -5, 5, 120050, 999999999999, 0});
     CHECK_THROWS_AS(database.execute(Third::bind(), pg::ReadOptions{.format = format}).get(),
                     std::invalid_argument);  // 0.333...: refused, not rounded
@@ -490,6 +509,7 @@ TEST_CASE("integration: the column type helpers round-trip, in binary and in tex
     CHECK(sch::get<"cost">(rows[1]) == Price{-5});
     CHECK_FALSE(sch::get<"place">(rows[1]).has_value());
   }
+
   const auto urgent = database.execute(q::Prepared<URGENT>::bind(Priority::High)).get();
   REQUIRE(urgent.size() == 1);
   CHECK(sch::get<"id">(urgent[0]) == 1);
@@ -497,6 +517,7 @@ TEST_CASE("integration: the column type helpers round-trip, in binary and in tex
   using Stored = q::RawStatement<"SELECT level::text || ' ' || cost::text || ' ' || place AS stored FROM schemacht_it_tasks WHERE id = 1",
                                  q::RawArguments<>, sch::Field<std::string, "stored">>;
   CHECK(sch::get<"stored">(database.execute(Stored::bind()).get().at(0)) == "2 19.99 file:///tmp/a");  // as the database holds them
+
   database.drop_table<Tasks>().get();
 }
 
@@ -508,6 +529,7 @@ TEST_CASE("integration: a table created from a schema keeps each unique column u
   pg::Database database(test_db());
   database.drop_table<Accounts>().get();
   database.create_table<Accounts>().get();
+
   database.insert<Accounts>({Accounts::make_row(1, "a@example.com", "555-0100")}).get();
   database.insert<Accounts>({Accounts::make_row(2, "b@example.com", std::nullopt)}).get();  // each column on its own: a new email will do
 
@@ -519,7 +541,9 @@ TEST_CASE("integration: a table created from a schema keeps each unique column u
       CHECK(error.sqlstate() == "23505");  // unique_violation
     }
   };
+
   refused(Accounts::make_row(3, "a@example.com", "555-0199"));  // the email again
   refused(Accounts::make_row(4, "c@example.com", "555-0100"));  // the phone again
+
   database.drop_table<Accounts>().get();
 }

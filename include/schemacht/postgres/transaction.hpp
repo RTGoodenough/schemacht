@@ -46,9 +46,11 @@ namespace detail {
       sql += "SERIALIZABLE";
       break;
   }
+
   if ( options.read_only ) {
     sql += " READ ONLY";
   }
+
   return sql;
 }
 
@@ -87,6 +89,7 @@ class Transaction : public StatementRunner {
       abandon();
       StatementRunner::operator=(std::move(other));
     }
+
     return *this;
   }
 
@@ -113,7 +116,9 @@ class Transaction : public StatementRunner {
   [[nodiscard]] std::future<void> commit() {
     const auto        promise = std::make_shared<std::promise<void>>();
     std::future<void> future = promise->get_future();
+
     commit_into([promise](const std::exception_ptr& error) { detail::settle(*promise, error); });
+
     return future;
   }
 
@@ -127,7 +132,9 @@ class Transaction : public StatementRunner {
   [[nodiscard]] std::future<void> rollback() {
     const auto        promise = std::make_shared<std::promise<void>>();
     std::future<void> future = promise->get_future();
+
     rollback_into([promise](const std::exception_ptr& error) { detail::settle(*promise, error); });
+
     return future;
   }
 
@@ -162,6 +169,7 @@ class Transaction : public StatementRunner {
     if ( ! lease ) {
       return;
     }
+
     try {
       client().run(lease, "ROLLBACK", {}, [](const QueryResult& /*result*/, const std::exception_ptr& /*error*/) {});
     } catch ( ... ) {  // NOLINT(bugprone-empty-catch) -- see above: letting go of the lease is enough

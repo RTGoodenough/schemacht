@@ -51,6 +51,7 @@ template <CTString... parts>
   char                  joined[TOTAL]{};  // NOLINT(cppcoreguidelines-avoid-c-arrays,modernize-avoid-c-arrays)
   char*                 cursor = joined;  // NOLINT(cppcoreguidelines-pro-bounds-array-to-pointer-decay)
   ((cursor = std::ranges::copy(parts.view(), cursor).out), ...);
+
   return CTString<TOTAL>(joined);
 }
 

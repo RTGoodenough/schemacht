@@ -65,6 +65,7 @@ struct schemacht::ColumnType<schemacht::json::Json> {
     if ( bytes.empty() || bytes.front() != std::byte{JSONB_BINARY_VERSION} ) {
       throw std::invalid_argument("parse_binary: not a jsonb value (its first byte is its version, and only 1 exists)");
     }
+
     return json::Json(std::string(postgres::as_text(bytes.subspan(1))));
   }
 
