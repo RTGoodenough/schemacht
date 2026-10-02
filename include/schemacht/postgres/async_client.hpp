@@ -37,9 +37,15 @@ class QueryError : public std::runtime_error {
   std::string _sqlstate;
 };
 
+/** @brief The form a statement's result arrives in: PostgreSQL's binary form (less to send and parse), or text. */
+enum class ResultFormat : std::uint8_t {
+  Binary,
+  Text,
+};
+
 /**
  * @brief The rows a statement returned, as libpq holds them: each field as text or, if the statement asked for it (see
- * `StreamOptions::binary`), in PostgreSQL's binary form. Move-only.
+ * `StreamOptions::format`), in PostgreSQL's binary form. Move-only.
  */
 class QueryResult {
  public:
@@ -126,10 +132,10 @@ class AsyncClient {
 
   /** @brief How `stream` reads a statement. */
   struct StreamOptions {
-    std::size_t chunk_rows = DEFAULT_STREAM_CHUNK_ROWS;  ///< Rows in each chunk (the last has what is left).
-    std::size_t max_buffered_chunks = 4;  ///< Chunks read but not yet handled, before the client stops reading and the server has to wait.
-    bool        binary =
-        false;  ///< Ask for the result in PostgreSQL's binary form: read it with `QueryResult::binary`, not `text` (which would return garbage).
+    std::size_t  chunk_rows = DEFAULT_STREAM_CHUNK_ROWS;  ///< Rows in each chunk (the last has what is left).
+    std::size_t  max_buffered_chunks = 4;  ///< Chunks read but not yet handled, before the client stops reading and the server has to wait.
+    ResultFormat format =
+        ResultFormat::Binary;  ///< The form of the result: `QueryResult::field` gives each value's bytes in binary form, or its text.
   };
 
   /** @brief Called on a worker thread with each chunk of a stream, in turn. Returns whether to go on: `false` stops the stream. */
@@ -187,8 +193,8 @@ class AsyncClient {
    * @param params  The text of each argument, in order.
    * @param options How to read it.
    * @param on_chunk Called with each chunk (a `QueryResult` of up to `chunk_rows` rows).
-   * @param done    Called exactly once, on a worker thread, when the stream has ended.
-   * @throws std::invalid_argument if `options` asks for a chunk of no rows or no buffered chunks.
+   * @param done    Called exactly once, on a worker thread, when the stream has ended: with `std::invalid_argument` (and
+   *                 nothing run) if `options` asks for a chunk of no rows or no buffered chunks.
    */
   void stream(std::string sql, std::vector<std::string> params, StreamOptions options, ChunkHandler on_chunk, StreamCompletion done);
 

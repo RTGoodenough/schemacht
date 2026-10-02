@@ -13,6 +13,7 @@
 #include <type_traits>
 #include <utility>
 
+#include "schemacht/postgres/async_client.hpp"
 #include "schemacht/postgres/field_codec.hpp"
 #include "schemacht/schema/field.hpp"
 
@@ -24,12 +25,6 @@
  * here: a projected query's `result_type` simply has fewer fields, in the order the statement returns them.
  */
 namespace schemacht::postgres {
-
-/** @brief The form a query's result arrives in: PostgreSQL's binary form (less to send and parse), or text. */
-enum class ResultFormat : std::uint8_t {
-  Binary,
-  Text,
-};
 
 /**
  * @brief A chunk of a query's result, as `read_rows` reads it (`QueryResult` is one).
@@ -62,15 +57,9 @@ template <typename result_t>
 concept BinaryReadableRow =
     schema::FieldTuple<result_t> && detail::every_field_has_binary_form<result_t>(std::make_index_sequence<std::tuple_size_v<result_t>>{});
 
-/** @brief What `read_rows` hands rows to: `take(row)` returns whether it wants more. */
-template <typename consumer_t, typename result_t>
-concept RowConsumer = schema::FieldTuple<result_t> && requires(consumer_t& consumer, result_t&& row) {
-  { consumer.take(std::move(row)) } -> std::same_as<bool>;
-};
-
 /**
- * @brief A function a stream hands each row to (`Database::stream`): invocable with a `result_t&&`, returning `void`, or a
- * `bool` where `false` stops the stream.
+ * @brief A function rows are handed to (by `read_rows`, and so by `Database::stream`): invocable with a `result_t&&`,
+ * returning `void`, or a `bool` where `false` means it wants no more.
  */
 template <typename handler_t, typename result_t>
 concept RowCallback =
@@ -130,17 +119,21 @@ void check_column_types(const chunk_t& chunk) {
 }
 
 /**
- * @brief Reads every row of `chunk` as a `result_t` and hands each to `consumer`, in order, until it wants no more.
+ * @brief Reads every row of `chunk` as a `result_t` and hands each to `on_row`, in order, until it wants no more.
  * @pre The chunk has `result_t`'s columns (see `check_result_columns`).
- * @return Whether `consumer` wants more rows (false: it stopped, and the rows after that were not read).
- * @throws as `read_row` and `check_column_types`; std::logic_error for a binary chunk of a row that is not `BinaryReadableRow`.
+ * @return Whether `on_row` wants more rows (false: it returned `false`, and the rows after that were not read).
+ * @throws as `read_row`, `check_column_types` and `on_row`; std::logic_error for a binary chunk of a row that is not `BinaryReadableRow`.
  */
-template <schema::FieldTuple result_t, ResultChunk chunk_t, RowConsumer<result_t> consumer_t>
-bool read_rows(const chunk_t& chunk, consumer_t& consumer) {
+template <schema::FieldTuple result_t, ResultChunk chunk_t, RowCallback<result_t> handler_t>
+bool read_rows(const chunk_t& chunk, handler_t& on_row) {
   const auto each_row = [&]<ResultFormat format> {
     for ( std::size_t row = 0; row < chunk.row_count(); ++row ) {
-      if ( ! consumer.take(read_row<result_t, format>(chunk, row)) ) {
-        return false;
+      if constexpr ( std::same_as<std::invoke_result_t<handler_t&, result_t&&>, bool> ) {
+        if ( ! std::invoke(on_row, read_row<result_t, format>(chunk, row)) ) {
+          return false;
+        }
+      } else {
+        std::invoke(on_row, read_row<result_t, format>(chunk, row));
       }
     }
     return true;

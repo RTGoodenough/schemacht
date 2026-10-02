@@ -131,7 +131,8 @@ std::optional<std::string_view> QueryResult::field(std::size_t row, std::size_t 
   if ( PQgetisnull(_raw.get(), row_index, column_index) != 0 ) {
     return std::nullopt;
   }
-  return std::string_view{PQgetvalue(_raw.get(), row_index, column_index), static_cast<std::size_t>(PQgetlength(_raw.get(), row_index, column_index))};
+  return std::string_view{PQgetvalue(_raw.get(), row_index, column_index),
+                          static_cast<std::size_t>(PQgetlength(_raw.get(), row_index, column_index))};
 }
 
 // ============================================================================
@@ -184,7 +185,10 @@ class AsyncClient::Impl {
 
   void stream(std::string sql, std::vector<std::string> params, StreamOptions options, ChunkHandler on_chunk, StreamCompletion done) {
     if ( options.chunk_rows == 0 || options.max_buffered_chunks == 0 ) {
-      throw std::invalid_argument("a stream needs chunks of at least one row and at least one buffered chunk");
+      _workers->post([done = std::move(done)] mutable {
+        done(std::make_exception_ptr(std::invalid_argument("a stream needs chunks of at least one row and at least one buffered chunk")));
+      });
+      return;
     }
     enqueue(Operation{
         .sql = std::move(sql),
@@ -205,19 +209,19 @@ class AsyncClient::Impl {
     Stream(StreamOptions stream_options, ChunkHandler chunk_handler, StreamCompletion completion)
         : options(stream_options), on_chunk(std::move(chunk_handler)), done(std::move(completion)) {}
 
-    StreamOptions     options;
+    StreamOptions    options;
     ChunkHandler     on_chunk;
     StreamCompletion done;
 
-    std::mutex               mutex;
+    std::mutex              mutex;
     std::deque<QueryResult> ready;               // chunks read and waiting for the handler
-    bool                     delivering = false;  // a worker task is handling chunks
-    bool                     stop = false;        // the consumer is done (it said so, or threw) or the client is shutting down: chunks are dropped
-    bool                     aborted = false;     // ... because of the shutdown: the stream did not end by itself
-    std::exception_ptr       handler_error;       // what the handler threw
-    bool                     finished = false;    // the statement's last result has been read
-    std::exception_ptr       error;               // what the server, or the connection, reported
-    bool                     completed = false;   // `done` has been called (or posted)
+    bool                    delivering = false;  // a worker task is handling chunks
+    bool                    stop = false;        // the consumer is done (it said so, or threw) or the client is shutting down: chunks are dropped
+    bool                    aborted = false;     // ... because of the shutdown: the stream did not end by itself
+    std::exception_ptr      handler_error;       // what the handler threw
+    bool                    finished = false;    // the statement's last result has been read
+    std::exception_ptr      error;               // what the server, or the connection, reported
+    bool                    completed = false;   // `done` has been called (or posted)
   };
 
   /** @brief A statement waiting to start: a plain one (`done`) or a stream (`stream`). */
@@ -236,8 +240,8 @@ class AsyncClient::Impl {
     pg_result*         result = nullptr;  // the last successful result, owned until handed to the completion
     std::exception_ptr error;
     // A stream's state, all of it used by the reactor thread only:
-    bool                               paused = false;     // not reading: the consumer has fallen behind
-    bool                               read_done = false;  // every result has been read; only a cancel still running holds the connection
+    bool          paused = false;     // not reading: the consumer has fallen behind
+    bool          read_done = false;  // every result has been read; only a cancel still running holds the connection
     bool          cancel_sent = false;
     bool          query_canceled = false;  // the statement ended with a cancellation (SQLSTATE 57014)
     PGcancelConn* cancel = nullptr;        // a cancel being sent, driven by the reactor (owned); null when there is none
@@ -482,7 +486,8 @@ class AsyncClient::Impl {
       values.push_back(param.c_str());
     }
 
-    const int binary_results = operation.stream && operation.stream->options.binary ? 1 : 0;  // the format of every column of the result
+    const int binary_results =
+        operation.stream && operation.stream->options.format == ResultFormat::Binary ? 1 : 0;  // the format of every column of the result
     const int sent = PQsendQueryParams(connection, operation.sql.c_str(), static_cast<int>(values.size()), nullptr, values.data(), nullptr, nullptr,
                                        binary_results);
     Active    statement{.operation = std::move(operation), .connection = connection};
@@ -587,7 +592,7 @@ class AsyncClient::Impl {
       return;
     }
     PGconn*            connection = statement.connection;
-    QueryResult       result;
+    QueryResult        result;
     std::exception_ptr error = statement.error;
     if ( ! error ) {
       result = QueryResult(statement.result);
@@ -847,12 +852,12 @@ class AsyncClient::Impl {
     return false;
   }
 
-  std::string                         _session_sql;
-  std::vector<Reconnecting>           _reconnecting;  // reactor thread only
+  std::string                        _session_sql;
+  std::vector<Reconnecting>          _reconnecting;  // reactor thread only
   std::unique_ptr<async::ThreadPool> _workers;
-  std::vector<PGconn*>                _connections;
-  int                                 _wake_read = -1;
-  int                                 _wake_write = -1;
+  std::vector<PGconn*>               _connections;
+  int                                _wake_read = -1;
+  int                                _wake_write = -1;
 
   std::mutex            _mutex;  // guards the three below
   std::deque<Operation> _queued;

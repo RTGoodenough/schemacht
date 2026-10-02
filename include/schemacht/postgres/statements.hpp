@@ -214,7 +214,7 @@ template <schema::IsSchema schema_t>
                   "query::sql::SqlType for it");
     return {insert_detail::build_unnest<schema_t>(rows, std::make_index_sequence<schema_t::FIELD_COUNT>{})};
   } else {
-    constexpr std::size_t    ROWS_PER_STATEMENT = MAX_STATEMENT_PARAMETERS / schema_t::INSERTABLE_FIELD_COUNT;
+    constexpr std::size_t        ROWS_PER_STATEMENT = MAX_STATEMENT_PARAMETERS / schema_t::INSERTABLE_FIELD_COUNT;
     std::vector<InsertStatement> statements;
     for ( std::size_t first = 0; first < rows.size(); first += ROWS_PER_STATEMENT ) {
       statements.push_back(insert_detail::build_values<schema_t>(rows.subspan(first, std::min(ROWS_PER_STATEMENT, rows.size() - first))));
@@ -278,23 +278,22 @@ template <RunnableStatement statement_t>
 }
 
 /**
- * @brief Checks that `result` has the columns `statement` names, in that order: a result whose columns are not the fields' is an error, not silently the wrong values.
+ * @brief Checks that `result` has the columns `column_names`, in that order: a result whose columns are not the fields' is an error, not silently the wrong values.
  * @throws std::runtime_error if the result has rows and its number of columns is not the statement's, or a column is named otherwise (the message names both).
  */
 template <NamedColumns result_t>
-void check_result_columns(const WireStatement& statement, const result_t& result) {
+void check_result_columns(std::span<const std::string_view> column_names, const result_t& result) {
   const std::size_t column_count = result.column_count();
-  if ( column_count != statement.column_names.size() ) {
+  if ( column_count != column_names.size() ) {
     if ( result.row_count() > 0 ) {  // a result without rows and without columns is the end of a stream, not a mistake
       throw std::runtime_error("the result has " + std::to_string(column_count) + " columns, and the statement returns " +
-                               std::to_string(statement.column_names.size()));
+                               std::to_string(column_names.size()));
     }
     return;
   }
-  for ( std::size_t column = 0; column < column_count; ++column ) {
-    const std::string_view expected = statement.column_names.at(column);
-    if ( const std::string_view name = result.column_name(column); name != expected ) {
-      throw std::runtime_error("the statement returned the column '" + std::string(name) + "' at position " + std::to_string(column + 1) +
+  for ( std::size_t column = 0; const std::string_view expected : column_names ) {
+    if ( const std::string_view name = result.column_name(column++); name != expected ) {  // `column` is now its 1-based position
+      throw std::runtime_error("the statement returned the column '" + std::string(name) + "' at position " + std::to_string(column) +
                                ", where its fields have '" + std::string(expected) + "' (name the select list's columns with AS)");
     }
   }

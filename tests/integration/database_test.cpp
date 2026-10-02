@@ -15,7 +15,9 @@
 #include <initializer_list>
 #include <memory>
 #include <optional>
+#include <stdexcept>
 #include <string>
+#include <string_view>
 #include <thread>
 #include <utility>
 #include <vector>
@@ -117,7 +119,17 @@ void check_sample(const std::vector<Types::row_type>& rows) {
   }
 }
 
+/** @brief An argument type whose text form is always refused. */
+struct Unwritable {};
+
 }  // namespace
+
+template <>
+class schemacht::postgres::FieldCodec<Unwritable> {
+ public:
+  static Unwritable  parse(std::string_view /*text*/) { return {}; }
+  static std::string format(const Unwritable& /*value*/) { throw std::invalid_argument("this argument has no text form"); }
+};
 
 TEST_CASE("integration: every built-in type round-trips, in binary and in text", "[integration]") {
   pg::Database database(test_db());
@@ -167,7 +179,7 @@ TEST_CASE("integration: stopping a stream cancels the query and frees the connec
 }
 
 TEST_CASE("integration: destroying the database mid-stream ends the stream", "[integration]") {
-  auto                    database = std::make_unique<pg::Database>(test_db(), pg::Database::Options{.pool = {}, .read = {.chunk_rows = 10}});
+  auto                     database = std::make_unique<pg::Database>(test_db(), pg::Database::Options{.pool = {}, .read = {.chunk_rows = 10}});
   std::atomic<std::size_t> seen{0};
   std::future<void>        streamed = database->stream(Series::bind(1000000), [&seen](auto&& /*row*/) {
     ++seen;
@@ -214,4 +226,21 @@ TEST_CASE("integration: errors carry what went wrong", "[integration]") {
   using Misnamed = q::RawStatement<"SELECT 1 AS wrong", q::RawArguments<>, sch::Field<int, "n">>;
   CHECK_THROWS_WITH(database.execute(Misnamed::bind()).get(),
                     "the statement returned the column 'wrong' at position 1, where its fields have 'n' (name the select list's columns with AS)");
+}
+
+TEST_CASE("integration: a statement that cannot start reports why, through its completion", "[integration]") {
+  pg::Database database(test_db());
+
+  using Refused = q::RawStatement<"SELECT $1::text AS n", q::RawArguments<Unwritable>, sch::Field<std::string, "n">>;
+  CHECK_THROWS_WITH(database.execute(Refused::bind(Unwritable{})).get(), "this argument has no text form");
+
+  std::promise<std::pair<std::thread::id, bool>> called;  // on which thread, and with an error
+  database.execute_into(Refused::bind(Unwritable{}), [&called](const std::vector<Refused::row_type>& /*rows*/, const std::exception_ptr& error) {
+    called.set_value({std::this_thread::get_id(), error != nullptr});
+  });
+  const auto [thread, failed] = called.get_future().get();
+  CHECK(thread != std::this_thread::get_id());  // a worker thread, as documented
+  CHECK(failed);
+
+  CHECK_THROWS_AS(database.execute(Series::bind(1), pg::ReadOptions{.chunk_rows = 0}).get(), std::invalid_argument);
 }

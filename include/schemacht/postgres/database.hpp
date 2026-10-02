@@ -2,14 +2,11 @@
 
 #include <concepts>
 #include <cstddef>
-#include <cstdint>
 #include <exception>
-#include <functional>
 #include <future>
 #include <memory>
 #include <optional>
 #include <span>
-#include <stdexcept>
 #include <string>
 #include <type_traits>
 #include <utility>
@@ -17,8 +14,8 @@
 
 #include "schemacht/postgres/async_client.hpp"
 #include "schemacht/postgres/key_lookup.hpp"
-#include "schemacht/postgres/statements.hpp"
 #include "schemacht/postgres/row_reader.hpp"
+#include "schemacht/postgres/statements.hpp"
 #include "schemacht/schema/schema.hpp"
 #include "schemacht/util/compile_time.hpp"
 
@@ -47,61 +44,6 @@ concept ExecuteCallback = std::invocable<done_t&, std::vector<result_t>, std::ex
 template <typename done_t>
 concept StreamCallback = std::invocable<done_t&, std::exception_ptr> && std::same_as<std::invoke_result_t<done_t&, std::exception_ptr>, void>;
 
-/**
- * @brief What a running statement hands its rows to (`take`, one at a time, never from two threads at once) and then tells
- * once that it ended (`finish`, with the error or null).
- */
-template <typename execution_t, typename result_t>
-concept Execution = RowConsumer<execution_t, result_t> && requires(execution_t& execution, const std::exception_ptr& error) {
-  { execution.finish(error) } -> std::same_as<void>;
-};
-
-/** @brief The execution of `execute_into`: keeps every row, and hands them all to `done` at the end. */
-template <schema::FieldTuple result_t, ExecuteCallback<result_t> done_t>
-class Collector {
- public:
-  explicit Collector(done_t done) : _done(std::move(done)) {}
-
-  bool take(result_t&& row) {
-    _rows.push_back(std::move(row));
-    return true;
-  }
-
-  void finish(const std::exception_ptr& error) {
-    if ( error ) {
-      _done({}, error);
-    } else {
-      _done(std::move(_rows), {});
-    }
-  }
-
- private:
-  std::vector<result_t> _rows;
-  done_t                _done;
-};
-
-/** @brief The execution of `stream_into`: hands each row to `on_row` and keeps none; `on_row` returning `false` stops it. */
-template <schema::FieldTuple result_t, RowCallback<result_t> handler_t, StreamCallback done_t>
-class Streamer {
- public:
-  Streamer(handler_t on_row, done_t done) : _on_row(std::move(on_row)), _done(std::move(done)) {}
-
-  bool take(result_t&& row) {
-    if constexpr ( std::same_as<std::invoke_result_t<handler_t&, result_t&&>, bool> ) {
-      return std::invoke(_on_row, std::move(row));
-    } else {
-      std::invoke(_on_row, std::move(row));
-      return true;
-    }
-  }
-
-  void finish(const std::exception_ptr& error) { _done(error); }
-
- private:
-  handler_t _on_row;
-  done_t    _done;
-};
-
 /** @return A future that is already complete with `value`. */
 template <typename value_t>
 [[nodiscard]] std::future<value_t> ready_future(value_t value) {
@@ -112,14 +54,11 @@ template <typename value_t>
 
 }  // namespace detail
 
-/** @brief How a result is read: in chunks of how many rows, how many chunks may wait for the consumer, and in which form. */
-struct ReadOptions {
-  std::size_t chunk_rows = DEFAULT_STREAM_CHUNK_ROWS;  ///< Rows in each chunk (`AsyncClient::stream`).
-  std::size_t max_buffered_chunks =
-      AsyncClient::StreamOptions{}
-          .max_buffered_chunks;                ///< Chunks read but not yet handled, before the pool stops reading and the server has to wait.
-  ResultFormat format = ResultFormat::Binary;  ///< The form of the results. A row with a column that has no binary form (see `HasBinaryForm`) is always read as text.
-};
+/**
+ * @brief How a result is read: in chunks of how many rows, how many chunks may wait for the handler, and in which form. A row
+ * with a column that has no binary form (see `HasBinaryForm`) is always read as text.
+ */
+using ReadOptions = AsyncClient::StreamOptions;
 
 /**
  * @brief Postgres database with a pool of connections
@@ -128,7 +67,7 @@ class Database {
  public:
   struct Options {
     AsyncClient::Options pool;  ///< The connections, the threads that run completions, and the session settings.
-    ReadOptions           read;  ///< How results are read, unless a call says otherwise.
+    ReadOptions          read;  ///< How results are read, unless a call says otherwise.
   };
 
   /**
@@ -160,7 +99,11 @@ class Database {
   template <RunnableStatement statement_t, detail::ExecuteCallback<typename statement_t::result_type> done_t>
   void execute_into(const statement_t& statement, done_t done, const std::optional<ReadOptions>& read = std::nullopt) {
     using result_t = statement_t::result_type;
-    start_into<result_t>(detail::wire(statement), read, std::make_shared<detail::Collector<result_t, done_t>>(std::move(done)));
+    const auto rows = std::make_shared<std::vector<result_t>>();
+    stream_into(
+        statement, [rows](result_t&& row) { rows->push_back(std::move(row)); },
+        [rows, done = std::move(done)](const std::exception_ptr& error) mutable { done(error ? std::vector<result_t>{} : std::move(*rows), error); },
+        read);
   }
 
   /**
@@ -203,8 +146,22 @@ class Database {
   template <RunnableStatement statement_t, RowCallback<typename statement_t::result_type> handler_t, detail::StreamCallback done_t>
   void stream_into(const statement_t& statement, handler_t on_row, done_t done, const std::optional<ReadOptions>& read = std::nullopt) {
     using result_t = statement_t::result_type;
-    start_into<result_t>(detail::wire(statement), read,
-                         std::make_shared<detail::Streamer<result_t, handler_t, done_t>>(std::move(on_row), std::move(done)));
+    ReadOptions options = read.value_or(_read);
+    options.format = BinaryReadableRow<result_t> ? options.format : ResultFormat::Text;
+    detail::WireStatement wired;
+    try {
+      wired = detail::wire(statement);  // formats the arguments, which a codec may refuse
+    } catch ( ... ) {
+      _client.post([done = std::move(done), error = std::current_exception()] mutable { done(error); });
+      return;
+    }
+    _client.stream(
+        std::string(wired.sql), std::move(wired.params), options,
+        [column_names = std::move(wired.column_names), on_row = std::move(on_row)](QueryResult chunk) mutable {
+          detail::check_result_columns(column_names, chunk);
+          return read_rows<result_t>(chunk, on_row);  // false: `on_row` wants no more rows, stop the query
+        },
+        std::move(done));
   }
 
   /**
@@ -265,38 +222,6 @@ class Database {
   }
 
  private:
-  /**
-   * @brief Starts `statement`, whose rows `execution` takes as they arrive; `execution` is told when it ends (on a worker
-   * thread), or at once if it cannot start. A row with a column that has no binary form is read as text.
-   */
-  template <schema::FieldTuple result_t, detail::Execution<result_t> execution_t>
-  void start_into(detail::WireStatement statement, const std::optional<ReadOptions>& read, const std::shared_ptr<execution_t>& execution) {
-    try {
-      const ReadOptions how = [&] {
-        ReadOptions chosen = read.has_value() ? *read : _read;
-        if constexpr ( ! BinaryReadableRow<result_t> ) {
-          chosen.format = ResultFormat::Text;
-        }
-        return chosen;
-      }();
-      const AsyncClient::StreamOptions options{
-          .chunk_rows = how.chunk_rows, .max_buffered_chunks = how.max_buffered_chunks, .binary = how.format == ResultFormat::Binary};
-      // The pool may still be working after this returns: it gets its own copy of the statement's text and arguments, and
-      // shares ownership of the execution.
-      std::string              sql(statement.sql);
-      std::vector<std::string> params = std::move(statement.params);
-      _client.stream(
-          std::move(sql), std::move(params), options,
-          [statement, execution](QueryResult chunk) {
-            detail::check_result_columns(statement, chunk);
-            return read_rows<result_t>(chunk, *execution);  // false: the execution wants no more rows, stop the query
-          },
-          [execution](const std::exception_ptr& error) { execution->finish(error); });
-    } catch ( ... ) {
-      execution->finish(std::current_exception());
-    }
-  }
-
   /** @brief Runs `statements` from `next` on, one after another, then completes `promise`; the first error stops it. */
   void run_in_order(const std::shared_ptr<std::vector<detail::InsertStatement>>& statements, std::size_t next,
                     const std::shared_ptr<std::promise<void>>& promise) {
@@ -316,7 +241,7 @@ class Database {
   }
 
   AsyncClient _client;
-  ReadOptions  _read;
+  ReadOptions _read;
 };
 
 }  // namespace schemacht::postgres

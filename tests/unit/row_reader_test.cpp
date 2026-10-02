@@ -41,8 +41,8 @@ class FakeChunk {
   }
 
  private:
-  bool                                                  _binary;
-  std::vector<std::uint32_t>                            _types;
+  bool                                                 _binary;
+  std::vector<std::uint32_t>                           _types;
   std::vector<std::vector<std::optional<std::string>>> _cells;
 };
 
@@ -59,12 +59,12 @@ std::string int8_bytes(std::int64_t value) {
 
 using Row = std::tuple<t::Id, t::Nick>;
 
-/** @brief A consumer that keeps rows, and wants no more once it has `limit`. */
+/** @brief A row handler that keeps rows, and wants no more once it has `limit`. */
 struct Keep {
   std::vector<Row> rows;
   std::size_t      limit = 100;
 
-  bool take(Row&& row) {
+  bool operator()(Row&& row) {
     rows.push_back(std::move(row));
     return rows.size() < limit;
   }
@@ -92,7 +92,9 @@ TEST_CASE("the reader's concepts", "[row_reader]") {
   STATIC_REQUIRE_FALSE(sch::FieldTuple<t::Id>);
   STATIC_REQUIRE(pg::BinaryReadableRow<Row>);
   STATIC_REQUIRE_FALSE(pg::BinaryReadableRow<std::tuple<sch::Field<TextOnly, "only">>>);
-  STATIC_REQUIRE(pg::RowConsumer<Keep, Row>);
+  STATIC_REQUIRE(pg::RowCallback<Keep, Row>);
+  STATIC_REQUIRE(pg::RowCallback<void (*)(Row&&), Row>);
+  STATIC_REQUIRE_FALSE(pg::RowCallback<int (*)(Row&&), Row>);
 }
 
 TEST_CASE("rows are read from text, with NULLs", "[row_reader]") {
@@ -123,7 +125,8 @@ TEST_CASE("errors name the column", "[row_reader]") {
   CHECK_THROWS_WITH((pg::read_row<Row, pg::ResultFormat::Text>(null_id, 0)), "column 'id' is NULL, but its schema field is not a std::optional");
 
   const FakeChunk bad_id(false, {20, 25}, {{"x", "y"}});
-  CHECK_THROWS_WITH((pg::read_row<Row, pg::ResultFormat::Text>(bad_id, 0)), "column 'id': parse_field: could not parse 'x' as a number of the column's type");
+  CHECK_THROWS_WITH((pg::read_row<Row, pg::ResultFormat::Text>(bad_id, 0)),
+                    "column 'id': parse_field: could not parse 'x' as a number of the column's type");
 
   const FakeChunk wrong_type(true, {25, 25}, {{"text", "y"}});
   Keep            keep;
@@ -141,13 +144,18 @@ TEST_CASE("read_rows stops when the consumer wants no more", "[row_reader]") {
   Keep all;
   CHECK(pg::read_rows<Row>(chunk, all));
   CHECK(all.rows.size() == 3);
+
+  std::size_t seen = 0;
+  auto        count = [&seen](const Row& /*row*/) { ++seen; };  // returns nothing: wants every row
+  CHECK(pg::read_rows<Row>(chunk, count));
+  CHECK(seen == 3);
 }
 
 TEST_CASE("a row with no binary form refuses a binary chunk", "[row_reader]") {
   using TextRow = std::tuple<sch::Field<TextOnly, "only">>;
   struct KeepText {
     std::vector<TextRow> rows;
-    bool                 take(TextRow&& row) {
+    bool                 operator()(TextRow&& row) {
       rows.push_back(std::move(row));
       return true;
     }
