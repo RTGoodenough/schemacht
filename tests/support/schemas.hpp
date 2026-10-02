@@ -36,6 +36,10 @@ using Tagged = sch::Schema<"tagged", Id, Tags>;
 using Doubled = sch::Field<std::int64_t, "doubled", sch::KeyRole::None, true>;
 using WithGenerated = sch::Schema<"with_generated", Id, Doubled, Name>;
 
+/** @brief A schema whose key the database numbers: an identity column, which `create_table` writes. */
+using NumberedId = sch::Field<std::int32_t, "id", sch::KeyRole::Primary, true>;
+using Numbered = sch::Schema<"numbered", NumberedId, Name, Nick>;
+
 /** @brief "nearest first", as a module would declare it. */
 struct Nearest {
   static constexpr std::string_view OPERATOR = "<->";

@@ -209,6 +209,7 @@ struct Operation {
   std::shared_ptr<Stream>                  stream;
   std::shared_ptr<AsyncClient::LeaseState> lease;  ///< The lease a statement runs on; null for one the pool runs.
   AsyncClient::LeaseCompletion             granted;
+  ResultFormat                             format = ResultFormat::Text;  ///< The form of every column of the result.
 };
 
 }  // namespace
@@ -270,7 +271,7 @@ class AsyncClient::Impl {
   }
 
   /** @brief Runs `sql` on the pool, or on `lease`'s connection if there is one. */
-  void run(const std::shared_ptr<LeaseState>& lease, std::string sql, std::vector<std::string> params, Completion done) {
+  void run(const std::shared_ptr<LeaseState>& lease, std::string sql, std::vector<std::string> params, Completion done, ResultFormat format) {
     enqueue(
         Operation{
             .sql = std::move(sql),
@@ -279,6 +280,7 @@ class AsyncClient::Impl {
             .stream = nullptr,
             .lease = lease,
             .granted = nullptr,
+            .format = format,
         }
     );
   }
@@ -303,12 +305,23 @@ class AsyncClient::Impl {
             .stream = std::make_shared<Stream>(options, std::move(on_chunk), std::move(done)),
             .lease = lease,
             .granted = nullptr,
+            .format = options.format,
         }
     );
   }
 
   void lease(LeaseCompletion granted) {
-    enqueue(Operation{.sql = {}, .params = {}, .done = nullptr, .stream = nullptr, .lease = nullptr, .granted = std::move(granted)});
+    enqueue(
+        Operation{
+            .sql = {},
+            .params = {},
+            .done = nullptr,
+            .stream = nullptr,
+            .lease = nullptr,
+            .granted = std::move(granted),
+            .format = ResultFormat::Text,
+        }
+    );
   }
 
   /** @brief The lease's holder let go of it: its connection goes back once what is queued on it is done. */
@@ -720,8 +733,7 @@ class AsyncClient::Impl {
       values.push_back(param.c_str());
     }
 
-    const int binary_results =
-        operation.stream && operation.stream->options.format == ResultFormat::Binary ? 1 : 0;  // the format of every column of the result
+    const int binary_results = operation.format == ResultFormat::Binary ? 1 : 0;  // the format of every column of the result
     const int sent = PQsendQueryParams(
         connection, operation.sql.c_str(), static_cast<int>(values.size()), nullptr, values.data(), nullptr, nullptr, binary_results
     );
@@ -1160,8 +1172,8 @@ AsyncClient::AsyncClient(const std::string& conninfo, const Options& options) : 
 
 AsyncClient::~AsyncClient() = default;
 
-void AsyncClient::run(std::string sql, std::vector<std::string> params, Completion done) {
-  _impl->run(nullptr, std::move(sql), std::move(params), std::move(done));
+void AsyncClient::run(std::string sql, std::vector<std::string> params, Completion done, ResultFormat format) {
+  _impl->run(nullptr, std::move(sql), std::move(params), std::move(done), format);
 }
 
 void AsyncClient::stream(std::string sql, std::vector<std::string> params, StreamOptions options, ChunkHandler on_chunk, StreamCompletion done) {
@@ -1184,13 +1196,13 @@ std::exception_ptr empty_lease() {
 
 }  // namespace
 
-void AsyncClient::run(const Lease& lease, std::string sql, std::vector<std::string> params, Completion done) {
+void AsyncClient::run(const Lease& lease, std::string sql, std::vector<std::string> params, Completion done, ResultFormat format) {
   if ( ! lease ) {
     _impl->post([done = std::move(done)] mutable { done(QueryResult{}, empty_lease()); });
     return;
   }
 
-  _impl->run(lease._state, std::move(sql), std::move(params), std::move(done));
+  _impl->run(lease._state, std::move(sql), std::move(params), std::move(done), format);
 }
 
 void AsyncClient::stream(

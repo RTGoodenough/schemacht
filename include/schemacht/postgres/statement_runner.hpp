@@ -77,25 +77,47 @@ class Countdown {
   done_t             _done;
 };
 
+/** @brief The results of statements whose rows a caller reads (`RETURNING`): each statement's, in statement order. */
+struct KeptResults {
+  ResultFormat             format = ResultFormat::Text;  ///< The form the statements are asked to return their rows in.
+  std::vector<QueryResult> results;
+};
+
+/** @brief Where `send_all` keeps the results; null when nobody reads them. */
+using Results = std::shared_ptr<KeptResults>;
+
 /**
  * @brief Queues every one of `statements` at once, on `lease`'s connection or (if it is null) on the pool. On a lease, nothing
  * queued later can come between them. Calls `done` once, after the last completion, with the earliest error.
+ *
+ * With `results`, each statement's result is kept there, at its index and in its `format`, for `done` to read: each
+ * completion only stores its own, so nothing is read before every statement has finished.
  * @pre `statements` isn't empty; on the pool, it is one statement (several go through `run_atomically`).
  */
 template <StreamCallback done_t>
-void send_all(AsyncClient& client, const AsyncClient::Lease* lease, std::vector<InsertStatement> statements, done_t done) {
-  const auto countdown = std::make_shared<Countdown<done_t>>(statements.size(), std::move(done));
+void send_all(
+    AsyncClient& client, const AsyncClient::Lease* lease, std::vector<InsertStatement> statements, done_t done, const Results& results = {}
+) {
+  const auto         countdown = std::make_shared<Countdown<done_t>>(statements.size(), std::move(done));
+  const ResultFormat format = results ? results->format : ResultFormat::Text;
+  if ( results ) {
+    results->results.resize(statements.size());
+  }
 
   for ( std::size_t index = 0; index < statements.size(); ++index ) {
-    AsyncClient::Completion completion = [countdown, index](const QueryResult& /*result*/, const std::exception_ptr& error) {
+    AsyncClient::Completion completion = [countdown, index, results](QueryResult result, const std::exception_ptr& error) {
+      if ( results ) {
+        results->results.at(index) = std::move(result);  // its own slot: the countdown's lock orders it before `done`
+      }
+
       countdown->finish(index, error);
     };
 
     InsertStatement& statement = statements.at(index);
     if ( lease != nullptr ) {
-      client.run(*lease, std::move(statement.sql), std::move(statement.values), std::move(completion));
+      client.run(*lease, std::move(statement.sql), std::move(statement.values), std::move(completion), format);
     } else {
-      client.run(std::move(statement.sql), std::move(statement.values), std::move(completion));
+      client.run(std::move(statement.sql), std::move(statement.values), std::move(completion), format);
     }
   }
 }
@@ -103,12 +125,13 @@ void send_all(AsyncClient& client, const AsyncClient::Lease* lease, std::vector<
 /**
  * @brief Runs `statements` (inserts) on a connection of their own, in one transaction: `BEGIN`, every one of them and
  * `COMMIT`, queued at once. Calls `done` once with the earliest error: all of the rows are written, or none is (after a
- * failed insert, PostgreSQL answers the `COMMIT` with `ROLLBACK`, and the insert's error is the earlier one).
+ * failed insert, PostgreSQL answers the `COMMIT` with `ROLLBACK`, and the insert's error is the earlier one). With `results`,
+ * as `send_all`: the `BEGIN` and `COMMIT` keep theirs too, which have no rows.
  */
 template <StreamCallback done_t>
-void run_atomically(AsyncClient& client, std::vector<InsertStatement> statements, done_t done) {
-  client.lease([client = &client, statements = std::move(statements),
-                done = std::move(done)](const AsyncClient::Lease& lease, const std::exception_ptr& error) mutable {
+void run_atomically(AsyncClient& client, std::vector<InsertStatement> statements, done_t done, const Results& results = {}) {
+  client.lease([client = &client, statements = std::move(statements), done = std::move(done),
+                results](const AsyncClient::Lease& lease, const std::exception_ptr& error) mutable {
     if ( error ) {
       done(error);
       return;
@@ -117,8 +140,23 @@ void run_atomically(AsyncClient& client, std::vector<InsertStatement> statements
     statements.insert(statements.begin(), InsertStatement{.sql = "BEGIN", .values = {}});
     statements.push_back(InsertStatement{.sql = "COMMIT", .values = {}});
 
-    send_all(*client, &lease, std::move(statements), std::move(done));
+    send_all(*client, &lease, std::move(statements), std::move(done), results);
   });  // the lease goes back once the COMMIT is done
+}
+
+/**
+ * @return Every row of `results`, read as `row_t`s, in order: in binary form or as text, as each result is.
+ * @throws as `read_rows` does, for a value that does not parse.
+ */
+template <TextRow row_t>
+[[nodiscard]] std::vector<row_t> read_all(const std::vector<QueryResult>& results) {
+  std::vector<row_t> rows;
+  auto               keep = [&rows](row_t&& row) { rows.push_back(std::move(row)); };
+  for ( const QueryResult& result : results ) {
+    read_rows<row_t>(result, keep);
+  }
+
+  return rows;
 }
 
 }  // namespace detail
@@ -284,8 +322,9 @@ class StatementRunner {
   /**
    * @return A future that completes once `schema_t`'s table is created, or holds the error (`QueryError`, e.g. if it exists):
    * `CREATE TABLE` with each column's SQL type, `NOT NULL` unless its field is a `std::optional`, the primary key, and a
-   * `UNIQUE` constraint per unique column. For tests, examples and a first start; a table with more to it (indexes, other
-   * constraints, a generated column) is created with SQL.
+   * `UNIQUE` constraint per unique column. A generated key (the one primary key column, a signed integer) is an identity column
+   * the database numbers. For tests, examples and a first start; a table with more to it (indexes, other constraints, any other
+   * generated column) is created with SQL.
    */
   template <schema::IsSchema schema_t>
   [[nodiscard]] std::future<void> create_table() {
@@ -317,35 +356,52 @@ class StatementRunner {
 
   /**
    * @return A future that completes once `rows` of `schema_t` are written, or holds the error. Generated columns (see
-   * `Field::GENERATED`) are never sent. The rows are written atomically: all of them, or none.
+   * `Field::GENERATED`) are never sent: the database fills them in. The rows are written atomically: all of them, or none.
    *
    * Normally that is one statement. A schema with an array-typed column takes several for many rows (see `detail::build_insert`),
    * and they run in a transaction: in the caller's, inside a `Transaction`, and otherwise in one of their own, on a connection
    * of their own while they run.
    */
   template <TextSchema schema_t>
-  [[nodiscard]] std::future<void> insert(std::vector<typename schema_t::row_type> rows) {
-    const auto        promise = std::make_shared<std::promise<void>>();
-    std::future<void> future = promise->get_future();
-
-    try {
-      if ( rows.empty() ) {
-        promise->set_value();
-        return future;
-      }
-
-      run_inserts(detail::build_insert<schema_t>(rows), [promise](const std::exception_ptr& error) { detail::settle(*promise, error); });
-    } catch ( ... ) {
-      promise->set_exception(std::current_exception());
-    }
-
-    return future;
+  [[nodiscard]] std::future<void> insert(const std::vector<typename schema_t::row_type>& rows) {
+    return insert_rows<schema_t, typename schema_t::row_type>(rows);
   }
 
-  /** @brief As above, copying `rows` (which the caller may then reuse or destroy at once). */
+  /** @brief As above, for a span. */
   template <TextSchema schema_t>
   [[nodiscard]] std::future<void> insert(std::span<const typename schema_t::row_type> rows) {
-    return insert<schema_t>(std::vector<typename schema_t::row_type>(rows.begin(), rows.end()));
+    return insert_rows<schema_t, typename schema_t::row_type>(rows);
+  }
+
+  /** @brief As above, for rows without the generated columns (`Schema::make_insert_row`). */
+  template <TextSchema schema_t>
+    requires schema::HasGeneratedColumn<schema_t>
+  [[nodiscard]] std::future<void> insert(const std::vector<typename schema_t::insert_row_type>& rows) {
+    return insert_rows<schema_t, typename schema_t::insert_row_type>(rows);
+  }
+
+  /**
+   * @return A future for the rows as written, every column of each (`INSERT ... RETURNING`), generated ones included: the key
+   * the database chose, say. Otherwise as `insert`. It holds the error instead if the insert failed.
+   *
+   * The rows come back in the order of `rows` only for one row: PostgreSQL returns one row per row inserted, but does not
+   * promise their order, so match several by a column they were given (a unique one), not by position.
+   * @param read The form to read them in (`ReadOptions::format`; the rest is for streams); the default if not given.
+   */
+  template <TextSchema schema_t>
+  [[nodiscard]] std::future<std::vector<typename schema_t::row_type>> insert_returning(
+      const std::vector<typename schema_t::row_type>& rows, const std::optional<ReadOptions>& read = std::nullopt
+  ) {
+    return insert_rows_returning<schema_t, typename schema_t::row_type>(rows, read);
+  }
+
+  /** @brief As above, for rows without the generated columns (`Schema::make_insert_row`). */
+  template <TextSchema schema_t>
+    requires schema::HasGeneratedColumn<schema_t>
+  [[nodiscard]] std::future<std::vector<typename schema_t::row_type>> insert_returning(
+      const std::vector<typename schema_t::insert_row_type>& rows, const std::optional<ReadOptions>& read = std::nullopt
+  ) {
+    return insert_rows_returning<schema_t, typename schema_t::insert_row_type>(rows, read);
   }
 
  protected:
@@ -390,15 +446,81 @@ class StatementRunner {
 
   /**
    * @brief Runs the statements of an insert, all at once, so that nothing comes between them: in the transaction, on one; else
-   * one statement on the pool, or several in a transaction of their own.
+   * one statement on the pool, or several in a transaction of their own. `results`, if given, gets each statement's result.
    */
   template <detail::StreamCallback done_t>
-  void run_inserts(std::vector<detail::InsertStatement> statements, done_t done) {
+  void run_inserts(std::vector<detail::InsertStatement> statements, done_t done, const detail::Results& results = {}) {
     if ( statements.size() > 1 && ! _on_lease ) {
-      detail::run_atomically(*_client, std::move(statements), std::move(done));
+      detail::run_atomically(*_client, std::move(statements), std::move(done), results);
     } else {
-      detail::send_all(*_client, _on_lease ? &_lease : nullptr, std::move(statements), std::move(done));
+      detail::send_all(*_client, _on_lease ? &_lease : nullptr, std::move(statements), std::move(done), results);
     }
+  }
+
+  /** @brief What every `insert` runs. */
+  template <TextSchema schema_t, schema::InsertRowOf<schema_t> row_t>
+  [[nodiscard]] std::future<void> insert_rows(std::span<const row_t> rows) {
+    const auto        promise = std::make_shared<std::promise<void>>();
+    std::future<void> future = promise->get_future();
+
+    try {
+      if ( rows.empty() ) {
+        promise->set_value();
+        return future;
+      }
+
+      run_inserts(detail::build_insert<schema_t, row_t>(rows), [promise](const std::exception_ptr& error) { detail::settle(*promise, error); });
+    } catch ( ... ) {
+      promise->set_exception(std::current_exception());
+    }
+
+    return future;
+  }
+
+  /** @brief What every `insert_returning` runs: the inserts, each ending in `RETURNING`, read once the last has finished. */
+  template <TextSchema schema_t, schema::InsertRowOf<schema_t> row_t>
+  [[nodiscard]] std::future<std::vector<typename schema_t::row_type>> insert_rows_returning(
+      std::span<const row_t> rows, const std::optional<ReadOptions>& read
+  ) {
+    using written_t = schema_t::row_type;
+    const auto                          promise = std::make_shared<std::promise<std::vector<written_t>>>();
+    std::future<std::vector<written_t>> future = promise->get_future();
+
+    try {
+      if ( rows.empty() ) {
+        promise->set_value({});
+        return future;
+      }
+
+      std::vector<detail::InsertStatement> statements = detail::build_insert<schema_t, row_t>(rows);
+      for ( detail::InsertStatement& statement : statements ) {
+        statement.sql += detail::ReturningSql<schema_t>::VALUE;
+      }
+
+      const auto results = std::make_shared<detail::KeptResults>();
+      results->format = BinaryReadableRow<written_t> ? read.value_or(_read).format : ResultFormat::Text;
+
+      run_inserts(
+          std::move(statements),
+          [promise, results](const std::exception_ptr& error) {
+            if ( error ) {
+              promise->set_exception(error);
+              return;
+            }
+
+            try {
+              promise->set_value(detail::read_all<written_t>(results->results));
+            } catch ( ... ) {
+              promise->set_exception(std::current_exception());
+            }
+          },
+          results
+      );
+    } catch ( ... ) {
+      promise->set_exception(std::current_exception());
+    }
+
+    return future;
   }
 
   /** @brief Runs `sql`, which returns no rows, and calls `done` with the count of rows it affected and the error (null on success). */

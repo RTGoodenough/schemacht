@@ -4,11 +4,14 @@
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/matchers/catch_matchers.hpp>
 
+#include <algorithm>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <exception>
 #include <future>
+#include <ranges>
+#include <set>
 #include <stdexcept>
 #include <string>
 #include <utility>
@@ -303,7 +306,7 @@ TEST_CASE("integration: an insert of several statements in a transaction runs be
 
   // Nothing waits: the count and the COMMIT are handed in while the insert's statements are still running.
   pg::Transaction   transaction = database.begin().get();
-  std::future<void> inserted = transaction.insert<Tagged>(std::move(rows));
+  std::future<void> inserted = transaction.insert<Tagged>(rows);
   auto              counted = transaction.execute(q::Prepared<ALL>::bind());
   std::future<void> committed = transaction.commit();
 
@@ -350,4 +353,47 @@ TEST_CASE("integration: a lease let go of inside a transaction comes back out of
   CHECK_THROWS_AS(refused.get_future().get(), std::logic_error);  // an empty lease runs nothing
 
   database.drop_table<Accounts>().get();
+}
+
+TEST_CASE("integration: an insert of several statements gives back every row, alone or in a transaction", "[integration][transaction][returning]") {
+  using NumberedId = sch::Field<std::int64_t, "id", sch::KeyRole::Primary, true>;
+  using Tags = sch::Field<std::vector<std::string>, "tags">;
+  using Label = sch::Field<std::string, "label">;
+  using NumberedTags = sch::Schema<"schemacht_it_tx_numbered_tags", NumberedId, Tags, Label>;
+  pg::Database database(test_db());
+  reset<NumberedTags>(database);
+
+  // An array column takes VALUES statements of at most 65,535 parameters: 40,000 rows of two take two.
+  std::vector<NumberedTags::insert_row_type> rows;
+  rows.reserve(40000);
+  for ( std::int64_t row = 0; row < 40000; ++row ) {
+    rows.push_back(NumberedTags::make_insert_row(std::vector<std::string>{"a"}, std::to_string(row)));
+  }
+
+  // Alone, the statements run in a transaction of their own, whose BEGIN and COMMIT give back nothing.
+  // PostgreSQL does not promise the order of the rows it returns: compare which came back, not where.
+  const auto labels_of = [](const std::vector<NumberedTags::row_type>& returned) {
+    std::set<std::string> labels;
+    for ( const NumberedTags::row_type& row : returned ) {
+      labels.insert(sch::get<"label">(row));
+    }
+    return labels;
+  };
+  const auto ids_of = [](const std::vector<NumberedTags::row_type>& returned) {
+    return std::ranges::minmax(returned | std::views::transform([](const NumberedTags::row_type& row) { return sch::get<"id">(row); }));
+  };
+
+  const auto written = database.insert_returning<NumberedTags>(rows).get();
+  CHECK(written.size() == 40000);
+  CHECK(labels_of(written).size() == 40000);
+
+  pg::Transaction transaction = database.begin().get();
+  const auto      again = transaction.insert_returning<NumberedTags>(rows).get();
+  CHECK(labels_of(again) == labels_of(written));
+  CHECK(ids_of(again).min > ids_of(written).max);  // numbered after the first ones
+  transaction.commit().get();
+
+  CHECK(count_rows<NumberedTags>(database) == 80000);
+
+  database.drop_table<NumberedTags>().get();
 }

@@ -65,8 +65,10 @@ struct Unwrapped<std::optional<t>> {
  * @tparam data_t     The column's C++ value type, in a `std::optional` if the column can be NULL.
  * @tparam column_str The column's name, as a compile-time string.
  * @tparam key_role   Whether this column is (part of) a primary/unique key.
- * @tparam generated  True for a column the database computes (`GENERATED ALWAYS AS (...) STORED`). It is read like any
- *                    other, and never inserted.
+ * @tparam generated  True for a column the database fills in: an identity or serial key, a column with a `DEFAULT` the
+ *                    application never writes, or a computed one (`GENERATED ALWAYS AS (...) STORED`). It is read like any
+ *                    other, and never inserted or set by an update: `Schema::make_insert_row` leaves it out, and
+ *                    `insert_returning` gives back the value the database chose.
  */
 template <typename data_t, util::CTString column_str, KeyRole key_role = KeyRole::None, bool generated = false>
 struct Field {

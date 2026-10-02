@@ -4,6 +4,7 @@
 
 #include <array>
 #include <concepts>
+#include <cstddef>
 #include <cstdint>
 #include <optional>
 #include <string>
@@ -77,6 +78,22 @@ TEST_CASE("rows are made from a plain value per column", "[schema]") {
   STATIC_REQUIRE_FALSE(sch::RowValues<Row, double, std::string, std::nullopt_t, double, bool>);  // a double would narrow to the id
   STATIC_REQUIRE_FALSE(sch::RowValues<Row, int, std::nullopt_t, std::nullopt_t, double, bool>);  // the name cannot be NULL
   STATIC_REQUIRE_FALSE(sch::RowValues<int, int>);
+}
+
+TEST_CASE("an insert row leaves out the generated columns", "[schema]") {
+  STATIC_REQUIRE(std::same_as<t::WithGenerated::insert_row_type, std::tuple<t::Id, t::Name>>);
+  STATIC_REQUIRE(t::WithGenerated::INSERTABLE_INDICES == std::array<std::size_t, 2>{0, 2});
+  STATIC_REQUIRE(sch::HasGeneratedColumn<t::WithGenerated>);
+
+  STATIC_REQUIRE(std::same_as<t::People::insert_row_type, t::People::row_type>);  // nothing generated
+  STATIC_REQUIRE_FALSE(sch::HasGeneratedColumn<t::People>);
+
+  STATIC_REQUIRE(sch::RowValues<t::WithGenerated::insert_row_type, int, const char*>);
+  STATIC_REQUIRE_FALSE(sch::RowValues<t::WithGenerated::insert_row_type, int, int, const char*>);  // no value for the generated column
+
+  const t::Numbered::insert_row_type row = t::Numbered::make_insert_row("ann", std::nullopt);
+  CHECK(sch::get<"name">(row) == "ann");
+  CHECK_FALSE(sch::get<"nick">(row).has_value());
 }
 
 TEST_CASE("a row's columns are found by name", "[schema]") {

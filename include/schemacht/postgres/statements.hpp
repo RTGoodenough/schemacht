@@ -1,6 +1,7 @@
 #pragma once
 
 #include <algorithm>
+#include <concepts>
 #include <cstddef>
 #include <span>
 #include <stdexcept>
@@ -116,21 +117,30 @@ class ValuesHeadSql {
   static constexpr std::string_view VALUE{CHARS.data(), CHARS.size() - 1};
 };
 
-/** @return The array literal of column `idx`'s value in every row (`NULL` for a NULL), for the `unnest` INSERT. */
-template <schema::IsSchema schema_t, std::size_t idx>
-[[nodiscard]] std::string column_array(std::span<const typename schema_t::row_type> rows) {
-  using field_t = schema_t::template field_at<idx>;
+/** @brief Where the `sent`-th inserted column is in a `row_t`: an `insert_row_type` holds only those columns, a `row_type` every one. */
+template <schema::IsSchema schema_t, schema::InsertRowOf<schema_t> row_t, std::size_t sent>
+inline constexpr std::size_t POSITION = std::same_as<row_t, typename schema_t::insert_row_type> ? sent : schema_t::INSERTABLE_INDICES.at(sent);
+
+/** @brief The field of the `sent`-th inserted column. */
+template <schema::IsSchema schema_t, schema::InsertRowOf<schema_t> row_t, std::size_t sent>
+using sent_field = std::tuple_element_t<POSITION<schema_t, row_t, sent>, row_t>;
+
+/** @return The array literal of the `sent`-th inserted column's value in every row (`NULL` for a NULL), for the `unnest` INSERT. */
+template <schema::IsSchema schema_t, schema::InsertRowOf<schema_t> row_t, std::size_t sent>
+[[nodiscard]] std::string column_array(std::span<const row_t> rows) {
+  using field_t = sent_field<schema_t, row_t, sent>;
   std::string literal = "{";
   bool        first = true;
 
-  for ( const typename schema_t::row_type& row : rows ) {
+  for ( const row_t& row : rows ) {
     if ( ! first ) {
       literal += ',';
     }
     first = false;
 
-    if ( const auto* value = schema::value_if_present(std::get<idx>(row)); value != nullptr ) {
+    if ( const auto* value = schema::value_if_present(std::get<POSITION<schema_t, row_t, sent>>(row)); value != nullptr ) {
       postgres::detail::append_array_element(literal, format_field<typename field_t::value_type>(*value));
+
     } else {
       literal += "NULL";
     }
@@ -141,50 +151,35 @@ template <schema::IsSchema schema_t, std::size_t idx>
   return literal;
 }
 
-template <schema::IsSchema schema_t, std::size_t... idx>
-[[nodiscard]] InsertStatement build_unnest(std::span<const typename schema_t::row_type> rows, std::index_sequence<idx...> /*indices*/) {
-  InsertStatement statement{.sql = std::string(UnnestSql<schema_t>::VALUE), .values = {}};
-  statement.values.reserve(schema_t::INSERTABLE_FIELD_COUNT);
-
-  (
-      [&] {
-        if constexpr ( ! schema_t::template field_at<idx>::GENERATED ) {
-          statement.values.push_back(column_array<schema_t, idx>(rows));
-        }
-      }(),
-      ...);
-
-  return statement;
+template <schema::IsSchema schema_t, schema::InsertRowOf<schema_t> row_t, std::size_t... sent>
+[[nodiscard]] InsertStatement build_unnest(std::span<const row_t> rows, std::index_sequence<sent...> /*columns*/) {
+  return InsertStatement{.sql = std::string(UnnestSql<schema_t>::VALUE), .values = {column_array<schema_t, row_t, sent>(rows)...}};
 }
 
-template <schema::IsSchema schema_t, std::size_t idx>
-void append_one_value(const typename schema_t::row_type& row, InsertStatement& statement, bool& first) {
-  using field_t = schema_t::template field_at<idx>;
-  if constexpr ( ! field_t::GENERATED ) {
-    if ( ! first ) {
-      statement.sql += ", ";
-    }
-    first = false;
+template <schema::IsSchema schema_t, schema::InsertRowOf<schema_t> row_t, std::size_t sent>
+void append_one_value(const row_t& row, InsertStatement& statement) {
+  using field_t = sent_field<schema_t, row_t, sent>;
+  if constexpr ( sent != 0 ) {
+    statement.sql += ", ";
+  }
 
-    if ( const auto* value = schema::value_if_present(std::get<idx>(row)); value != nullptr ) {
-      statement.values.push_back(format_field<typename field_t::value_type>(*value));
-      statement.sql += "$" + std::to_string(statement.values.size());
+  if ( const auto* value = schema::value_if_present(std::get<POSITION<schema_t, row_t, sent>>(row)); value != nullptr ) {
+    statement.values.push_back(format_field<typename field_t::value_type>(*value));
+    statement.sql += "$" + std::to_string(statement.values.size());
 
-    } else {
-      statement.sql += "NULL";  // written into the statement: it takes the column's type, and needs no parameter
-    }
+  } else {
+    statement.sql += "NULL";  // written into the statement: it takes the column's type, and needs no parameter
   }
 }
 
-template <schema::IsSchema schema_t, std::size_t... idx>
-void append_row_values(const typename schema_t::row_type& row, InsertStatement& statement, std::index_sequence<idx...> /*indices*/) {
-  bool first = true;
-  (append_one_value<schema_t, idx>(row, statement, first), ...);
+template <schema::IsSchema schema_t, schema::InsertRowOf<schema_t> row_t, std::size_t... sent>
+void append_row_values(const row_t& row, InsertStatement& statement, std::index_sequence<sent...> /*columns*/) {
+  (append_one_value<schema_t, row_t, sent>(row, statement), ...);
 }
 
 /** @return One multi-row `INSERT ... VALUES` for `rows`, which must fit in `MAX_STATEMENT_PARAMETERS`. */
-template <schema::IsSchema schema_t>
-[[nodiscard]] InsertStatement build_values(std::span<const typename schema_t::row_type> rows) {
+template <schema::IsSchema schema_t, schema::InsertRowOf<schema_t> row_t>
+[[nodiscard]] InsertStatement build_values(std::span<const row_t> rows) {
   InsertStatement statement{.sql = std::string(ValuesHeadSql<schema_t>::VALUE), .values = {}};
 
   for ( std::size_t row = 0; row < rows.size(); ++row ) {
@@ -193,7 +188,7 @@ template <schema::IsSchema schema_t>
     }
 
     statement.sql += '(';
-    append_row_values<schema_t>(rows[row], statement, std::make_index_sequence<schema_t::FIELD_COUNT>{});
+    append_row_values<schema_t, row_t>(rows[row], statement, std::make_index_sequence<schema_t::INSERTABLE_FIELD_COUNT>{});
     statement.sql += ')';
   }
 
@@ -214,6 +209,18 @@ class CreateTableSql {
   static constexpr std::string_view VALUE{CHARS.data(), CHARS.size() - 1};
 };
 
+/** @brief ` RETURNING <every column>` for `schema_t`, as a static string: what `insert_returning` adds to each INSERT. */
+template <schema::IsSchema schema_t>
+class ReturningSql {
+  static constexpr auto CHARS = [] {
+    constexpr auto TEXT = query::sql::returning_every_column<schema_t>();
+    return query::sql::terminated<TEXT.size()>(TEXT);
+  }();
+
+ public:
+  static constexpr std::string_view VALUE{CHARS.data(), CHARS.size() - 1};
+};
+
 /** @brief `DROP TABLE IF EXISTS` for `schema_t`, as a static string. */
 template <schema::IsSchema schema_t>
 class DropTableSql {
@@ -227,16 +234,17 @@ class DropTableSql {
 };
 
 /**
- * @brief Builds the statements that insert `rows`, leaving out generated columns (the database computes those).
+ * @brief Builds the statements that insert `rows`, leaving out generated columns (the database fills those in): from a
+ * `row_type`, their values are not sent, and an `insert_row_type` has none.
  *
  * Normally one statement, `INSERT ... SELECT * FROM unnest(...)`, with one array argument per column: any number of rows,
  * inserted atomically. A schema with an array-typed column can't use `unnest`; its rows go in multi-row `VALUES`
- * statements of at most `MAX_STATEMENT_PARAMETERS` arguments each, which are not atomic together.
+ * statements of at most `MAX_STATEMENT_PARAMETERS` arguments each, which `StatementRunner::insert` runs in a transaction.
  *
  * @pre `rows` isn't empty.
  */
-template <TextSchema schema_t>
-[[nodiscard]] std::vector<InsertStatement> build_insert(std::span<const typename schema_t::row_type> rows) {
+template <TextSchema schema_t, schema::InsertRowOf<schema_t> row_t>
+[[nodiscard]] std::vector<InsertStatement> build_insert(std::span<const row_t> rows) {
   static_assert(schema_t::INSERTABLE_FIELD_COUNT > 0, "insert: the schema has no column that is not GENERATED");
 
   if constexpr ( insert_detail::USES_UNNEST<schema_t> ) {
@@ -246,13 +254,13 @@ template <TextSchema schema_t>
         "one (ColumnType::SQL_TYPE, or a query::sql::SqlType specialization)"
     );
 
-    return {insert_detail::build_unnest<schema_t>(rows, std::make_index_sequence<schema_t::FIELD_COUNT>{})};
+    return {insert_detail::build_unnest<schema_t, row_t>(rows, std::make_index_sequence<schema_t::INSERTABLE_FIELD_COUNT>{})};
 
   } else {
     constexpr std::size_t        ROWS_PER_STATEMENT = MAX_STATEMENT_PARAMETERS / schema_t::INSERTABLE_FIELD_COUNT;
     std::vector<InsertStatement> statements;
     for ( std::size_t first = 0; first < rows.size(); first += ROWS_PER_STATEMENT ) {
-      statements.push_back(insert_detail::build_values<schema_t>(rows.subspan(first, std::min(ROWS_PER_STATEMENT, rows.size() - first))));
+      statements.push_back(insert_detail::build_values<schema_t, row_t>(rows.subspan(first, std::min(ROWS_PER_STATEMENT, rows.size() - first))));
     }
 
     return statements;

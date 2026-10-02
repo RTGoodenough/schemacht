@@ -202,8 +202,9 @@ class AsyncClient {
    * @param params The text of each argument, in order.
    * @param done   Called exactly once, on a worker thread, with the rows or the error (`QueryError` for one the server
    *               reported, `std::runtime_error` for a lost connection or a client that shut down).
+   * @param format The form of the result's values: text, or PostgreSQL's binary form (see `QueryResult::field`).
    */
-  void run(std::string sql, std::vector<std::string> params, Completion done);
+  void run(std::string sql, std::vector<std::string> params, Completion done, ResultFormat format = ResultFormat::Text);
 
   /**
    * @brief Starts a statement whose rows are handled as they arrive, `options.chunk_rows` at a time, and returns at once.
@@ -286,7 +287,7 @@ class AsyncClient {
    *
    * `done` gets `std::logic_error` (and nothing runs) if `lease` is empty, and `std::runtime_error` if its connection was lost.
    */
-  void run(const Lease& lease, std::string sql, std::vector<std::string> params, Completion done);
+  void run(const Lease& lease, std::string sql, std::vector<std::string> params, Completion done, ResultFormat format = ResultFormat::Text);
 
   /**
    * @brief As `stream`, on the lease's connection, after the statements handed to the lease before it. A stream that is

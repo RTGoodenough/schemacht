@@ -7,11 +7,13 @@
 
 #include "schemacht/query/concepts/command.hpp"  // IWYU pragma: export
 #include "schemacht/query/predicate.hpp"
+#include "schemacht/query/query.hpp"
 #include "schemacht/schema/schema.hpp"
 
 /**
  * Statements that change rows instead of returning them: `UPDATE` and `DELETE`, written like queries and checked against
- * the schema the same way. `Prepared` lowers them to SQL; a backend's `execute` returns how many rows they changed.
+ * the schema the same way. `Prepared` lowers them to SQL; a backend's `execute` returns how many rows they changed, or, with
+ * `returning(...)`, the rows themselves.
  *
  * @code
  * using Orders = query::On<OrdersSchema>;
@@ -22,6 +24,11 @@
  * std::uint64_t changed = database.execute(query::Prepared<MARK_PAID>::bind(Money{1999}, 42)).get();
  *
  * constexpr auto PURGE = query::delete_where(Orders::col<"paid">() == false);
+ *
+ * constexpr auto PAY = query::update<OrdersSchema>()
+ *                          .set(Orders::col<"paid">(), true)
+ *                          .where(Orders::col<"id">() == query::arg<0>())
+ *                          .returning(Orders::col<"total">());  // execute gives a std::tuple<Total> per changed row
  * @endcode
  *
  * An update or delete of every row has to be asked for (`all_rows()`, `delete_all`): one that forgets its `where` doesn't compile.
@@ -44,6 +51,31 @@ struct SetTerm {
   [[nodiscard]] constexpr bool operator==(const SetTerm&) const = default;
 };
 
+/** @brief The columns an update or delete returns (`RETURNING`), in result order; none unless it asks for them. */
+template <schema::IsSchema schema_t>
+struct ReturnedColumns {
+  std::array<std::size_t, schema_t::FIELD_COUNT> columns{};
+  std::size_t                                    count = 0;  ///< How many of `columns` are in use; 0 returns nothing.
+
+  /** @return Every column, in declaration order. */
+  [[nodiscard]] static constexpr ReturnedColumns every_column() { return {.columns = all_columns<schema_t>(), .count = schema_t::FIELD_COUNT}; }
+
+  /**
+   * @return The columns `column_idxs`, in that order.
+   * @throws std::logic_error if a column is repeated -- inside a constant expression, a compile error.
+   */
+  template <std::size_t... column_idxs>
+    requires(sizeof...(column_idxs) > 0 && sizeof...(column_idxs) <= schema_t::FIELD_COUNT)
+  [[nodiscard]] static constexpr ReturnedColumns of() {
+    const ReturnedColumns result{.columns = {column_idxs...}, .count = sizeof...(column_idxs)};
+    if ( detail::repeats_a_column(result.columns, result.count) ) {
+      throw std::logic_error("a column can be returned only once");
+    }
+
+    return result;
+  }
+};
+
 /**
  * @brief An `UPDATE` of one schema's table: the columns it sets, and which rows. A value that exists at compile time, like
  * `Query`; start with `update<schema_t>()`.
@@ -59,6 +91,7 @@ struct Update {
   std::size_t                             set_count = 0;
   Predicate<schema_t, predicate_capacity> predicate{};
   RowScope                                scope = RowScope::Unset;
+  ReturnedColumns<schema_t>               returned{};
 
   /** @return This update, also setting `column` to the argument `arg<N>()`, which is bound as the column's value type. */
   template <typename column_t, std::size_t slot_idx>
@@ -95,7 +128,13 @@ struct Update {
       throw std::logic_error("an update says which rows it changes once: a single where(...) or all_rows()");
     }
 
-    Update<schema_t, set_capacity, capacity> result{.sets = sets, .set_count = set_count, .predicate = rows, .scope = RowScope::Matching};
+    Update<schema_t, set_capacity, capacity> result{
+        .sets = sets,
+        .set_count = set_count,
+        .predicate = rows,
+        .scope = RowScope::Matching,
+        .returned = returned,
+    };
     return result;
   }
 
@@ -114,6 +153,29 @@ struct Update {
     return result;
   }
 
+  /**
+   * @return This update, also returning every column of each row it changes, as the row is after the change (`RETURNING`):
+   * `execute` then gives those rows instead of a count. A later `returning` replaces an earlier one.
+   */
+  [[nodiscard]] constexpr Update returning() const {
+    Update result = *this;
+    result.returned = ReturnedColumns<schema_t>::every_column();
+
+    return result;
+  }
+
+  /**
+   * @return This update, also returning `columns` of each row it changes, in that order.
+   * @throws std::logic_error if a column is repeated -- inside a constant expression, a compile error.
+   */
+  template <std::size_t... column_idxs>
+  [[nodiscard]] constexpr Update returning(const ColumnRef<schema_t, column_idxs>&... /*columns*/) const {
+    Update result = *this;
+    result.returned = ReturnedColumns<schema_t>::template of<column_idxs...>();
+
+    return result;
+  }
+
  private:
   /** @throws std::logic_error if `term`'s column is already set -- inside a constant expression, a compile error. */
   [[nodiscard]] constexpr Update<schema_t, set_capacity + 1, predicate_capacity> with(const SetTerm& term) const {
@@ -123,7 +185,12 @@ struct Update {
       }
     }
 
-    Update<schema_t, set_capacity + 1, predicate_capacity> result{.set_count = set_count + 1, .predicate = predicate, .scope = scope};
+    Update<schema_t, set_capacity + 1, predicate_capacity> result{
+        .set_count = set_count + 1,
+        .predicate = predicate,
+        .scope = scope,
+        .returned = returned,
+    };
     for ( std::size_t i = 0; i < set_count; ++i ) {
       result.sets.at(i) = sets.at(i);
     }
@@ -146,6 +213,30 @@ struct Delete {
 
   Predicate<schema_t, predicate_capacity> predicate{};
   RowScope                                scope = RowScope::Unset;
+  ReturnedColumns<schema_t>               returned{};
+
+  /**
+   * @return This delete, also returning every column of each row it deletes (`RETURNING`): `execute` then gives those rows
+   * instead of a count. A later `returning` replaces an earlier one.
+   */
+  [[nodiscard]] constexpr Delete returning() const {
+    Delete result = *this;
+    result.returned = ReturnedColumns<schema_t>::every_column();
+
+    return result;
+  }
+
+  /**
+   * @return This delete, also returning `columns` of each row it deletes, in that order.
+   * @throws std::logic_error if a column is repeated -- inside a constant expression, a compile error.
+   */
+  template <std::size_t... column_idxs>
+  [[nodiscard]] constexpr Delete returning(const ColumnRef<schema_t, column_idxs>&... /*columns*/) const {
+    Delete result = *this;
+    result.returned = ReturnedColumns<schema_t>::template of<column_idxs...>();
+
+    return result;
+  }
 };
 
 /**

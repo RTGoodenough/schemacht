@@ -154,23 +154,23 @@ template <typename source_t>
   }
 }
 
-/** @return The columns `statement` returns, as indices into its schema's fields, in result order: none for an update or delete. */
+/** @return The columns `statement` returns, as indices into its schema's fields, in result order: an update's or delete's `RETURNING`. */
 template <typename statement_t>
 [[nodiscard]] constexpr auto returned_columns(const statement_t& statement) {
   if constexpr ( IsQuery<statement_t> ) {
     return statement.result_columns();
   } else {
-    return std::array<std::size_t, 0>{};
+    return statement.returned.columns;
   }
 }
 
-/** @return How many columns `statement` returns. */
+/** @return How many columns `statement` returns: none for an update or delete without `returning`. */
 template <typename statement_t>
 [[nodiscard]] constexpr std::size_t returned_column_count(const statement_t& statement) {
   if constexpr ( IsQuery<statement_t> ) {
     return statement.result_column_count();
   } else {
-    return 0;
+    return statement.returned.count;
   }
 }
 
@@ -229,8 +229,8 @@ std::tuple<typename schema_t::template field_at<columns.at(position)>...> projec
  * std::vector<NearbyPlaces::result_type> names = database.execute(NearbyPlaces::bind(std::vector<std::int64_t>{...}, 10)).get();
  * @endcode
  *
- * An update or delete (see command.hpp) returns no rows: its `result_type` is `std::tuple<>`, and a backend's `execute` gives
- * the count of rows it changed instead.
+ * Without `returning(...)`, an update or delete (see command.hpp) returns no rows: its `result_type` is `std::tuple<>`, and a
+ * backend's `execute` gives the count of rows it changed instead.
  *
  * @tparam source A constant `Query`, a `Predicate` (a query with no ordering or limit), an `Update` or a `Delete`.
  */
@@ -252,12 +252,12 @@ class Prepared {
   );
   static_assert(detail::sets_a_column(QUERY), "an update must set at least one column");
 
-  /** @brief The columns the statement returns, in result order; none for an update or delete. */
+  /** @brief The columns the statement returns, in result order; none for an update or delete without `returning`. */
   static constexpr auto COLUMNS = detail::returned_columns(QUERY);
 
   /**
    * @brief The type of a result row: a `std::tuple` of the returned columns' `Field`s, in the order returned.
-   * The same as `row_type` unless the query projects; `std::tuple<>` for an update or delete.
+   * The same as `row_type` unless the query projects; `std::tuple<>` for an update or delete without `returning`.
    */
   using result_type = decltype(detail::projected_row<schema_type, COLUMNS>(std::make_index_sequence<detail::returned_column_count(QUERY)>{}));
 

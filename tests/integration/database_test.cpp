@@ -8,6 +8,7 @@
 #include <stdio.h>  // NOLINT(modernize-deprecated-headers) -- fileno is POSIX: declared here, not in <cstdio>
 #include <unistd.h>
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cstddef>
@@ -223,7 +224,7 @@ TEST_CASE("integration: an insert larger than one statement's parameter limit", 
     rows.push_back({Id{id}, Flag{true}, Small{1}, Count{2}, Real{3}, Precise{4}, Text{"t"}, Bytes{bytes({1})}, Doc{std::nullopt}});
   }
 
-  database.insert<Bulk>(std::move(rows)).get();
+  database.insert<Bulk>(rows).get();
   CHECK(std::get<0>(database.execute(CountBulk::bind()).get().at(0)).value == 10000);
 
   std::vector<Tagged::row_type> tagged;
@@ -232,7 +233,7 @@ TEST_CASE("integration: an insert larger than one statement's parameter limit", 
     tagged.push_back({Id{id}, Tags{{"a", "b,c"}}});
   }
 
-  database.insert<Tagged>(std::move(tagged)).get();
+  database.insert<Tagged>(tagged).get();
   CHECK(std::get<0>(database.execute(CountTagged::bind()).get().at(0)).value == 40000);
 }
 
@@ -556,4 +557,84 @@ TEST_CASE("integration: a table created from a schema keeps each unique column u
   refused(Accounts::make_row(4, "c@example.com", "555-0100"));  // the phone again
 
   database.drop_table<Accounts>().get();
+}
+
+namespace {
+
+using NumberedId = sch::Field<std::int64_t, "id", sch::KeyRole::Primary, true>;
+using Label = sch::Field<std::string, "label">;
+using Numbered = sch::Schema<"schemacht_it_numbered", NumberedId, Label>;
+using Relabelled = sch::Schema<"schemacht_it_relabelled", NumberedId, Label>;
+using RelabelledColumns = q::On<Relabelled>;
+
+constexpr auto ALL_NUMBERED = q::select<Numbered>().order_by(q::On<Numbered>::col<"id">().asc());
+constexpr auto RELABEL = q::update<Relabelled>()
+                             .set(RelabelledColumns::col<"label">(), q::arg<0>())
+                             .where(RelabelledColumns::col<"label">() == q::arg<1>())
+                             .returning(RelabelledColumns::col<"label">(), RelabelledColumns::col<"id">());
+constexpr auto REMOVE_LABELLED = q::delete_where(RelabelledColumns::col<"label">() == q::arg<0>()).returning();
+
+}  // namespace
+
+TEST_CASE("integration: a table whose key the database numbers gives the keys back", "[integration][returning]") {
+  pg::Database database(test_db());
+  database.drop_table<Numbered>().get();
+  database.create_table<Numbered>().get();
+
+  const auto written = database.insert_returning<Numbered>({Numbered::make_insert_row("a"), Numbered::make_insert_row("b")}).get();
+  REQUIRE(written.size() == 2);
+  CHECK(sch::get<"id">(written[0]) != sch::get<"id">(written[1]));
+
+  // A whole row's generated value is not sent: the database numbers it all the same.
+  const auto whole = database.insert_returning<Numbered>({Numbered::make_row(0, "c")}).get();
+  REQUIRE(whole.size() == 1);
+  CHECK(sch::get<"id">(whole[0]) > 0);
+  CHECK(sch::get<"label">(whole[0]) == "c");
+
+  // Read as text, the same.
+  const auto as_text = database.insert_returning<Numbered>({Numbered::make_insert_row("d")}, pg::ReadOptions{.format = pg::ResultFormat::Text}).get();
+  REQUIRE(as_text.size() == 1);
+  CHECK(sch::get<"id">(as_text[0]) > sch::get<"id">(whole[0]));
+  CHECK(sch::get<"label">(as_text[0]) == "d");
+  CHECK(database.insert_returning<Numbered>(std::vector<Numbered::insert_row_type>{}).get().empty());
+
+  // What came back is what was written.
+  const auto rows = database.execute(q::Prepared<ALL_NUMBERED>::bind()).get();
+  REQUIRE(rows.size() == 4);
+  for ( const Numbered::row_type& row : written ) {
+    const auto found = std::ranges::find(rows, sch::get<"id">(row), [](const Numbered::row_type& stored) { return sch::get<"id">(stored); });
+    REQUIRE(found != rows.end());
+    CHECK(sch::get<"label">(*found) == sch::get<"label">(row));
+  }
+
+  database.drop_table<Numbered>().get();
+}
+
+TEST_CASE("integration: updates and deletes give back the rows they change, in binary and in text", "[integration][returning]") {
+  pg::Database database(test_db());
+  database.drop_table<Relabelled>().get();
+  database.create_table<Relabelled>().get();
+
+  std::int64_t a_id = sch::get<"id">(database.insert_returning<Relabelled>({Relabelled::make_insert_row("a")}).get().at(0));
+  database.insert<Relabelled>({Relabelled::make_insert_row("b")}).get();
+
+  for ( const pg::ResultFormat format : {pg::ResultFormat::Binary, pg::ResultFormat::Text} ) {
+    const pg::ReadOptions read{.format = format};
+    const std::string     renamed = format == pg::ResultFormat::Binary ? "binary" : "text";
+
+    const auto changed = database.execute(q::Prepared<RELABEL>::bind(renamed, "a"), read).get();
+    REQUIRE(changed.size() == 1);
+    CHECK(sch::get<"label">(changed[0]) == renamed);
+    CHECK(sch::get<"id">(changed[0]) == a_id);
+
+    const auto removed = database.execute(q::Prepared<REMOVE_LABELLED>::bind(renamed), read).get();
+    REQUIRE(removed.size() == 1);
+    CHECK(sch::get<"id">(removed[0]) == a_id);
+
+    CHECK(database.execute(q::Prepared<REMOVE_LABELLED>::bind("nothing has this label"), read).get().empty());
+
+    a_id = sch::get<"id">(database.insert_returning<Relabelled>({Relabelled::make_insert_row("a")}).get().at(0));  // for the next round
+  }
+
+  database.drop_table<Relabelled>().get();
 }

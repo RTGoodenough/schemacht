@@ -143,6 +143,10 @@ constexpr auto        BAD = q::update<Things>().set(q::On<Things>::col<"name">()
 constexpr auto BAD = q::update<Things>().set(q::On<Things>::col<"count">(), 1).set(q::On<Things>::col<"count">(), 2).all_rows();
 #endif
 
+#if defined(CASE_RETURNING_TWICE)
+constexpr auto BAD = q::delete_all<Things>().returning(q::On<Things>::col<"id">(), q::On<Things>::col<"id">());
+#endif
+
 #if defined(CASE_UPDATE_SET_NULL_REQUIRED)
 constexpr auto BAD = q::update<Things>().set_null(q::On<Things>::col<"name">()).all_rows();
 #endif
@@ -157,7 +161,8 @@ constexpr auto BAD = q::delete_where(q::match_all<Things>());
 #endif
 
 #if defined(CASE_CREATE_TABLE_GENERATED)
-using Bad = sch::Schema<"bad", Id, sch::Field<std::int64_t, "twice", sch::KeyRole::None, true>>;
+// Generated, but not the key: create_table can't know the expression that fills it in.
+using Bad = sch::Schema<"bad", Id, sch::Field<std::string, "label", sch::KeyRole::None, true>>;
 [[maybe_unused]] void run(pg::Database& database) { (void)database.create_table<Bad>(); }
 #endif
 

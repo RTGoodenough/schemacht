@@ -184,7 +184,7 @@ TEST_CASE("a column of an own type is inserted with its SQL type", "[column_type
   using Paints = sch::Schema<"paints", Id, Shade>;
 
   const std::vector<Paints::row_type> rows{Paints::make_row(OrderId{1}, Color::Red)};
-  const auto                          statements = pg::detail::build_insert<Paints>(rows);
+  const auto                          statements = pg::detail::build_insert<Paints, Paints::row_type>(rows);
 
   CHECK(statements.at(0).sql == R"(INSERT INTO "paints" ("id", "shade") SELECT * FROM unnest($1::bigint[], $2::color[]))");
   CHECK(statements.at(0).values == std::vector<std::string>{R"({"1"})", R"({"red"})"});

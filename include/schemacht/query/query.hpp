@@ -38,6 +38,24 @@ template <schema::IsSchema schema_t>
   return columns;
 }
 
+namespace detail {
+
+/** @return Whether a column appears twice among the first `count` of `columns`. */
+template <std::size_t capacity>
+[[nodiscard]] constexpr bool repeats_a_column(const std::array<std::size_t, capacity>& columns, std::size_t count) {
+  for ( std::size_t i = 0; i < count; ++i ) {
+    for ( std::size_t j = i + 1; j < count; ++j ) {
+      if ( columns.at(i) == columns.at(j) ) {
+        return true;
+      }
+    }
+  }
+
+  return false;
+}
+
+}  // namespace detail
+
 /**
  * @brief A whole `SELECT` over one schema: which rows, in what order, how many, and which columns of each.
  *
@@ -129,12 +147,8 @@ struct Query {
     result.columns = std::array<std::size_t, schema_t::FIELD_COUNT>{column_idxs...};
     result.column_count = sizeof...(column_idxs);
 
-    for ( std::size_t i = 0; i < result.column_count; ++i ) {
-      for ( std::size_t j = i + 1; j < result.column_count; ++j ) {
-        if ( result.columns.at(i) == result.columns.at(j) ) {
-          throw std::logic_error("a column can be projected only once");
-        }
-      }
+    if ( detail::repeats_a_column(result.columns, result.column_count) ) {
+      throw std::logic_error("a column can be projected only once");
     }
 
     return result;

@@ -3,9 +3,9 @@
 #include <algorithm>
 #include <array>
 #include <bit>
+#include <concepts>
 #include <cstddef>
 #include <cstdint>
-#include <functional>
 #include <string_view>
 #include <utility>
 
@@ -13,6 +13,7 @@
 #include "schemacht/query/predicate.hpp"
 #include "schemacht/query/query.hpp"
 #include "schemacht/query/sql_type.hpp"
+#include "schemacht/schema/field.hpp"
 #include "schemacht/schema/schema.hpp"
 #include "schemacht/util/identifier.hpp"
 
@@ -144,6 +145,16 @@ consteval std::array<bool, schema_t::FIELD_COUNT> generated_flags(std::index_seq
   return {schema_t::template field_at<idx>::GENERATED...};
 }
 
+/** @return Whether each field is an identity key: `GENERATED`, the one primary key column, and of a signed integer type. */
+template <schema::IsSchema schema_t, std::size_t... idx>
+consteval std::array<bool, schema_t::FIELD_COUNT> identity_flags(std::index_sequence<idx...> /*indices*/) {
+  return {
+      (schema_t::PRIMARY_KEY_FIELD_COUNT == 1 && schema_t::template field_at<idx>::GENERATED &&
+       schema_t::template field_at<idx>::KEY_ROLE == schema::KeyRole::Primary &&
+       std::signed_integral<typename schema_t::template field_at<idx>::value_type>)...
+  };
+}
+
 template <schema::IsSchema schema_t, std::size_t... idx>
 consteval std::array<bool, schema_t::FIELD_COUNT> nullable_flags(std::index_sequence<idx...> /*indices*/) {
   return {schema_t::template field_at<idx>::NULLABLE...};
@@ -158,6 +169,11 @@ inline constexpr std::array<bool, schema_t::FIELD_COUNT> COLUMN_NULLABLE =
 template <schema::IsSchema schema_t>
 inline constexpr std::array<bool, schema_t::FIELD_COUNT> COLUMN_GENERATED =
     generated_flags<schema_t>(std::make_index_sequence<schema_t::FIELD_COUNT>{});
+
+/** @brief Whether each column of `schema_t` is an identity key, which the database numbers (`GENERATED ALWAYS AS IDENTITY`). */
+template <schema::IsSchema schema_t>
+inline constexpr std::array<bool, schema_t::FIELD_COUNT> COLUMN_IDENTITY =
+    identity_flags<schema_t>(std::make_index_sequence<schema_t::FIELD_COUNT>{});
 
 /** @brief The SQL type name of each column of `schema_t` (empty where it has none), in declaration order. */
 template <schema::IsSchema schema_t>
@@ -362,13 +378,11 @@ class Emitter {
 inline constexpr std::size_t STATEMENT_CAPACITY = 4096;
 
 /**
- * @brief Writes `SELECT <the first count of columns> FROM <schema_t's table>`. A column whose type has a `SelectExpression`
- * is written as that function of it (`ST_AsBinary("rast") AS "rast"`).
+ * @brief Writes the first `count` of `columns`, as a `SELECT` or `RETURNING` lists them. A column whose type has a
+ * `SelectExpression` is written as that function of it (`ST_AsBinary("rast") AS "rast"`).
  */
 template <schema::IsSchema schema_t, std::size_t text_capacity, std::size_t columns_capacity>
-consteval void append_select_from(Text<text_capacity>& text, const std::array<std::size_t, columns_capacity>& columns, std::size_t count) {
-  text.append("SELECT ");
-
+consteval void append_column_list(Text<text_capacity>& text, const std::array<std::size_t, columns_capacity>& columns, std::size_t count) {
   for ( std::size_t i = 0; i < count; ++i ) {
     if ( i != 0 ) {
       text.append(", ");
@@ -387,6 +401,13 @@ consteval void append_select_from(Text<text_capacity>& text, const std::array<st
       text.append_identifier(name);
     }
   }
+}
+
+/** @brief Writes `SELECT <the first count of columns> FROM <schema_t's table>`. */
+template <schema::IsSchema schema_t, std::size_t text_capacity, std::size_t columns_capacity>
+consteval void append_select_from(Text<text_capacity>& text, const std::array<std::size_t, columns_capacity>& columns, std::size_t count) {
+  text.append("SELECT ");
+  append_column_list<schema_t>(text, columns, count);
 
   text.append(" FROM ");
   text.append_identifier(schema_t::TABLE_NAME);
@@ -452,7 +473,16 @@ consteval void append_where(Text<text_capacity>& text, const Predicate<schema_t,
   }
 }
 
-/** @return `UPDATE <table> SET <column> = <value>, ... [WHERE <predicate>]`, each value `$n`, a literal, or `NULL`. */
+/** @brief Writes ` RETURNING <columns>`, or nothing for a statement that returns no columns. */
+template <schema::IsSchema schema_t, std::size_t text_capacity>
+consteval void append_returning(Text<text_capacity>& text, const ReturnedColumns<schema_t>& returned) {
+  if ( returned.count != 0 ) {
+    text.append(" RETURNING ");
+    append_column_list<schema_t>(text, returned.columns, returned.count);
+  }
+}
+
+/** @return `UPDATE <table> SET <column> = <value>, ... [WHERE <predicate>] [RETURNING <columns>]`, each value `$n`, a literal, or `NULL`. */
 template <schema::IsSchema schema_t, std::size_t set_capacity, std::size_t predicate_capacity>
 [[nodiscard]] consteval Text<STATEMENT_CAPACITY> update_statement(const Update<schema_t, set_capacity, predicate_capacity>& update) {
   Text<STATEMENT_CAPACITY> text;
@@ -473,11 +503,12 @@ template <schema::IsSchema schema_t, std::size_t set_capacity, std::size_t predi
   }
 
   append_where(text, update.predicate);
+  append_returning(text, update.returned);
 
   return text;
 }
 
-/** @return `DELETE FROM <table> [WHERE <predicate>]`. */
+/** @return `DELETE FROM <table> [WHERE <predicate>] [RETURNING <columns>]`. */
 template <schema::IsSchema schema_t, std::size_t predicate_capacity>
 [[nodiscard]] consteval Text<STATEMENT_CAPACITY> delete_statement(const Delete<schema_t, predicate_capacity>& del) {
   Text<STATEMENT_CAPACITY> text;
@@ -485,6 +516,7 @@ template <schema::IsSchema schema_t, std::size_t predicate_capacity>
   text.append_identifier(schema_t::TABLE_NAME);
 
   append_where(text, del.predicate);
+  append_returning(text, del.returned);
 
   return text;
 }
@@ -492,7 +524,8 @@ template <schema::IsSchema schema_t, std::size_t predicate_capacity>
 /**
  * @return `CREATE TABLE <table> (<column> <type> [NOT NULL], ..., PRIMARY KEY (<key columns>), UNIQUE (<column>), ...)`: each
  * column with its type's SQL name, `NOT NULL` unless its field is a `std::optional`, the primary key if the schema has one,
- * and a `UNIQUE` constraint for each `KeyRole::Unique` column on its own.
+ * and a `UNIQUE` constraint for each `KeyRole::Unique` column on its own. A generated key column (see `COLUMN_IDENTITY`) is
+ * numbered by the database: `GENERATED ALWAYS AS IDENTITY`.
  */
 template <schema::IsSchema schema_t>
 [[nodiscard]] consteval Text<STATEMENT_CAPACITY> create_table_statement() {
@@ -501,8 +534,9 @@ template <schema::IsSchema schema_t>
       "create_table: a column's type has no SQL name; give it one (ColumnType::SQL_TYPE, or a query::sql::SqlType specialization)"
   );
   static_assert(
-      ! std::ranges::any_of(detail::COLUMN_GENERATED<schema_t>, std::identity{}),
-      "create_table can't write a generated column's expression: create a table with one yourself"
+      detail::COLUMN_GENERATED<schema_t> == detail::COLUMN_IDENTITY<schema_t>,
+      "create_table writes a generated column only as an identity key (the one primary key column, of a signed integer type): "
+      "create a table with any other generated column yourself"
   );
 
   Text<STATEMENT_CAPACITY> text;
@@ -520,6 +554,10 @@ template <schema::IsSchema schema_t>
     text.append(detail::COLUMN_TYPE_NAMES<schema_t>.at(column));
     if ( ! detail::COLUMN_NULLABLE<schema_t>.at(column) ) {
       text.append(" NOT NULL");
+    }
+
+    if ( detail::COLUMN_IDENTITY<schema_t>.at(column) ) {
+      text.append(" GENERATED ALWAYS AS IDENTITY");
     }
   }
 
@@ -598,6 +636,15 @@ template <schema::IsSchema schema_t>
   Text<STATEMENT_CAPACITY> text;
   append_insert_into<schema_t>(text);
   text.append(" VALUES ");
+
+  return text;
+}
+
+/** @return ` RETURNING <every column>`, which an INSERT ends with to give back the rows as written. */
+template <schema::IsSchema schema_t>
+[[nodiscard]] consteval Text<STATEMENT_CAPACITY> returning_every_column() {
+  Text<STATEMENT_CAPACITY> text;
+  append_returning(text, ReturnedColumns<schema_t>::every_column());
 
   return text;
 }

@@ -54,6 +54,37 @@ template <std::size_t selected, std::size_t count>
   return result;
 }
 
+/** @return The indices whose flag is set, in order. */
+template <std::size_t selected, std::size_t count>
+[[nodiscard]] consteval std::array<std::size_t, selected> select_indices(const std::array<bool, count>& flags) {
+  std::array<std::size_t, selected> result{};
+  std::size_t                       next = 0;
+  for ( std::size_t i = 0; i < count; ++i ) {
+    if ( flags.at(i) ) {
+      result.at(next++) = i;
+    }
+  }
+
+  return result;
+}
+
+/** @brief Declared for its type only: the `std::tuple` of the fields of `row_t` at `positions`, in that order. */
+template <typename row_t, auto positions, std::size_t... position>
+std::tuple<std::tuple_element_t<positions.at(position), row_t>...> fields_at(std::index_sequence<position...> /*positions*/);
+
+/** @brief Makes a row (a `std::tuple` of `Field`s) from a plain value for each field, in order. */
+template <typename row_t>
+struct RowMaker;
+
+template <IsField... field_ts>
+struct RowMaker<std::tuple<field_ts...>> {
+  template <typename... arg_ts>
+  [[nodiscard]] static constexpr std::tuple<field_ts...> make(arg_ts&&... args) {
+    // NOLINTNEXTLINE(cppcoreguidelines-pro-bounds-array-to-pointer-decay) -- a string literal becomes a std::string here
+    return std::tuple<field_ts...>{field_ts{typename field_ts::data_type{std::forward<arg_ts>(args)}}...};
+  }
+};
+
 }  // namespace detail
 
 /**
@@ -86,8 +117,7 @@ class Schema {
   template <typename... arg_ts>
     requires RowValues<row_type, arg_ts...>
   [[nodiscard]] static constexpr row_type make_row(arg_ts&&... args) {
-    // NOLINTNEXTLINE(cppcoreguidelines-pro-bounds-array-to-pointer-decay) -- a string literal becomes a std::string here
-    return row_type{field_ts{typename field_ts::data_type{std::forward<arg_ts>(args)}}...};
+    return detail::RowMaker<row_type>::make(std::forward<arg_ts>(args)...);
   }
 
   static_assert(
@@ -160,6 +190,26 @@ class Schema {
   /** @return The non-generated column names, in declaration order. */
   [[nodiscard]] static constexpr std::array<std::string_view, INSERTABLE_FIELD_COUNT> insertable_column_names() {
     return detail::select_names<INSERTABLE_FIELD_COUNT>(column_names(), {(! field_ts::GENERATED)...});
+  }
+
+  /** @brief The indices of the non-generated fields, in declaration order: where each column an INSERT sends is in a `row_type`. */
+  static constexpr std::array<std::size_t, INSERTABLE_FIELD_COUNT> INSERTABLE_INDICES =
+      detail::select_indices<INSERTABLE_FIELD_COUNT>(std::array<bool, FIELD_COUNT>{(! field_ts::GENERATED)...});
+
+  /**
+   * @brief A row as an INSERT sends it: the non-generated fields, in declaration order. The same type as `row_type` when no
+   * field is generated.
+   */
+  using insert_row_type = decltype(detail::fields_at<row_type, INSERTABLE_INDICES>(std::make_index_sequence<INSERTABLE_FIELD_COUNT>{}));
+
+  /**
+   * @return An `insert_row_type` from a plain value for each non-generated column, in declaration order: for a table whose
+   * database fills in some columns (an identity key, say), `Orders::make_insert_row("ann", 1999)` with no value for them.
+   */
+  template <typename... arg_ts>
+    requires RowValues<insert_row_type, arg_ts...>
+  [[nodiscard]] static constexpr insert_row_type make_insert_row(arg_ts&&... args) {
+    return detail::RowMaker<insert_row_type>::make(std::forward<arg_ts>(args)...);
   }
 };
 

@@ -39,6 +39,10 @@ constexpr auto WHERE_FIRST = q::update<t::People>().where(People::col<"active">(
 constexpr auto FORGET_NICKS = q::update<t::People>().set_null(People::col<"nick">()).all_rows();
 constexpr auto REMOVE_INACTIVE = q::delete_where(People::col<"active">() == false || People::col<"name">().in(q::arg<0>()));
 constexpr auto REMOVE_ALL = q::delete_all<t::People>();
+constexpr auto RAISE_RETURNING = RAISE.returning(People::col<"score">(), People::col<"id">());
+constexpr auto RETURNING_FIRST = q::update<t::People>().returning().set(People::col<"active">(), false).where(People::col<"id">() == q::arg<0>());
+constexpr auto REMOVE_RETURNING = REMOVE_ALL.returning();
+constexpr auto REMOVE_TILES = q::delete_where(q::On<t::Tiles>::col<"id">() == q::arg<0>()).returning(q::On<t::Tiles>::col<"rast">());
 
 }  // namespace
 
@@ -110,6 +114,22 @@ TEST_CASE("updates and deletes", "[sql][command]") {
   STATIC_REQUIRE(q::Prepared<RAISE>::SLOTS.info.at(0).column == 3);  // the score
   STATIC_REQUIRE(q::Prepared<REMOVE_INACTIVE>::SLOTS.info.at(0).is_list);
   STATIC_REQUIRE(q::Prepared<FORGET_NICKS>::ARG_COUNT == 0);
+}
+
+TEST_CASE("updates and deletes return the columns they are asked for", "[sql][command]") {
+  STATIC_REQUIRE(q::Prepared<RAISE_RETURNING>::SQL == R"(UPDATE "people" SET "score" = $1, "active" = TRUE WHERE "id" = $2 RETURNING "score", "id")");
+  STATIC_REQUIRE(std::same_as<q::Prepared<RAISE_RETURNING>::result_type, std::tuple<t::Score, t::Id>>);
+  STATIC_REQUIRE(q::Prepared<RAISE_RETURNING>::ARG_COUNT == 2);
+
+  // Asked for before the rest, it is kept.
+  STATIC_REQUIRE(
+      q::Prepared<RETURNING_FIRST>::SQL == R"(UPDATE "people" SET "active" = FALSE WHERE "id" = $1 RETURNING "id", "name", "nick", "score", "active")"
+  );
+  STATIC_REQUIRE(std::same_as<q::Prepared<RETURNING_FIRST>::result_type, t::People::row_type>);
+
+  STATIC_REQUIRE(q::Prepared<REMOVE_RETURNING>::SQL == R"(DELETE FROM "people" RETURNING "id", "name", "nick", "score", "active")");
+  STATIC_REQUIRE(q::Prepared<REMOVE_TILES>::SQL == R"(DELETE FROM "tiles" WHERE "id" = $1 RETURNING ST_AsBinary("rast") AS "rast")");
+  STATIC_REQUIRE(std::same_as<q::Prepared<REMOVE_TILES>::result_type, std::tuple<t::Raster>>);
 }
 
 TEST_CASE("which columns an update can set", "[sql][command]") {
