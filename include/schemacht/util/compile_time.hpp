@@ -25,7 +25,8 @@ template <size_t n_sz>
 struct CTString {
   std::array<char, n_sz> value{};
 
-  // NOLINTNEXTLINE(cppcoreguidelines-avoid-c-arrays, google-explicit-constructor, modernize-avoid-c-arrays) need compile time
+  // Implicit on purpose: a string literal becomes a `CTString` template argument (`Field<int, "id">`), which takes this conversion.
+  // NOLINTNEXTLINE(cppcoreguidelines-avoid-c-arrays, modernize-avoid-c-arrays, google-explicit-constructor, hicpp-explicit-conversions, cppcoreguidelines-explicit-constructor, misc-explicit-constructor, cppcoreguidelines-pro-bounds-array-to-pointer-decay)
   constexpr CTString(const char (&str)[n_sz]) { std::copy_n(str, n_sz, value.begin()); }
 
   constexpr CTString(const CTString&) = default;

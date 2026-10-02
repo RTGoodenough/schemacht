@@ -1,11 +1,13 @@
-// Schema and relation facts, checked while compiling.
+// Schema facts, checked while compiling.
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <array>
 #include <concepts>
 #include <cstdint>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <tuple>
 
 #include "schemacht/schema.hpp"
@@ -59,17 +61,10 @@ TEST_CASE("nullable fields", "[schema]") {
   STATIC_REQUIRE(! t::Name::NULLABLE);
 }
 
-TEST_CASE("which relations can be formed", "[schema]") {
-  STATIC_REQUIRE(sch::CanFormRelation<Features, Index, "id", "feature_id">);
-  STATIC_REQUIRE(sch::CanFormRelation<Features, Index, "code", "feature_code">);      // a unique key will do
-  STATIC_REQUIRE(! sch::CanFormRelation<Features, Index, "label", "feature_label">);  // not a key
-  STATIC_REQUIRE(! sch::CanFormRelation<Features, Index, "id", "feature_code">);      // the types differ
-  STATIC_REQUIRE(! sch::CanFormRelation<Features, Index, "nope", "feature_id">);      // no such column: false, not a compile error
-  STATIC_REQUIRE(! sch::CanFormRelation<Features, Index, "id", "nope">);
-  STATIC_REQUIRE(! sch::CanFormRelation<int, Index, "id", "feature_id">);  // not a schema
-
-  using FeatureIndex = sch::Relation<Features, Index, "id", "feature_id">;
-  STATIC_REQUIRE(sch::IsRelation<FeatureIndex>);
+TEST_CASE("unique columns are each unique on their own", "[schema]") {
+  STATIC_REQUIRE(Features::UNIQUE_FIELD_COUNT == 1);
+  STATIC_REQUIRE(Features::unique_column_names() == std::array<std::string_view, 1>{"code"});
+  STATIC_REQUIRE(Index::UNIQUE_FIELD_COUNT == 0);
 }
 
 TEST_CASE("rows are made from a plain value per column", "[schema]") {

@@ -139,6 +139,14 @@ class Schema {
     return detail::select_names<PRIMARY_KEY_FIELD_COUNT>(column_names(), {(field_ts::KEY_ROLE == KeyRole::Primary)...});
   }
 
+  /** @brief How many fields are tagged `KeyRole::Unique`: each is unique on its own (see `KeyRole`). */
+  static constexpr std::size_t UNIQUE_FIELD_COUNT = detail::count_set(std::array<bool, FIELD_COUNT>{(field_ts::KEY_ROLE == KeyRole::Unique)...});
+
+  /** @return The names of the columns tagged `KeyRole::Unique`, in declaration order. */
+  [[nodiscard]] static constexpr std::array<std::string_view, UNIQUE_FIELD_COUNT> unique_column_names() {
+    return detail::select_names<UNIQUE_FIELD_COUNT>(column_names(), {(field_ts::KEY_ROLE == KeyRole::Unique)...});
+  }
+
   /** @brief How many fields are not `GENERATED`: the columns an INSERT supplies (the database computes generated ones). */
   static constexpr std::size_t INSERTABLE_FIELD_COUNT = detail::count_set(std::array<bool, FIELD_COUNT>{(! field_ts::GENERATED)...});
 

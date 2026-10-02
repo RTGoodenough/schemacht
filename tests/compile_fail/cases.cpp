@@ -162,8 +162,24 @@ using Bad = sch::Schema<"bad", Id, sch::Field<std::int64_t, "twice", sch::KeyRol
 #endif
 
 #if defined(CASE_CREATE_TABLE_WITHOUT_SQL_TYPE)
-using Bad = sch::Schema<"bad", Id, sch::Field<std::vector<std::string>, "tags">>;
+// A codec of its own (a FieldCodec specialization, not a ColumnType), and so no SQL type name.
+struct Unnamed {
+  std::string text;
+};
+template <>
+class schemacht::postgres::FieldCodec<Unnamed> {
+ public:
+  static Unnamed     parse(std::string_view text) { return {std::string(text)}; }
+  static std::string format(const Unnamed& value) { return value.text; }
+};
+using Bad = sch::Schema<"bad", Id, sch::Field<Unnamed, "unnamed">>;
 [[maybe_unused]] void run(pg::Database& database) { (void)database.create_table<Bad>(); }
+#endif
+
+#if defined(CASE_IN_ON_ARRAY_COLUMN)
+using Tagged = sch::Schema<"tagged", Id, sch::Field<std::vector<std::string>, "tags">>;
+constexpr auto                              ANY_TAGS = q::On<Tagged>::col<"tags">().in(q::arg<0>());
+[[maybe_unused]] constexpr std::string_view SQL = q::Prepared<ANY_TAGS>::SQL;
 #endif
 
 #if defined(CASE_COLUMN_TYPE_WITHOUT_FORMAT)

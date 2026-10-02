@@ -467,8 +467,9 @@ template <schema::IsSchema schema_t, std::size_t predicate_capacity>
 }
 
 /**
- * @return `CREATE TABLE <table> (<column> <type> [NOT NULL], ..., PRIMARY KEY (<key columns>))`: each column with its type's
- * SQL name, `NOT NULL` unless its field is a `std::optional`, and the primary key if the schema has one.
+ * @return `CREATE TABLE <table> (<column> <type> [NOT NULL], ..., PRIMARY KEY (<key columns>), UNIQUE (<column>), ...)`: each
+ * column with its type's SQL name, `NOT NULL` unless its field is a `std::optional`, the primary key if the schema has one,
+ * and a `UNIQUE` constraint for each `KeyRole::Unique` column on its own.
  */
 template <schema::IsSchema schema_t>
 [[nodiscard]] consteval Text<STATEMENT_CAPACITY> create_table_statement() {
@@ -496,6 +497,11 @@ template <schema::IsSchema schema_t>
     text.append_identifier_list(schema_t::primary_key_column_names());
     text.push(')');
   }
+  for ( const std::string_view column : schema_t::unique_column_names() ) {  // each unique on its own (see `KeyRole`)
+    text.append(", UNIQUE (");
+    text.append_identifier(column);
+    text.push(')');
+  }
   text.push(')');
   return text;
 }
@@ -521,7 +527,7 @@ consteval void append_insert_into(Text<text_capacity>& text) {
 
 /**
  * @return `INSERT INTO <table> (<columns>) SELECT * FROM unnest($1::<type>[], $2::<type>[], ...)`: one array argument per
- * insertable column, holding that column's value for every row. Every insertable column's type needs an `SqlType` name.
+ * insertable column, holding that column's value for every row. Every insertable column's type needs an SQL type name (`sql::type_name`).
  */
 template <schema::IsSchema schema_t>
 [[nodiscard]] consteval Text<STATEMENT_CAPACITY> insert_unnest_statement() {

@@ -1,5 +1,7 @@
 #pragma once
 
+#include <algorithm>
+#include <array>
 #include <chrono>
 #include <concepts>
 #include <cstddef>
@@ -9,10 +11,30 @@
 #include <vector>
 
 #include "schemacht/schema/column_type.hpp"
+#include "schemacht/util/type_utils.hpp"
 
 namespace schemacht::query::sql {
 
+template <typename data_t>
+class SqlType;
+
 namespace detail {
+
+/** @brief The SQL name of an array of `element_t` (`text[]`), as a static string; empty if `element_t` has no name. */
+template <typename element_t>
+class ArrayTypeName {
+  static constexpr std::string_view ELEMENT = SqlType<element_t>::NAME;
+  static constexpr auto             CHARS = [] {
+    std::array<char, ELEMENT.size() + 3> chars{};  // the element's name, "[]", and a terminating null
+    std::ranges::copy(ELEMENT, chars.begin());
+    chars.at(ELEMENT.size()) = '[';
+    chars.at(ELEMENT.size() + 1) = ']';
+    return chars;
+  }();
+
+ public:
+  static constexpr std::string_view VALUE = ELEMENT.empty() ? std::string_view() : std::string_view(CHARS.data(), CHARS.size() - 1);
+};
 
 /** @return The PostgreSQL integer type of at least `bytes` bytes. */
 [[nodiscard]] constexpr std::string_view integer_type_name(std::size_t bytes) {
@@ -42,6 +64,8 @@ template <typename data_t>
     return "text";
   } else if constexpr ( std::same_as<data_t, std::vector<std::byte>> ) {
     return "bytea";
+  } else if constexpr ( util::SqlArray<data_t> ) {
+    return ArrayTypeName<typename data_t::value_type>::VALUE;  // a `std::vector` is an array: `text[]`
   } else if constexpr ( std::same_as<data_t, float> ) {
     return "real";
   } else if constexpr ( std::same_as<data_t, double> ) {
@@ -74,18 +98,12 @@ template <typename data_t>
 }  // namespace detail
 
 /**
- * @brief The name of a column type in SQL, used to cast list arguments (`= ANY($1::<name>[])`).
+ * @brief The name of a column type in SQL: its type in `create_table`, and the cast on its arguments (`= ANY($1::<name>[])`).
  *
- * The primary template covers the built-in types; for any other it is empty, and Postgres infers the type. **A
- * column type with its own SQL type supplies it by specializing this**, in the module that defines the type:
- *
- * @code
- * template <>
- * class query::sql::SqlType<Money> {
- *  public:
- *   static constexpr std::string_view NAME = "numeric";
- * };
- * @endcode
+ * The primary template covers the built-in types (a `std::vector` of one is its array, `text[]`), and a type of your own
+ * through its `ColumnType::SQL_TYPE` (schema/column_type.hpp), which is how a type should say it. For any other type it is
+ * empty, and Postgres infers the type. Specializing this directly is for a type whose codec is a `postgres::FieldCodec`
+ * specialization rather than a `ColumnType`.
  */
 template <typename data_t>
 class SqlType {

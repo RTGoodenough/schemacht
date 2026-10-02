@@ -63,6 +63,9 @@ bool is_success(ExecStatusType status) {
   return status == PGRES_TUPLES_OK || status == PGRES_TUPLES_CHUNK || status == PGRES_COMMAND_OK || status == PGRES_EMPTY_QUERY;
 }
 
+/** @brief Why a statement on a lease fails once the lease's connection has lost its link. */
+constexpr const char* LEASE_LOST = "the leased connection's link to Postgres was lost (a transaction on it is over)";
+
 /** @brief SQLSTATE of a statement that was cancelled: what the server reports after our own cancel. */
 constexpr std::string_view CANCELED_SQLSTATE = "57014";
 
@@ -128,6 +131,8 @@ QueryResult& QueryResult::operator=(QueryResult&& other) noexcept {
   return *this;
 }
 
+std::string_view QueryResult::command_tag() const noexcept { return _raw != nullptr ? PQcmdStatus(_raw.get()) : ""; }
+
 std::string_view QueryResult::column_name(std::size_t column) const {
   if ( column >= _column_count ) {
     throw std::out_of_range("QueryResult::column_name: no such column");
@@ -154,6 +159,57 @@ std::optional<std::string_view> QueryResult::field(std::size_t row, std::size_t 
   return std::string_view{PQgetvalue(_raw.get(), row_index, column_index),
                           static_cast<std::size_t>(PQgetlength(_raw.get(), row_index, column_index))};
 }
+
+// ============================================================================
+// What waits to run: statements, streams and lease requests
+// ============================================================================
+
+namespace {
+
+/**
+ * @brief What a streamed statement shares between the reactor, which reads its chunks, and the workers, which handle them.
+ * Everything but `options`, `on_chunk` (only ever used by the one delivering task) and `done` is guarded by `mutex`.
+ */
+struct Stream {
+  Stream(AsyncClient::StreamOptions stream_options, AsyncClient::ChunkHandler chunk_handler, AsyncClient::StreamCompletion completion)
+      : options(stream_options), on_chunk(std::move(chunk_handler)), done(std::move(completion)) {}
+
+  AsyncClient::StreamOptions    options;
+  AsyncClient::ChunkHandler     on_chunk;
+  AsyncClient::StreamCompletion done;
+
+  std::mutex              mutex;
+  std::deque<QueryResult> ready;               // chunks read and waiting for the handler
+  bool                    delivering = false;  // a worker task is handling chunks
+  bool                    stop = false;        // the consumer is done (it said so, or threw) or the client is shutting down: chunks are dropped
+  bool                    aborted = false;     // ... because of the shutdown: the stream did not end by itself
+  std::exception_ptr      handler_error;       // what the handler threw
+  bool                    finished = false;    // the statement's last result has been read
+  std::exception_ptr      error;               // what the server, or the connection, reported
+  bool                    completed = false;   // `done` has been called (or posted)
+};
+
+/** @brief Something waiting to start: a plain statement (`done`), a stream (`stream`), or a request for a lease (`granted`). */
+struct Operation {
+  std::string                              sql;
+  std::vector<std::string>                 params;
+  AsyncClient::Completion                  done;
+  std::shared_ptr<Stream>                  stream;
+  std::shared_ptr<AsyncClient::LeaseState> lease;  ///< The lease a statement runs on; null for one the pool runs.
+  AsyncClient::LeaseCompletion             granted;
+};
+
+}  // namespace
+
+/** @brief A connection held for one holder: its statements wait here, not in the pool's queue, and run on it one at a time. */
+struct AsyncClient::LeaseState {
+  PGconn* connection = nullptr;  ///< Set when the lease is granted, and never changed.
+  bool    busy = false;          ///< One of its statements is active. Reactor thread only.
+  // Guarded by the client's mutex:
+  std::deque<Operation> queued;
+  bool                  released = false;  ///< Its `Lease` let go of it: the connection goes back once `queued` is done.
+  bool                  lost = false;      ///< The connection's link was lost: everything after fails.
+};
 
 // ============================================================================
 // AsyncClient::Impl
@@ -199,11 +255,21 @@ class AsyncClient::Impl {
     close_everything();
   }
 
-  void run(std::string sql, std::vector<std::string> params, Completion done) {
-    enqueue(Operation{.sql = std::move(sql), .params = std::move(params), .done = std::move(done), .stream = nullptr});
+  /** @brief Runs `sql` on the pool, or on `lease`'s connection if there is one. */
+  void run(const std::shared_ptr<LeaseState>& lease, std::string sql, std::vector<std::string> params, Completion done) {
+    enqueue(Operation{
+        .sql = std::move(sql),
+        .params = std::move(params),
+        .done = std::move(done),
+        .stream = nullptr,
+        .lease = lease,
+        .granted = nullptr,
+    });
   }
 
-  void stream(std::string sql, std::vector<std::string> params, StreamOptions options, ChunkHandler on_chunk, StreamCompletion done) {
+  /** @brief Streams `sql` on the pool, or on `lease`'s connection if there is one. */
+  void stream(const std::shared_ptr<LeaseState>& lease, std::string sql, std::vector<std::string> params, StreamOptions options,
+              ChunkHandler on_chunk, StreamCompletion done) {
     if ( options.chunk_rows == 0 || options.max_buffered_chunks == 0 ) {
       _workers->post([done = std::move(done)] mutable {
         done(std::make_exception_ptr(std::invalid_argument("a stream needs chunks of at least one row and at least one buffered chunk")));
@@ -215,43 +281,27 @@ class AsyncClient::Impl {
         .params = std::move(params),
         .done = nullptr,
         .stream = std::make_shared<Stream>(options, std::move(on_chunk), std::move(done)),
+        .lease = lease,
+        .granted = nullptr,
     });
+  }
+
+  void lease(LeaseCompletion granted) {
+    enqueue(Operation{.sql = {}, .params = {}, .done = nullptr, .stream = nullptr, .lease = nullptr, .granted = std::move(granted)});
+  }
+
+  /** @brief The lease's holder let go of it: its connection goes back once what is queued on it is done. */
+  void release(const std::shared_ptr<LeaseState>& lease) noexcept {
+    {
+      const std::scoped_lock lock(_mutex);
+      lease->released = true;
+    }
+    wake();
   }
 
   void post(std::move_only_function<void()> task) { _workers->post(std::move(task)); }
 
  private:
-  /**
-   * @brief What a streamed statement shares between the reactor, which reads its chunks, and the workers, which handle them.
-   * Everything but `options`, `on_chunk` (only ever used by the one delivering task) and `done` is guarded by `mutex`.
-   */
-  struct Stream {
-    Stream(StreamOptions stream_options, ChunkHandler chunk_handler, StreamCompletion completion)
-        : options(stream_options), on_chunk(std::move(chunk_handler)), done(std::move(completion)) {}
-
-    StreamOptions    options;
-    ChunkHandler     on_chunk;
-    StreamCompletion done;
-
-    std::mutex              mutex;
-    std::deque<QueryResult> ready;               // chunks read and waiting for the handler
-    bool                    delivering = false;  // a worker task is handling chunks
-    bool                    stop = false;        // the consumer is done (it said so, or threw) or the client is shutting down: chunks are dropped
-    bool                    aborted = false;     // ... because of the shutdown: the stream did not end by itself
-    std::exception_ptr      handler_error;       // what the handler threw
-    bool                    finished = false;    // the statement's last result has been read
-    std::exception_ptr      error;               // what the server, or the connection, reported
-    bool                    completed = false;   // `done` has been called (or posted)
-  };
-
-  /** @brief A statement waiting to start: a plain one (`done`) or a stream (`stream`). */
-  struct Operation {
-    std::string              sql;
-    std::vector<std::string> params;
-    Completion               done;
-    std::shared_ptr<Stream>  stream;
-  };
-
   /** @brief A statement that has been sent and is waiting on its connection's socket. */
   struct Active {
     Operation          operation;
@@ -363,28 +413,45 @@ class AsyncClient::Impl {
     wake();
   }
 
-  void complete_with_error(Completion done, const std::string& message) {
-    _workers->post([done = std::move(done), message] mutable { done(QueryResult{}, runtime_error_ptr(message)); });
-  }
-
-  /** @brief Ends an operation that never started: its completion gets the error. */
-  void reject(Operation operation, const std::string& message) {
+  /** @brief Ends an operation that never started: its completion gets `error`. */
+  void reject(Operation operation, const std::exception_ptr& error) {
     if ( operation.stream ) {
-      _workers->post([stream = std::move(operation.stream), error = runtime_error_ptr(message)] { stream->done(error); });
-      return;
+      _workers->post([stream = std::move(operation.stream), error] { stream->done(error); });
+    } else if ( operation.granted ) {
+      _workers->post([granted = std::move(operation.granted), error] mutable { granted(Lease(), error); });
+    } else {
+      _workers->post([done = std::move(operation.done), error] mutable { done(QueryResult{}, error); });
     }
-    complete_with_error(std::move(operation.done), message);
   }
 
+  void reject(Operation operation, const std::string& message) { reject(std::move(operation), runtime_error_ptr(message)); }
+
+  /** @return Why an operation can't be queued now (the client is stopping, or its lease is over), or null if it can. Under `_mutex`. */
+  [[nodiscard]] std::exception_ptr refusal(const Operation& operation) const {
+    if ( _stopping ) {
+      return runtime_error_ptr("the Postgres client is shutting down");
+    }
+    if ( operation.lease && operation.lease->lost ) {
+      return runtime_error_ptr(LEASE_LOST);
+    }
+    return nullptr;
+  }
+
+  /** @brief Queues `operation`: on its lease, if it has one, else on the pool. */
   void enqueue(Operation operation) {
     {
       std::unique_lock lock(_mutex);
-      if ( _stopping ) {
+      if ( std::exception_ptr error = refusal(operation) ) {
         lock.unlock();
-        reject(std::move(operation), "the Postgres client is shutting down");
+        reject(std::move(operation), error);
         return;
       }
-      _queued.push_back(std::move(operation));
+      if ( operation.lease ) {
+        const std::shared_ptr<LeaseState> lease = operation.lease;
+        lease->queued.push_back(std::move(operation));
+      } else {
+        _queued.push_back(std::move(operation));
+      }
     }
     wake();
   }
@@ -511,10 +578,69 @@ class AsyncClient::Impl {
       PGconn* connection = _idle.back();
       _idle.pop_back();
       lock.unlock();
-      begin(std::move(operation), connection, active);
+      if ( operation.granted ) {
+        grant(std::move(operation.granted), connection);
+      } else {
+        begin(std::move(operation), connection, active);
+      }
       lock.lock();
     }
+    lock.unlock();
+    start_leased(active);
+    lock.lock();
     return _stopping;
+  }
+
+  /** @brief Hands `connection` to the holder that asked for a lease. */
+  void grant(LeaseCompletion granted, PGconn* connection) {
+    const auto lease = std::make_shared<LeaseState>();
+    lease->connection = connection;
+    _workers->post([this, granted = std::move(granted), lease] mutable { granted(Lease(this, lease), nullptr); });
+    _leases.push_back(lease);
+  }
+
+  /**
+   * @brief Starts the next statement of each lease whose connection is free, and gives back the connections of leases that
+   * are released and have nothing left to run. While stopping, what is still queued on a lease is rejected.
+   */
+  void start_leased(std::vector<Active>& active) {
+    for ( std::size_t i = _leases.size(); i-- > 0; ) {
+      const std::shared_ptr<LeaseState> lease = _leases.at(i);
+      while ( ! lease->busy ) {
+        std::unique_lock lock(_mutex);
+        if ( lease->queued.empty() ) {
+          if ( lease->released ) {
+            lock.unlock();
+            _leases.erase(_leases.begin() + static_cast<std::ptrdiff_t>(i));
+            return_to_pool(lease->connection);
+          }
+          break;
+        }
+        Operation operation = std::move(lease->queued.front());
+        lease->queued.pop_front();
+        const bool stopping = _stopping;
+        lock.unlock();
+        if ( stopping ) {
+          reject(std::move(operation), "the Postgres client is shutting down");
+          continue;
+        }
+        lease->busy = true;
+        begin(std::move(operation), lease->connection, active);  // a statement that fails at once is finished, and the lease free, on return
+      }
+    }
+  }
+
+  /** @brief The lease's connection lost its link: everything queued on it, and everything handed to it later, fails. */
+  void lose(const std::shared_ptr<LeaseState>& lease) {
+    std::deque<Operation> queued;
+    {
+      const std::scoped_lock lock(_mutex);
+      lease->lost = true;
+      queued.swap(lease->queued);
+    }
+    for ( Operation& operation : queued ) {
+      reject(std::move(operation), LEASE_LOST);
+    }
   }
 
   void begin(Operation operation, PGconn* connection, std::vector<Active>& active) {
@@ -629,7 +755,7 @@ class AsyncClient::Impl {
       finish_stream(statement);
       return;
     }
-    PGconn*            connection = statement.connection;
+    PGconn* const      connection = statement.connection;
     QueryResult        result;
     std::exception_ptr error = statement.error;
     if ( ! error ) {
@@ -639,7 +765,7 @@ class AsyncClient::Impl {
     }
     statement.result = nullptr;
 
-    release(connection);
+    return_connection(statement.operation.lease, connection);
     _workers->post([done = std::move(statement.operation.done), result = std::move(result), error] mutable { done(std::move(result), error); });
   }
 
@@ -732,7 +858,7 @@ class AsyncClient::Impl {
       PQclear(statement.result);
       statement.result = nullptr;
     }
-    release(statement.connection);
+    return_connection(statement.operation.lease, statement.connection);
     {
       const std::scoped_lock lock(stream->mutex);
       stream->finished = true;
@@ -769,7 +895,8 @@ class AsyncClient::Impl {
       stop = stream.stop;
       room = stream.ready.size() < stream.options.max_buffered_chunks;
     }
-    if ( stop && ! statement.read_done && ! statement.cancel_sent ) {
+    // A cancel would abort a transaction on a lease, so a leased stream reads on and drops its rows; on shutdown it is cancelled.
+    if ( stop && ! statement.read_done && ! statement.cancel_sent && (! statement.operation.lease || stopping) ) {
       cancel(statement);
     }
     if ( statement.read_done ) {
@@ -825,9 +952,28 @@ class AsyncClient::Impl {
     statement.cancel = nullptr;
   }
 
-  /** @brief Makes `connection` available again, first re-establishing it (driven by the reactor) if the link was lost. */
-  void release(PGconn* connection) {
-    if ( PQstatus(connection) != CONNECTION_BAD ) {
+  /**
+   * @brief A statement is done with `connection`: it stays with `lease` if the statement ran on one (which is lost with it if
+   * the link was), else it goes back to the pool.
+   */
+  void return_connection(const std::shared_ptr<LeaseState>& lease, PGconn* connection) {
+    if ( lease == nullptr ) {
+      return_to_pool(connection);
+      return;
+    }
+    lease->busy = false;
+    if ( PQstatus(connection) == CONNECTION_BAD ) {
+      lose(lease);
+    }
+  }
+
+  /**
+   * @brief Makes `connection` available again, first re-establishing it (driven by the reactor) if the link was lost, or if it
+   * is still inside a transaction (a lease let go of without `COMMIT` or `ROLLBACK`, or a `BEGIN` run on the pool): the pool's
+   * statements never run inside someone else's transaction.
+   */
+  void return_to_pool(PGconn* connection) {
+    if ( PQstatus(connection) != CONNECTION_BAD && PQtransactionStatus(connection) == PQTRANS_IDLE ) {
       push_idle(connection);
       return;
     }
@@ -890,13 +1036,14 @@ class AsyncClient::Impl {
     return false;
   }
 
-  std::string                        _session_sql;
-  std::function<void(const Notice&)> _on_notice;
-  std::vector<Reconnecting>          _reconnecting;  // reactor thread only
-  std::unique_ptr<async::ThreadPool> _workers;
-  std::vector<PGconn*>               _connections;
-  int                                _wake_read = -1;
-  int                                _wake_write = -1;
+  std::string                              _session_sql;
+  std::function<void(const Notice&)>       _on_notice;
+  std::vector<Reconnecting>                _reconnecting;  // reactor thread only
+  std::vector<std::shared_ptr<LeaseState>> _leases;        // granted and not yet given back; reactor thread only (their queues are under `_mutex`)
+  std::unique_ptr<async::ThreadPool>       _workers;
+  std::vector<PGconn*>                     _connections;
+  int                                      _wake_read = -1;
+  int                                      _wake_write = -1;
 
   std::mutex            _mutex;  // guards the three below
   std::deque<Operation> _queued;
@@ -915,13 +1062,65 @@ AsyncClient::AsyncClient(const std::string& conninfo, const Options& options) : 
 AsyncClient::~AsyncClient() = default;
 
 void AsyncClient::run(std::string sql, std::vector<std::string> params, Completion done) {
-  _impl->run(std::move(sql), std::move(params), std::move(done));
+  _impl->run(nullptr, std::move(sql), std::move(params), std::move(done));
 }
 
 void AsyncClient::stream(std::string sql, std::vector<std::string> params, StreamOptions options, ChunkHandler on_chunk, StreamCompletion done) {
-  _impl->stream(std::move(sql), std::move(params), options, std::move(on_chunk), std::move(done));
+  _impl->stream(nullptr, std::move(sql), std::move(params), options, std::move(on_chunk), std::move(done));
 }
 
 void AsyncClient::post(std::move_only_function<void()> task) { _impl->post(std::move(task)); }
+
+void AsyncClient::lease(LeaseCompletion granted) { _impl->lease(std::move(granted)); }
+
+namespace {
+
+std::exception_ptr empty_lease() {
+  return std::make_exception_ptr(std::logic_error(
+      "a statement on an empty lease: released, moved from or never granted (for a transaction: it has ended, by a commit, a rollback or a move)"));
+}
+
+}  // namespace
+
+void AsyncClient::run(const Lease& lease, std::string sql, std::vector<std::string> params, Completion done) {
+  if ( ! lease ) {
+    _impl->post([done = std::move(done)] mutable { done(QueryResult{}, empty_lease()); });
+    return;
+  }
+  _impl->run(lease._state, std::move(sql), std::move(params), std::move(done));
+}
+
+void AsyncClient::stream(const Lease& lease, std::string sql, std::vector<std::string> params, StreamOptions options, ChunkHandler on_chunk,
+                         StreamCompletion done) {
+  if ( ! lease ) {
+    _impl->post([done = std::move(done)] mutable { done(empty_lease()); });
+    return;
+  }
+  _impl->stream(lease._state, std::move(sql), std::move(params), options, std::move(on_chunk), std::move(done));
+}
+
+// ---- Lease -------------------------------------------------------------------------------------------------------------
+
+AsyncClient::Lease::Lease(Impl* impl, std::shared_ptr<LeaseState> state) noexcept : _impl(impl), _state(std::move(state)) {}
+
+AsyncClient::Lease::Lease(Lease&& other) noexcept : _impl(other._impl), _state(std::move(other._state)) {}
+
+AsyncClient::Lease& AsyncClient::Lease::operator=(Lease&& other) noexcept {
+  if ( this != &other ) {
+    release();
+    _impl = other._impl;
+    _state = std::move(other._state);
+  }
+  return *this;
+}
+
+AsyncClient::Lease::~Lease() { release(); }
+
+void AsyncClient::Lease::release() noexcept {
+  if ( _state != nullptr ) {
+    _impl->release(_state);
+    _state.reset();
+  }
+}
 
 }  // namespace schemacht::postgres

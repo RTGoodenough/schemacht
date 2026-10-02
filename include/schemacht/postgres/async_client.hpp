@@ -65,6 +65,12 @@ class QueryResult {
    */
   [[nodiscard]] std::uint64_t affected_rows() const noexcept { return _affected_rows; }
 
+  /**
+   * @return The statement's command tag, as PostgreSQL reports it: `UPDATE 3`, `CREATE TABLE`, `COMMIT`, or `ROLLBACK` for a
+   * `COMMIT` of a transaction that had failed; empty for an empty result.
+   */
+  [[nodiscard]] std::string_view command_tag() const noexcept;
+
   /** @return Whether the fields are in PostgreSQL's binary form rather than text; false for a result with no columns. */
   [[nodiscard]] bool is_binary() const noexcept { return _binary; }
 
@@ -129,11 +135,19 @@ inline constexpr std::size_t DEFAULT_STREAM_CHUNK_ROWS = 1000;
  * `future::get()` on it, say): that statement's completion needs a worker, and with every worker waiting, none is left to
  * run it. Chain the next step from the completion instead (`Database::execute_into`, `Database::stream_into`).
  *
- * Thread-safe: `run` may be called from any thread. Statements run in autocommit mode, one round trip each.
+ * Thread-safe: `run` may be called from any thread. Statements run in autocommit mode, one round trip each, unless they run on
+ * a lease.
+ *
+ * - **Leases.** `lease` takes one connection out of the pool for a single holder (a `Lease`), until the holder lets go of
+ *   it: the statements `run` or `stream` on that lease go to that connection only, one at a time, in the order they were
+ *   handed in. It is what a transaction is built on (`Database::begin`). A lease waits in the same queue as statements
+ *   while no connection is free, and a pool whose every connection is leased runs nothing else until one is released.
  *
  * `postgres::Database` is the typed interface built on it.
  */
 class AsyncClient {
+  class Impl;
+
  public:
   struct Options {
     std::size_t     connections = 4;  ///< Connections opened up front; also the most statements in flight at once.
@@ -221,8 +235,68 @@ class AsyncClient {
   /** @brief Runs `task` on the worker threads. */
   void post(std::move_only_function<void()> task);
 
+  struct LeaseState;
+
+  /**
+   * @brief One connection of the pool's, held for one holder: the statements `run` or `stream` on it go to that connection
+   * only, one at a time, in the order they were handed in. Move-only.
+   *
+   * Destroying it (or `release`) gives the connection back to the pool, once the statements already handed to it are done.
+   * A connection that comes back still inside a transaction (a `BEGIN` with no `COMMIT` or `ROLLBACK`) is re-established
+   * first, so the pool never runs a statement inside someone else's transaction. A lease must not outlive its client.
+   */
+  class Lease {
+   public:
+    Lease() = default;
+    Lease(const Lease&) = delete;
+    Lease& operator=(const Lease&) = delete;
+    Lease(Lease&& other) noexcept;
+    Lease& operator=(Lease&& other) noexcept;
+    ~Lease();
+
+    /** @return Whether this holds a connection (it was granted, and is not released or moved from). */
+    [[nodiscard]] explicit operator bool() const noexcept { return _state != nullptr; }
+
+    /** @brief Gives the connection back now, as the destructor would; every statement handed to it later fails with `std::logic_error`. */
+    void release() noexcept;
+
+   private:
+    friend class AsyncClient;
+    friend class Impl;
+
+    Lease(Impl* impl, std::shared_ptr<LeaseState> state) noexcept;
+
+    Impl*                       _impl = nullptr;
+    std::shared_ptr<LeaseState> _state;
+  };
+
+  /** @brief Called once, on a worker thread, with the lease once a connection is free, or with the error (and an empty lease). */
+  using LeaseCompletion = std::move_only_function<void(Lease, std::exception_ptr)>;
+
+  /**
+   * @brief Asks for a connection of the pool's own, and returns at once. The request waits in the same queue as statements.
+   *
+   * Once its connection's link is lost, every statement on a lease fails; the connection is re-established when the lease
+   * is released.
+   */
+  void lease(LeaseCompletion granted);
+
+  /**
+   * @brief As `run`, on the lease's connection, after the statements handed to the lease before it.
+   *
+   * `done` gets `std::logic_error` (and nothing runs) if `lease` is empty, and `std::runtime_error` if its connection was lost.
+   */
+  void run(const Lease& lease, std::string sql, std::vector<std::string> params, Completion done);
+
+  /**
+   * @brief As `stream`, on the lease's connection, after the statements handed to the lease before it. A stream that is
+   * stopped early is not cancelled on the server, which would abort a transaction on it: the rest of its rows are read and
+   * dropped. (On shutdown it is cancelled.)
+   */
+  void stream(const Lease& lease, std::string sql, std::vector<std::string> params, StreamOptions options, ChunkHandler on_chunk,
+              StreamCompletion done);
+
  private:
-  class Impl;
   std::unique_ptr<Impl> _impl;
 };
 

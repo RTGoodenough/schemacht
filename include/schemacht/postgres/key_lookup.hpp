@@ -18,8 +18,8 @@ template <schema::HasSingleColumnKey schema_t>
 using primary_key_type = schema::primary_key_field<schema_t>::value_type;
 
 /**
- * @return The query for every row whose `key_col` value is one of `keys`: what `select_by_key_values` of both Postgres backends runs. Not necessarily "the"
- * primary key: any column will do.
+ * @return The query for every row whose `key_col` value is one of `keys`: what `Database::select_by_key_values` runs. Not necessarily
+ * the primary key: any column will do.
  */
 template <schema::IsSchema schema_t, util::CTString key_col>
 [[nodiscard]] auto by_key_values(std::span<const key_type<schema_t, key_col>> keys) {

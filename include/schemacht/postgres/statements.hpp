@@ -19,6 +19,7 @@
 #include "schemacht/query/sql.hpp"
 #include "schemacht/query/sql_type.hpp"
 #include "schemacht/schema/schema.hpp"
+#include "schemacht/util/type_utils.hpp"
 
 /**
  * Turning bound queries and rows into what is sent to Postgres: statement text plus each argument's text. Free of libpq.
@@ -81,15 +82,9 @@ inline constexpr std::size_t MAX_STATEMENT_PARAMETERS = 65535;
 
 namespace insert_detail {
 
-template <typename data_t>
-inline constexpr bool IS_ARRAY = false;
-
-template <typename element_t>
-inline constexpr bool IS_ARRAY<std::vector<element_t>> = ! std::same_as<element_t, std::byte>;  // a `std::vector<std::byte>` is a bytea value
-
 template <schema::IsSchema schema_t, std::size_t... idx>
 consteval bool any_insertable_array(std::index_sequence<idx...> /*indices*/) {
-  return ((! schema_t::template field_at<idx>::GENERATED && IS_ARRAY<typename schema_t::template field_at<idx>::value_type>) || ...);
+  return ((! schema_t::template field_at<idx>::GENERATED && util::SqlArray<typename schema_t::template field_at<idx>::value_type>) || ...);
 }
 
 template <schema::IsSchema schema_t, std::size_t... idx>
@@ -242,8 +237,8 @@ template <TextSchema schema_t>
   static_assert(schema_t::INSERTABLE_FIELD_COUNT > 0, "insert: the schema has no column that is not GENERATED");
   if constexpr ( insert_detail::USES_UNNEST<schema_t> ) {
     static_assert(insert_detail::every_insertable_has_sql_type<schema_t>(std::make_index_sequence<schema_t::FIELD_COUNT>{}),
-                  "insert: every inserted column's type needs a SQL type name (it is sent as an array of that type): specialize "
-                  "query::sql::SqlType for it");
+                  "insert: every inserted column's type needs a SQL type name (it is sent as an array of that type): give it "
+                  "one (ColumnType::SQL_TYPE, or a query::sql::SqlType specialization)");
     return {insert_detail::build_unnest<schema_t>(rows, std::make_index_sequence<schema_t::FIELD_COUNT>{})};
   } else {
     constexpr std::size_t        ROWS_PER_STATEMENT = MAX_STATEMENT_PARAMETERS / schema_t::INSERTABLE_FIELD_COUNT;

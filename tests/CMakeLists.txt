@@ -30,10 +30,22 @@ add_executable(
   unit/statements_test.cpp
   unit/thread_pool_test.cpp
   integration/database_test.cpp
+  integration/transaction_test.cpp
 )
 target_include_directories(schemacht_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(schemacht_tests PRIVATE schemacht::schemacht Catch2::Catch2WithMain)
 catch_discover_tests(schemacht_tests)
+
+# ==============================================================================
+# The examples, run against the test database (skipped, as the integration tests are, without SCHEMACHT_TEST_DB)
+# ==============================================================================
+foreach(example basic custom_types)
+  if(TARGET schemacht_example_${example})
+    add_test(NAME example.${example} COMMAND ${CMAKE_COMMAND} -DEXAMPLE=$<TARGET_FILE:schemacht_example_${example}> -P
+                                             ${CMAKE_CURRENT_SOURCE_DIR}/run_example.cmake)
+    set_tests_properties(example.${example} PROPERTIES SKIP_REGULAR_EXPRESSION "SCHEMACHT_TEST_DB is not set: skipped")
+  endif()
+endforeach()
 
 # ==============================================================================
 # Compile-fail tests
@@ -79,6 +91,7 @@ schemacht_compile_fail(DELETE_WHERE_EVERYTHING "would delete every row")
 schemacht_compile_fail(CREATE_TABLE_GENERATED "generated column's expression")
 schemacht_compile_fail(CREATE_TABLE_WITHOUT_SQL_TYPE "a column's type has no SQL name")
 schemacht_compile_fail(COLUMN_TYPE_WITHOUT_FORMAT "HasTextForm")
+schemacht_compile_fail(IN_ON_ARRAY_COLUMN "can't test a column that is itself an array")
 
 # With no case defined, cases.cpp must compile: the failures above are the cases', not the file's.
 add_test(NAME compile_fail.baseline COMMAND ${CMAKE_CXX_COMPILER} -std=c++23 -fsyntax-only -I${PROJECT_SOURCE_DIR}/include

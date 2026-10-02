@@ -13,6 +13,7 @@
 #include "schemacht/schema/schema.hpp"
 #include "schemacht/util/compile_time.hpp"
 #include "schemacht/util/identifier.hpp"
+#include "schemacht/util/type_utils.hpp"
 
 namespace schemacht::query {
 
@@ -560,12 +561,18 @@ class ColumnRef {
     requires RankingOn<ranking_t>
   [[nodiscard]] constexpr Ordering<schema_t> ranked_by(ArgRef<slot_idx> /*arg*/) const {
     return Ordering<schema_t>{
-        OrderTerm{.column = column_idx, .descending = false, .ranking = &detail::BoundRanking<ranking_t>::VALUE, .slot = slot_idx}};
+        OrderTerm{.column = column_idx, .descending = false, .ranking = &detail::BoundRanking<ranking_t>::VALUE, .slot = slot_idx},
+    };
   }
 
-  /** @brief The column's value is one of the values in the list argument `slot_idx` (a `std::vector<data_type>`). */
+  /**
+   * @brief The column's value is one of the values in the list argument `slot_idx` (a `std::vector<data_type>`). Not for a
+   * column that is itself an array: a list of arrays would be a two-dimensional array, which `= ANY` reads element by element.
+   */
   template <std::size_t slot_idx>
   [[nodiscard]] constexpr Predicate<schema_t, 1> in(ArgRef<slot_idx> /*arg*/) const {
+    static_assert(! util::SqlArray<typename schema_t::template field_at<column_idx>::value_type>,
+                  "in(...) can't test a column that is itself an array (a std::vector): compare it with == instead");
     return single(Node{
         .kind = NodeKind::InList,
         .column = column_idx,

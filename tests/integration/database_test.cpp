@@ -31,6 +31,7 @@
 #include "schemacht/column_type.hpp"
 #include "schemacht/schemacht.hpp"
 #include "schemacht/util/compile_time.hpp"
+#include "support/integration.hpp"
 
 namespace sch = schemacht::schema;
 namespace q = schemacht::query;
@@ -40,26 +41,8 @@ using namespace std::chrono_literals;
 
 namespace {
 
-std::string test_db() {
-  const char* conninfo = std::getenv("SCHEMACHT_TEST_DB");
-  if ( conninfo == nullptr ) {
-    SKIP("SCHEMACHT_TEST_DB is not set");
-  }
-  return conninfo;
-}
-
-/** @brief Runs `sql` (no arguments, no rows wanted) and waits for it. */
-void exec(pg::Database& database, std::string sql) {
-  std::promise<void> done;
-  database.pool().run(std::move(sql), {}, [&done](const pg::QueryResult& /*result*/, const std::exception_ptr& error) {
-    if ( error ) {
-      done.set_exception(error);
-    } else {
-      done.set_value();
-    }
-  });
-  done.get_future().get();
-}
+using schemacht::test::exec;
+using schemacht::test::test_db;
 
 std::vector<std::byte> bytes(std::initializer_list<unsigned> values) {
   std::vector<std::byte> result;
@@ -515,4 +498,28 @@ TEST_CASE("integration: the column type helpers round-trip, in binary and in tex
                                  q::RawArguments<>, sch::Field<std::string, "stored">>;
   CHECK(sch::get<"stored">(database.execute(Stored::bind()).get().at(0)) == "2 19.99 file:///tmp/a");  // as the database holds them
   database.drop_table<Tasks>().get();
+}
+
+TEST_CASE("integration: a table created from a schema keeps each unique column unique", "[integration]") {
+  using Email = sch::Field<std::string, "email", sch::KeyRole::Unique>;
+  using Phone = sch::Field<std::optional<std::string>, "phone", sch::KeyRole::Unique>;
+  using Accounts = sch::Schema<"schemacht_it_accounts", Id, Email, Phone>;
+
+  pg::Database database(test_db());
+  database.drop_table<Accounts>().get();
+  database.create_table<Accounts>().get();
+  database.insert<Accounts>({Accounts::make_row(1, "a@example.com", "555-0100")}).get();
+  database.insert<Accounts>({Accounts::make_row(2, "b@example.com", std::nullopt)}).get();  // each column on its own: a new email will do
+
+  const auto refused = [&database](Accounts::row_type row) {
+    try {
+      database.insert<Accounts>({std::move(row)}).get();
+      FAIL("the insert should have been refused");
+    } catch ( const pg::QueryError& error ) {
+      CHECK(error.sqlstate() == "23505");  // unique_violation
+    }
+  };
+  refused(Accounts::make_row(3, "a@example.com", "555-0199"));  // the email again
+  refused(Accounts::make_row(4, "c@example.com", "555-0100"));  // the phone again
+  database.drop_table<Accounts>().get();
 }

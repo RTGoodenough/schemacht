@@ -21,10 +21,13 @@ namespace schemacht::schema {
 /**
  * @brief How a column is indexed, if it is.
  *
- * - `Primary`/`Unique` mark a field as (part of) a key: no two rows share its value.
- * - A composite key is expressed by tagging more than one field `Primary`
- *   within the same `Schema` -- `Schema` aggregates them itself; `Field`
- *   doesn't need to know about its siblings.
+ * - `Primary` marks a field as (part of) the primary key. Several `Primary` fields in one `Schema` form one composite key:
+ *   no two rows share all of their values. `Schema` aggregates them itself; `Field` doesn't need to know about its siblings.
+ * - `Unique` marks a field as unique on its own: no two rows share its value. Several `Unique` fields are each unique
+ *   separately (`create_table` writes `UNIQUE ("a"), UNIQUE ("b")`), never together.
+ *
+ * A unique constraint across several columns (`UNIQUE ("a", "b")`) can't be described yet: create it with SQL. (An open
+ * decision: a schema should be able to say both.)
  *
  * @see Schema::HAS_PRIMARY_KEY
  * @see Schema::primary_key_column_names()
@@ -57,7 +60,7 @@ struct Unwrapped<std::optional<t>> {
  *
  * A column that can be NULL is declared with a `std::optional`: `Field<std::optional<std::string>, "name">`. The row
  * stores the `std::optional` (`data_type`), and everything else that names a type -- what a query compares the column
- * with, its SQL type, a bound argument, a sink's `put` -- uses the type inside it (`value_type`).
+ * with, its SQL type, a bound argument -- uses the type inside it (`value_type`).
  *
  * @tparam data_t     The column's C++ value type, in a `std::optional` if the column can be NULL.
  * @tparam column_str The column's name, as a compile-time string.
@@ -177,7 +180,7 @@ template <IsField field_t>
 }
 
 /**
- * @return The error for a NULL that has to go into `field_t`, which is not a `std::optional`: the database (or file)
+ * @return The error for a NULL that has to go into `field_t`, which is not a `std::optional`: the database
  * holds a NULL the schema says it cannot. It names the column.
  */
 template <IsField field_t>
