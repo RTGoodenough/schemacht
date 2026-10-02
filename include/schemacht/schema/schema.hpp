@@ -10,7 +10,6 @@
 #include "schemacht/schema/field.hpp"
 #include "schemacht/util/compile_time.hpp"
 #include "schemacht/util/identifier.hpp"
-#include "schemacht/util/visit_index.hpp"
 
 namespace schemacht::schema {
 
@@ -114,19 +113,6 @@ class Schema {
   /** @brief The field type with a given column name; an unknown name is a compile error that says so. */
   template <util::CTString name>
   using field_by_name = field_at<checked_field_index<name>()>;
-
-  /**
-   * @brief Turns a run-time column index into a compile-time one; see `util::visit_index`.
-   *
-   * Calls `visitor.template operator()<idx>()` with `idx == column`, so the visitor can name `field_at<idx>` and
-   * `std::get<idx>(row)`. Every column must give the same result type.
-   *
-   * @throws std::out_of_range if `column >= FIELD_COUNT`.
-   */
-  template <typename visitor_t>
-  static constexpr decltype(auto) visit_column(std::size_t column, visitor_t&& visitor) {
-    return util::visit_index<FIELD_COUNT>(column, std::forward<visitor_t>(visitor));
-  }
 
   /** @brief How many fields are tagged `KeyRole::Primary`; more than one makes a composite key. */
   static constexpr std::size_t PRIMARY_KEY_FIELD_COUNT = detail::count_set(std::array<bool, FIELD_COUNT>{(field_ts::KEY_ROLE == KeyRole::Primary)...});

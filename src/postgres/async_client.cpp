@@ -14,6 +14,7 @@
 #include <functional>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -87,55 +88,50 @@ std::string apply_session(PGconn* connection, std::string_view setup) {
 
 void QueryResult::Deleter::operator()(pg_result* raw) const noexcept { PQclear(raw); }
 
-std::size_t QueryResult::row_count() const noexcept { return _raw ? static_cast<std::size_t>(PQntuples(_raw.get())) : 0; }
+QueryResult::QueryResult(pg_result* raw)
+    : _raw(raw),
+      _row_count(raw != nullptr ? static_cast<std::size_t>(PQntuples(raw)) : 0),
+      _column_count(raw != nullptr ? static_cast<std::size_t>(PQnfields(raw)) : 0),
+      _binary(_column_count > 0 && PQfformat(raw, 0) == 1) {}
 
-std::size_t QueryResult::column_count() const noexcept { return _raw ? static_cast<std::size_t>(PQnfields(_raw.get())) : 0; }
+QueryResult::QueryResult(QueryResult&& other) noexcept
+    : _raw(std::move(other._raw)),
+      _row_count(std::exchange(other._row_count, 0)),
+      _column_count(std::exchange(other._column_count, 0)),
+      _binary(std::exchange(other._binary, false)) {}
+
+QueryResult& QueryResult::operator=(QueryResult&& other) noexcept {
+  _raw = std::move(other._raw);
+  _row_count = std::exchange(other._row_count, 0);
+  _column_count = std::exchange(other._column_count, 0);
+  _binary = std::exchange(other._binary, false);
+  return *this;
+}
 
 std::string_view QueryResult::column_name(std::size_t column) const {
-  if ( column >= column_count() ) {
+  if ( column >= _column_count ) {
     throw std::out_of_range("QueryResult::column_name: no such column");
   }
   return PQfname(_raw.get(), static_cast<int>(column));
 }
 
-std::optional<std::string_view> QueryResult::text(std::size_t row, std::size_t column) const {
-  if ( row >= row_count() || column >= column_count() ) {
-    throw std::out_of_range("QueryResult::text: no such field");
-  }
-  const int row_index = static_cast<int>(row);
-  const int column_index = static_cast<int>(column);
-  if ( PQgetisnull(_raw.get(), row_index, column_index) != 0 ) {
-    return std::nullopt;
-  }
-  return std::string_view{PQgetvalue(_raw.get(), row_index, column_index),
-                          static_cast<std::size_t>(PQgetlength(_raw.get(), row_index, column_index))};
-}
-
-bool QueryResult::is_binary() const noexcept { return _raw && PQnfields(_raw.get()) > 0 && PQfformat(_raw.get(), 0) == 1; }
-
-std::optional<std::span<const std::byte>> QueryResult::binary(std::size_t row, std::size_t column) const {
-  if ( ! is_binary() ) {
-    throw std::logic_error("QueryResult::binary: the result is text");
-  }
-  if ( row >= row_count() || column >= column_count() ) {
-    throw std::out_of_range("QueryResult::binary: no such field");
-  }
-  const int row_index = static_cast<int>(row);
-  const int column_index = static_cast<int>(column);
-  if ( PQgetisnull(_raw.get(), row_index, column_index) != 0 ) {
-    return std::nullopt;
-  }
-  return std::span<const std::byte>{
-      reinterpret_cast<const std::byte*>(
-          PQgetvalue(_raw.get(), row_index, column_index)),  // NOLINT(cppcoreguidelines-pro-type-reinterpret-cast) -- libpq hands out bytes as char*
-      static_cast<std::size_t>(PQgetlength(_raw.get(), row_index, column_index))};
-}
-
 std::uint32_t QueryResult::column_type(std::size_t column) const {
-  if ( column >= column_count() ) {
+  if ( column >= _column_count ) {
     throw std::out_of_range("QueryResult::column_type: no such column");
   }
   return PQftype(_raw.get(), static_cast<int>(column));
+}
+
+std::optional<std::string_view> QueryResult::field(std::size_t row, std::size_t column) const {
+  if ( row >= _row_count || column >= _column_count ) {
+    throw std::out_of_range("QueryResult::field: no such field");
+  }
+  const int row_index = static_cast<int>(row);
+  const int column_index = static_cast<int>(column);
+  if ( PQgetisnull(_raw.get(), row_index, column_index) != 0 ) {
+    return std::nullopt;
+  }
+  return std::string_view{PQgetvalue(_raw.get(), row_index, column_index), static_cast<std::size_t>(PQgetlength(_raw.get(), row_index, column_index))};
 }
 
 // ============================================================================

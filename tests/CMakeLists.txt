@@ -22,7 +22,7 @@ add_executable(
   compile/sql_test.cpp
   unit/field_codec_test.cpp
   unit/prepared_test.cpp
-  unit/row_sink_test.cpp
+  unit/row_reader_test.cpp
   unit/statements_test.cpp
   unit/thread_pool_test.cpp
   integration/database_test.cpp

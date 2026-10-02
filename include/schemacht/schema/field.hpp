@@ -5,6 +5,7 @@
 #include <optional>
 #include <stdexcept>
 #include <string>
+#include <tuple>
 #include <type_traits>
 
 #include "schemacht/util/compile_time.hpp"
@@ -97,6 +98,18 @@ struct is_field<Field<data_t, column_str, key_role, generated>> : std::true_type
 /** @brief Detects whether `data_t` is a `Field<...>` specialization. */
 template <typename data_t>
 concept IsField = detail::is_field<data_t>::value;
+
+namespace detail {
+template <typename t>
+struct is_field_tuple : std::false_type {};
+
+template <IsField... field_ts>
+struct is_field_tuple<std::tuple<field_ts...>> : std::true_type {};
+}  // namespace detail
+
+/** @brief A row as queries return it: a `std::tuple` of `Field`s, one per returned column, in result order. */
+template <typename row_t>
+concept FieldTuple = detail::is_field_tuple<row_t>::value;
 
 /** @return The address of `field`'s value, or null if the field is NULL; a field that cannot be NULL always has one. */
 template <IsField field_t>

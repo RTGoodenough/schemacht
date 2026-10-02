@@ -14,6 +14,8 @@
 #include <utility>
 #include <vector>
 
+#include "schemacht/schema/field.hpp"
+
 namespace schemacht::postgres {
 
 namespace detail {
@@ -256,8 +258,7 @@ concept HasBinaryForm = requires(std::span<const std::byte> bytes) {
 /**
  * @brief Parses a column's text representation into a `Field`'s declared `data_type`.
  *
- * The one place text ever turns into a typed value: what a result sink (`query::RowSink::put_text`) and the Postgres backends'
- * result reading use.
+ * The one place text turns into a typed value; `read_row` uses it through `parse_column`.
  */
 template <typename data_t>
 [[nodiscard]] constexpr data_t parse_field(std::string_view text) {
@@ -268,7 +269,7 @@ template <typename data_t>
  * @brief `parse_field` for the value of one column (`field_t`, a `schema::Field`): a text that does not parse is an
  * `std::invalid_argument` that names the column, so a bad value in a wide row can be found.
  */
-template <typename field_t>
+template <schema::IsField field_t>
 [[nodiscard]] field_t::value_type parse_column(std::string_view text) {
   try {
     return parse_field<typename field_t::value_type>(text);
@@ -278,7 +279,7 @@ template <typename field_t>
 }
 
 /** @brief `parse_column` for a value in binary form (`FieldCodec::parse_binary`); the error names the column the same way. */
-template <typename field_t>
+template <schema::IsField field_t>
   requires HasBinaryForm<typename field_t::value_type>
 [[nodiscard]] field_t::value_type parse_binary_column(std::span<const std::byte> bytes) {
   try {
@@ -292,7 +293,7 @@ template <typename field_t>
  * @brief Whether a result column of PostgreSQL type `type_oid` may be read into `field_t` in binary: true unless the codec checks types
  * (`binary_accepts`) and does not accept this one. The check the async backend makes once per result.
  */
-template <typename field_t>
+template <schema::IsField field_t>
 [[nodiscard]] constexpr bool binary_column_accepted(std::uint32_t type_oid) {
   using codec_t = FieldCodec<typename field_t::value_type>;
   if constexpr ( requires { codec_t::binary_accepts(type_oid); } ) {

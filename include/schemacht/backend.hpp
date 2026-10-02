@@ -7,5 +7,6 @@
 
 #include "schemacht/postgres/field_codec.hpp"  // IWYU pragma: export
 #include "schemacht/postgres/key_lookup.hpp"   // IWYU pragma: export
+#include "schemacht/postgres/row_reader.hpp"   // IWYU pragma: export
 #include "schemacht/query.hpp"                 // IWYU pragma: export
 #include "schemacht/schema.hpp"                // IWYU pragma: export

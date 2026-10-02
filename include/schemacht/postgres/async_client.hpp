@@ -6,7 +6,6 @@
 #include <functional>
 #include <memory>
 #include <optional>
-#include <span>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -38,18 +37,24 @@ class QueryError : public std::runtime_error {
   std::string _sqlstate;
 };
 
-/** @brief The rows a statement returned, as libpq holds them: one field at a time, as text or (if the statement asked for it, see `StreamOptions::binary`) in PostgreSQL's binary form. Move-only. */
+/**
+ * @brief The rows a statement returned, as libpq holds them: each field as text or, if the statement asked for it (see
+ * `StreamOptions::binary`), in PostgreSQL's binary form. Move-only.
+ */
 class QueryResult {
  public:
   QueryResult() = default;
   QueryResult(const QueryResult&) = delete;
-  QueryResult(QueryResult&&) noexcept = default;
+  QueryResult(QueryResult&& other) noexcept;
   QueryResult& operator=(const QueryResult&) = delete;
-  QueryResult& operator=(QueryResult&&) noexcept = default;
+  QueryResult& operator=(QueryResult&& other) noexcept;
   ~QueryResult() = default;
 
-  [[nodiscard]] std::size_t row_count() const noexcept;
-  [[nodiscard]] std::size_t column_count() const noexcept;
+  [[nodiscard]] std::size_t row_count() const noexcept { return _row_count; }
+  [[nodiscard]] std::size_t column_count() const noexcept { return _column_count; }
+
+  /** @return Whether the fields are in PostgreSQL's binary form rather than text; false for a result with no columns. */
+  [[nodiscard]] bool is_binary() const noexcept { return _binary; }
 
   /**
    * @return The name of a result column, as the statement calls it (`AS name`).
@@ -58,27 +63,17 @@ class QueryResult {
   [[nodiscard]] std::string_view column_name(std::size_t column) const;
 
   /**
-   * @return The text of one field, valid while this result lives, or `std::nullopt` if the field is NULL (which is not
-   * the same as an empty string).
-   * @throws std::out_of_range if `row` or `column` doesn't exist.
-   */
-  [[nodiscard]] std::optional<std::string_view> text(std::size_t row, std::size_t column) const;
-
-  /** @return Whether the fields are in binary form (`binary`) and not text (`text`); false for a result with no columns. */
-  [[nodiscard]] bool is_binary() const noexcept;
-
-  /**
-   * @return The bytes of one field of a binary result, valid while this result lives, or `std::nullopt` if the field is NULL.
-   * @throws std::out_of_range if `row` or `column` doesn't exist.
-   * @throws std::logic_error if the result is text.
-   */
-  [[nodiscard]] std::optional<std::span<const std::byte>> binary(std::size_t row, std::size_t column) const;
-
-  /**
    * @return The OID of the PostgreSQL type of a result column (`pg_type.oid`).
    * @throws std::out_of_range if there is no such column.
    */
   [[nodiscard]] std::uint32_t column_type(std::size_t column) const;
+
+  /**
+   * @return One field's value, valid while this result lives: its text, or its bytes in binary form if `is_binary()`
+   * (`std::as_bytes` gives them as bytes); `std::nullopt` if the field is NULL, which is not the same as empty.
+   * @throws std::out_of_range if `row` or `column` doesn't exist.
+   */
+  [[nodiscard]] std::optional<std::string_view> field(std::size_t row, std::size_t column) const;
 
  private:
   friend class AsyncClient;
@@ -87,9 +82,13 @@ class QueryResult {
     void operator()(pg_result* raw) const noexcept;
   };
 
-  explicit QueryResult(pg_result* raw) : _raw(raw) {}
+  explicit QueryResult(pg_result* raw);
 
   std::unique_ptr<pg_result, Deleter> _raw;
+  // Read once from `_raw`: they are checked on every `field`.
+  std::size_t _row_count = 0;
+  std::size_t _column_count = 0;
+  bool        _binary = false;
 };
 
 /** @brief Rows in each chunk of a stream unless told otherwise; in measurements, faster than 100 or 10,000. */

@@ -12,6 +12,5 @@
 #include "schemacht/query/prepared.hpp"        // IWYU pragma: export
 #include "schemacht/query/query.hpp"           // IWYU pragma: export
 #include "schemacht/query/raw_statement.hpp"   // IWYU pragma: export
-#include "schemacht/query/row_sink.hpp"        // IWYU pragma: export
 #include "schemacht/query/text.hpp"            // IWYU pragma: export
 #include "schemacht/schema.hpp"                // IWYU pragma: export
