@@ -4,7 +4,9 @@
 
 #include <concepts>
 #include <cstdint>
+#include <optional>
 #include <string>
+#include <tuple>
 
 #include "schemacht/schema.hpp"
 #include "support/schemas.hpp"
@@ -59,13 +61,39 @@ TEST_CASE("nullable fields", "[schema]") {
 
 TEST_CASE("which relations can be formed", "[schema]") {
   STATIC_REQUIRE(sch::CanFormRelation<Features, Index, "id", "feature_id">);
-  STATIC_REQUIRE(sch::CanFormRelation<Features, Index, "code", "feature_code">);   // a unique key will do
+  STATIC_REQUIRE(sch::CanFormRelation<Features, Index, "code", "feature_code">);      // a unique key will do
   STATIC_REQUIRE(! sch::CanFormRelation<Features, Index, "label", "feature_label">);  // not a key
-  STATIC_REQUIRE(! sch::CanFormRelation<Features, Index, "id", "feature_code">);   // the types differ
-  STATIC_REQUIRE(! sch::CanFormRelation<Features, Index, "nope", "feature_id">);   // no such column: false, not a compile error
+  STATIC_REQUIRE(! sch::CanFormRelation<Features, Index, "id", "feature_code">);      // the types differ
+  STATIC_REQUIRE(! sch::CanFormRelation<Features, Index, "nope", "feature_id">);      // no such column: false, not a compile error
   STATIC_REQUIRE(! sch::CanFormRelation<Features, Index, "id", "nope">);
   STATIC_REQUIRE(! sch::CanFormRelation<int, Index, "id", "feature_id">);  // not a schema
 
   using FeatureIndex = sch::Relation<Features, Index, "id", "feature_id">;
   STATIC_REQUIRE(sch::IsRelation<FeatureIndex>);
+}
+
+TEST_CASE("rows are made from a plain value per column", "[schema]") {
+  using Row = t::People::row_type;
+  STATIC_REQUIRE(sch::RowValues<Row, int, const char*, std::nullopt_t, double, bool>);
+  STATIC_REQUIRE(sch::RowValues<Row, std::int64_t, std::string, std::string, float, bool>);      // a float widens to the double
+  STATIC_REQUIRE_FALSE(sch::RowValues<Row, int, const char*, std::nullopt_t, double>);           // too few
+  STATIC_REQUIRE_FALSE(sch::RowValues<Row, double, std::string, std::nullopt_t, double, bool>);  // a double would narrow to the id
+  STATIC_REQUIRE_FALSE(sch::RowValues<Row, int, std::nullopt_t, std::nullopt_t, double, bool>);  // the name cannot be NULL
+  STATIC_REQUIRE_FALSE(sch::RowValues<int, int>);
+}
+
+TEST_CASE("a row's columns are found by name", "[schema]") {
+  STATIC_REQUIRE(sch::HasColumnNamed<t::People::row_type, "nick">);
+  STATIC_REQUIRE(sch::HasColumnNamed<std::tuple<t::Nick, t::Id>, "id">);  // a projected row
+  STATIC_REQUIRE_FALSE(sch::HasColumnNamed<t::People::row_type, "nope">);
+  STATIC_REQUIRE_FALSE(sch::HasColumnNamed<std::tuple<t::Id, t::Id>, "id">);  // ambiguous
+  STATIC_REQUIRE_FALSE(sch::HasColumnNamed<int, "id">);
+}
+
+TEST_CASE("a single-column primary key is known by its field", "[schema]") {
+  STATIC_REQUIRE(sch::HasSingleColumnKey<Features>);
+  STATIC_REQUIRE_FALSE(sch::HasSingleColumnKey<Composite>);
+  STATIC_REQUIRE_FALSE(sch::HasSingleColumnKey<Index>);  // no key at all
+  STATIC_REQUIRE(std::same_as<sch::primary_key_field<Features>, FeatureId>);
+  STATIC_REQUIRE(std::same_as<sch::primary_key_field<t::WithGenerated>, t::Id>);
 }

@@ -1,10 +1,10 @@
 #pragma once
 
 /**
- * Everything: schemas, queries, the Postgres backend and `json::Json`.
+ * Everything: schemas, queries, the Postgres backend, `json::Json` and `Uuid`.
  *
  * The pieces, to include separately when compile time matters: schema.hpp, query.hpp, backend.hpp (no libpq),
- * postgres.hpp and json.hpp. column_type.hpp is for adding a column type of your own.
+ * postgres.hpp, json.hpp and uuid.hpp. column_type.hpp is for adding a column type of your own.
  */
 
 #include "schemacht/backend.hpp"   // IWYU pragma: export
@@ -12,3 +12,4 @@
 #include "schemacht/postgres.hpp"  // IWYU pragma: export
 #include "schemacht/query.hpp"     // IWYU pragma: export
 #include "schemacht/schema.hpp"    // IWYU pragma: export
+#include "schemacht/uuid.hpp"      // IWYU pragma: export

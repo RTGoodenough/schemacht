@@ -20,8 +20,23 @@ struct SessionSettings {
    */
   bool disable_jit = true;
 
-  /** @return The `SET` statement that applies the settings, or an empty view if there is nothing to set. */
-  [[nodiscard]] constexpr std::string_view sql() const { return disable_jit ? "SET jit = off" : ""; }
+  /**
+   * @brief Prints dates and times in ISO form (`DateStyle` `ISO, YMD`: `2026-10-01 20:55:12.264-04`), the form the date and time
+   * column types (`std::chrono::sys_time` and the rest) read from a result in text. Set this to `false` only if no row with such
+   * a column is ever read as text.
+   */
+  bool iso_dates = true;
+
+  /** @return The `SET` statements that apply the settings, separated by `;`, or an empty view if there is nothing to set. */
+  [[nodiscard]] constexpr std::string_view sql() const {
+    if ( disable_jit && iso_dates ) {
+      return "SET jit = off; SET DateStyle = 'ISO, YMD'";
+    }
+    if ( disable_jit ) {
+      return "SET jit = off";
+    }
+    return iso_dates ? "SET DateStyle = 'ISO, YMD'" : "";
+  }
 };
 
 }  // namespace schemacht::postgres

@@ -1,31 +1,26 @@
 // Column types of your own: storing a C++ type in a PostgreSQL column and reading it back.
 //
-// Three types, from least to most work:
+// A type of your own becomes a column type by specializing `schemacht::ColumnType` once, next to the type
+// (schemacht/column_type.hpp). Three kinds, from least to most work:
 //
-// - OrderId: a strong type over a built-in one (a `bigint`). Its codec forwards to the built-in one, binary form included.
-// - Mood: a C++ enum stored as a PostgreSQL enum. Its text form is the label, and so is its binary form.
-// - Money: exact cents stored as `numeric(12,2)`. It has a text form only, so rows holding it are read as text.
+// - OrderId: a strong type over a built-in one (a `bigint`). `WrappedColumn` writes the whole specialization, binary form included.
+// - Mood: a C++ enum stored as a PostgreSQL enum. `EnumColumn` writes it from the labels.
+// - Money: exact cents stored as `numeric(12,2)`, with a text form written by hand. It has no binary form, so rows holding it
+//   are read as text, which needs nothing more.
 //
-// What a type needs (see schemacht/column_type.hpp):
-//
-// - `postgres::FieldCodec<T>` with `parse` and `format`: its text form. Required for every column type.
-// - `parse_binary` in that codec: lets results be read in binary form, the default. Optional.
-// - `binary_accepts` in that codec: refuses a column of the wrong PostgreSQL type before any row is read. Optional.
-// - `query::sql::SqlType<T>`: its SQL type's name, for `Database::insert` and list arguments (`.in(...)`).
-// - `operator<=>`: lets queries compare with it (`<`, `>`) and `ORDER BY` it.
+// The library's own date, time and UUID types sit beside them: `std::chrono::system_clock::time_point` is a `timestamptz`, and
+// `schemacht::Uuid` a `uuid`. Give a type `operator<=>` if queries should compare with it (`<`, `>`) or order by it.
 //
 // Run with a libpq connection string: schemacht_example_custom_types "host=localhost dbname=app user=app"
 // It creates the type schemacht_example_mood and the table schemacht_example_orders, and drops them when it is done.
 
-#include <algorithm>
-#include <array>
 #include <charconv>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
 #include <exception>
 #include <format>
-#include <future>
 #include <iostream>
 #include <optional>
 #include <ostream>
@@ -34,7 +29,6 @@
 #include <string>
 #include <string_view>
 #include <system_error>
-#include <utility>
 #include <vector>
 
 #include "schemacht/column_type.hpp"
@@ -67,60 +61,21 @@ struct Money {
 
 }  // namespace shop
 
-// ---- How each is written to and read from PostgreSQL ----------------------------------------------------------------
+// ---- How each is stored ---------------------------------------------------------------------------------------------
 
-namespace schemacht::postgres {
-
-/** @brief An `OrderId` is a `bigint` on the wire, in both forms: the built-in codec does the work. */
+/** @brief An `OrderId` is stored as the `bigint` it wraps. */
 template <>
-class FieldCodec<shop::OrderId> {
-  using Bigint = FieldCodec<std::int64_t>;
+struct schemacht::ColumnType<shop::OrderId> : schemacht::WrappedColumn<&shop::OrderId::value> {};
 
- public:
-  static shop::OrderId parse(std::string_view text) { return {Bigint::parse(text)}; }
-  static std::string   format(const shop::OrderId& id) { return Bigint::format(id.value); }
-
-  static shop::OrderId parse_binary(std::span<const std::byte> bytes) { return {Bigint::parse_binary(bytes)}; }
-  static bool          binary_accepts(std::uint32_t type_oid) { return Bigint::binary_accepts(type_oid); }
-};
-
-/** @brief A `Mood` is its enum label, `sad`, `ok` or `happy`, in text and binary form alike. */
+/** @brief A `Mood` is stored as its label; the labels are in the order of `Mood`'s values. */
 template <>
-class FieldCodec<shop::Mood> {
- public:
-  /** @throws std::invalid_argument for a label that is not a `Mood` (one added to the enum in the database, say). */
-  static shop::Mood parse(std::string_view label) {
-    const auto found = std::ranges::find(LABELS, label);
-    if ( found == LABELS.end() ) {
-      throw std::invalid_argument("not a mood: '" + std::string(label) + "'");
-    }
-    return static_cast<shop::Mood>(found - LABELS.begin());
-  }
+struct schemacht::ColumnType<shop::Mood> : schemacht::EnumColumn<shop::Mood, "schemacht_example_mood", "sad", "ok", "happy"> {};
 
-  static std::string format(const shop::Mood& mood) { return std::string(LABELS.at(static_cast<std::size_t>(mood))); }
-
-  /** @brief PostgreSQL sends an enum in binary form as its label's bytes. */
-  static shop::Mood parse_binary(std::span<const std::byte> bytes) {
-    std::string label;
-    for ( const std::byte byte : bytes ) {
-      label += static_cast<char>(byte);
-    }
-    return parse(label);
-  }
-
-  // There is no `binary_accepts`: an enum's type OID is chosen when `CREATE TYPE` runs, so it differs between databases.
-
- private:
-  static constexpr std::array<std::string_view, 3> LABELS{"sad", "ok", "happy"};  // in the order of `Mood`'s values
-};
-
-/**
- * @brief `Money` is written as PostgreSQL prints a `numeric(12,2)`: `19.99`, `-0.05`. It has no `parse_binary`
- * (`numeric`'s binary form is base-10000 digits), so a row holding it is read as text, which needs nothing more.
- */
+/** @brief `Money` is written as PostgreSQL prints a `numeric(12,2)`: `19.99`, `-0.05`. */
 template <>
-class FieldCodec<shop::Money> {
- public:
+struct schemacht::ColumnType<shop::Money> {
+  static constexpr std::string_view SQL_TYPE = "numeric(12,2)";  // a type with modifiers is fine
+
   /** @throws std::invalid_argument for anything but an amount with exactly two decimals, such as `NaN`. */
   static shop::Money parse(std::string_view text) {
     const std::string_view whole = text;
@@ -162,32 +117,6 @@ class FieldCodec<shop::Money> {
   }
 };
 
-}  // namespace schemacht::postgres
-
-// ---- Each one's SQL type, which `insert` and list arguments cast to ------------------------------------------------
-
-namespace schemacht::query::sql {
-
-template <>
-class SqlType<shop::OrderId> {
- public:
-  static constexpr std::string_view NAME = "bigint";
-};
-
-template <>
-class SqlType<shop::Mood> {
- public:
-  static constexpr std::string_view NAME = "schemacht_example_mood";
-};
-
-template <>
-class SqlType<shop::Money> {
- public:
-  static constexpr std::string_view NAME = "numeric";
-};
-
-}  // namespace schemacht::query::sql
-
 namespace shop {
 
 std::ostream& operator<<(std::ostream& out, const OrderId& id) { return out << '#' << id.value; }
@@ -205,42 +134,41 @@ namespace q = schemacht::query;
 namespace pg = schemacht::postgres;
 
 using Id = sch::Field<shop::OrderId, "id", sch::KeyRole::Primary>;
+using Reference = sch::Field<schemacht::Uuid, "reference">;
+using PlacedAt = sch::Field<std::chrono::system_clock::time_point, "placed_at">;
 using Total = sch::Field<shop::Money, "total">;
 using CustomerMood = sch::Field<shop::Mood, "mood">;
 using Note = sch::Field<std::optional<std::string>, "note">;
 
-using Orders = sch::Schema<"schemacht_example_orders", Id, Total, CustomerMood, Note>;
+using Orders = sch::Schema<"schemacht_example_orders", Id, Reference, PlacedAt, Total, CustomerMood, Note>;
 using OrderColumns = q::On<Orders>;
 
-// The orders with any of some moods, the largest first. The moods go as one array argument, `$1::schemacht_example_mood[]`,
-// which is what `SqlType<Mood>` is for.
+// The orders with any of some moods, the largest first. The moods go as one array argument, `$1::schemacht_example_mood[]`.
 constexpr auto BY_MOOD = q::select(OrderColumns::col<"mood">().in(q::arg<0>())).order_by(OrderColumns::col<"total">().desc());
 
-// Who spent more than an amount, and how they felt. Both returned columns have a binary form, so this result is read in
-// binary; `BY_MOOD`'s rows hold a `Money`, which has none, so they are read as text.
+// Who spent more than an amount, when, and how they felt. None of the returned columns is a `Money`, so this result is read in
+// binary; `BY_MOOD`'s rows hold one, so they are read as text.
 constexpr auto SPENT_OVER = q::select(OrderColumns::col<"total">() > q::arg<0>())
                                 .order_by(OrderColumns::col<"id">().asc())
-                                .project(OrderColumns::col<"id">(), OrderColumns::col<"mood">());
+                                .project(OrderColumns::col<"id">(), OrderColumns::col<"placed_at">(), OrderColumns::col<"mood">());
+
+// Changes, which return how many rows they changed.
+constexpr auto NOTE_SMALL_ORDERS =
+    q::update<Orders>().set(OrderColumns::col<"note">(), q::arg<0>()).where(OrderColumns::col<"total">() < q::arg<1>());
+constexpr auto FORGET_MOOD = q::delete_where(OrderColumns::col<"mood">() == q::arg<0>());
+
+// The enum type has to exist before the table that uses it; that, the database's own business, is plain SQL.
+using CreateMood = q::RawStatement<"CREATE TYPE schemacht_example_mood AS ENUM ('sad', 'ok', 'happy')", q::RawArguments<>>;
+using DropMood = q::RawStatement<"DROP TYPE IF EXISTS schemacht_example_mood", q::RawArguments<>>;
 
 namespace {
 
-/** @brief Runs `sql`, which returns no rows, and waits for it: for creating and dropping the example's table and type. */
-void run_sql(pg::Database& database, std::string sql) {
-  std::promise<void> done;
-  database.pool().run(std::move(sql), {}, [&done](const pg::QueryResult& /*result*/, const std::exception_ptr& error) {
-    if ( error ) {
-      done.set_exception(error);
-    } else {
-      done.set_value();
-    }
-  });
-  done.get_future().get();
+void drop_everything(pg::Database& database) {
+  database.drop_table<Orders>().get();
+  database.execute(DropMood::bind()).get();
 }
 
-void drop_tables(pg::Database& database) {
-  run_sql(database, "DROP TABLE IF EXISTS schemacht_example_orders");
-  run_sql(database, "DROP TYPE IF EXISTS schemacht_example_mood");
-}
+std::string when(std::chrono::system_clock::time_point time) { return std::format("{:%F %R}", std::chrono::floor<std::chrono::minutes>(time)); }
 
 }  // namespace
 
@@ -251,43 +179,51 @@ int main(int argc, char** argv) {
 
     pg::Database database(conninfo);
 
-    // The application's own types need their database types to exist first.
-    drop_tables(database);
-    run_sql(database, "CREATE TYPE schemacht_example_mood AS ENUM ('sad', 'ok', 'happy')");
-    run_sql(database,
-            "CREATE TABLE schemacht_example_orders "
-            "(id bigint PRIMARY KEY, total numeric(12,2) NOT NULL, mood schemacht_example_mood NOT NULL, note text)");
+    drop_everything(database);
+    database.execute(CreateMood::bind()).get();
+    database.create_table<Orders>().get();  // from the schema: each column with its type's SQL_TYPE
 
-    // In: each column of each row through its `FieldCodec::format`.
+    // In: one plain value per column, each through its `ColumnType::format`.
+    using namespace std::chrono_literals;
+    using schemacht::Uuid;
     using shop::Mood;
+    const auto morning = std::chrono::sys_days{2026y / 10 / 1} + 9h;
     database
-        .insert<Orders>(std::vector<Orders::row_type>{
-            {Id{{1}}, Total{{1999}}, CustomerMood{Mood::Happy}, Note{"gift wrap"}},
-            {Id{{2}}, Total{{-500}}, CustomerMood{Mood::Sad}, Note{"refund"}},
-            {Id{{3}}, Total{{120050}}, CustomerMood{Mood::Ok}, Note{std::nullopt}},
-            {Id{{4}}, Total{{5}}, CustomerMood{Mood::Happy}, Note{std::nullopt}},
+        .insert<Orders>({
+            Orders::make_row(shop::OrderId{1}, Uuid::from_string("0e9cd3a8-3f43-4f4e-9b5c-6b6f8f6f0a1d"), morning, shop::Money{1999}, Mood::Happy,
+                             "gift wrap"),
+            Orders::make_row(shop::OrderId{2}, Uuid::from_string("51c1c4a2-77d4-4b0e-8a39-2c4b1f0de9f3"), morning + 2h, shop::Money{-500}, Mood::Sad,
+                             "refund"),
+            Orders::make_row(shop::OrderId{3}, Uuid::from_string("9a0b7f6e-1d2c-4e3f-8a9b-0c1d2e3f4a5b"), morning + 26h, shop::Money{120050},
+                             Mood::Ok, std::nullopt),
+            Orders::make_row(shop::OrderId{4}, Uuid::from_string("c3d4e5f6-a7b8-4c9d-8e0f-1a2b3c4d5e6f"), morning + 50h, shop::Money{5}, Mood::Happy,
+                             std::nullopt),
         })
         .get();
 
-    // Out: each column through its `FieldCodec::parse` (text) or `parse_binary` (binary).
+    // Out: each column through its `ColumnType::parse` (text) or `parse_binary` (binary), read by name.
     std::cout << "Happy or ok orders, the largest first:\n";
-    for ( const auto& [id, total, mood, note] : database.execute(q::Prepared<BY_MOOD>::bind(std::vector{Mood::Happy, Mood::Ok})).get() ) {
-      std::cout << "  " << id.value << "  " << total.value << "  " << mood.value << "  " << note.value.value_or("-") << '\n';
+    for ( const Orders::row_type& order : database.execute(q::Prepared<BY_MOOD>::bind(std::vector{Mood::Happy, Mood::Ok})).get() ) {
+      std::cout << "  " << sch::get<"id">(order) << "  " << sch::get<"total">(order) << "  " << sch::get<"mood">(order) << "  "
+                << sch::get<"note">(order).value_or("-") << "  " << sch::get<"reference">(order).to_string() << '\n';
     }
 
     std::cout << "Orders over $10.00:\n";
-    for ( const auto& [id, mood] : database.execute(q::Prepared<SPENT_OVER>::bind(shop::Money{1000})).get() ) {
-      std::cout << "  " << id.value << "  " << mood.value << '\n';
+    for ( const auto& order : database.execute(q::Prepared<SPENT_OVER>::bind(shop::Money{1000})).get() ) {
+      std::cout << "  " << sch::get<"id">(order) << "  " << when(sch::get<"placed_at">(order)) << "  " << sch::get<"mood">(order) << '\n';
     }
 
-    // A key of the application's type works as any other: the keys go as one `bigint[]` argument.
-    const std::vector<shop::OrderId> wanted{{2}, {4}};
+    const std::uint64_t noted = database.execute(q::Prepared<NOTE_SMALL_ORDERS>::bind("small order", shop::Money{100})).get();
+    const std::uint64_t forgotten = database.execute(q::Prepared<FORGET_MOOD>::bind(Mood::Sad)).get();
+    std::cout << "Noted " << noted << " small orders, and forgot " << forgotten << " sad one.\n";
+
+    // A primary key of an application's type works as any other: the keys go as one `bigint[]` argument.
     std::cout << "Orders #2 and #4:\n";
-    for ( const auto& [id, total, mood, note] : database.select_by_key_values<Orders, "id">(wanted).get() ) {
-      std::cout << "  " << id.value << "  " << total.value << '\n';
+    for ( const Orders::row_type& order : database.select_by_key<Orders>(std::vector<shop::OrderId>{{2}, {4}}).get() ) {
+      std::cout << "  " << sch::get<"id">(order) << "  " << sch::get<"total">(order) << "  " << sch::get<"note">(order).value_or("-") << '\n';
     }
 
-    drop_tables(database);
+    drop_everything(database);
     return EXIT_SUCCESS;
   } catch ( const std::exception& error ) {
     std::cerr << "error: " << error.what() << '\n';

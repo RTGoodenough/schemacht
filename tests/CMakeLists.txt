@@ -20,9 +20,12 @@ add_executable(
   compile/raw_statement_test.cpp
   compile/schema_test.cpp
   compile/sql_test.cpp
+  unit/chrono_uuid_test.cpp
+  unit/column_type_test.cpp
   unit/field_codec_test.cpp
   unit/prepared_test.cpp
   unit/row_reader_test.cpp
+  unit/row_test.cpp
   unit/statements_test.cpp
   unit/thread_pool_test.cpp
   integration/database_test.cpp
@@ -65,6 +68,16 @@ schemacht_compile_fail(RAW_NOT_ARGUMENTS "IsRawArguments")
 schemacht_compile_fail(RAW_ARGUMENT_WITHOUT_TEXT_FORM "EVERY_ARGUMENT_HAS_TEXT_FORM")
 schemacht_compile_fail(INSERT_FIELD_WITHOUT_TEXT_FORM "TextSchema")
 schemacht_compile_fail(RAW_RESULT_WITHOUT_TEXT_FORM "TextRow")
+schemacht_compile_fail(GET_UNKNOWN_COLUMN "HasColumnNamed")
+schemacht_compile_fail(SELECT_BY_KEY_COMPOSITE "HasSingleColumnKey|primary_key_type")
+schemacht_compile_fail(UPDATE_WITHOUT_WHERE "must say which rows it changes")
+schemacht_compile_fail(UPDATE_SET_TWICE "can set a column only once")
+schemacht_compile_fail(UPDATE_SET_NULL_REQUIRED "NullableColumn")
+schemacht_compile_fail(UPDATE_NARROWING_SET "would be narrowed")
+schemacht_compile_fail(DELETE_WHERE_EVERYTHING "would delete every row")
+schemacht_compile_fail(CREATE_TABLE_GENERATED "generated column's expression")
+schemacht_compile_fail(CREATE_TABLE_WITHOUT_SQL_TYPE "a column's type has no SQL name")
+schemacht_compile_fail(COLUMN_TYPE_WITHOUT_FORMAT "HasTextForm")
 
 # With no case defined, cases.cpp must compile: the failures above are the cases', not the file's.
 add_test(NAME compile_fail.baseline COMMAND ${CMAKE_CXX_COMPILER} -std=c++23 -fsyntax-only -I${PROJECT_SOURCE_DIR}/include

@@ -292,8 +292,6 @@ class BoundRawStatement {
 template <util::CTString sql_text, IsRawArguments arguments_t, schema::IsField... field_ts>
 class RawStatement {
  public:
-  static_assert(sizeof...(field_ts) > 0, "a raw statement returns rows: name at least one column");
-
   using argument_types = arguments_t::types;
 
   /** @brief One result row: a `std::tuple` of the columns' `Field`s. */

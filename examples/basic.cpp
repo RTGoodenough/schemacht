@@ -29,8 +29,9 @@ int main(int argc, char** argv) {
 
     const auto results = database.execute(NameLookup::bind("john%")).get();
 
-    for ( const auto& [eid, name, salary] : results ) {
-      std::cout << "EID: " << eid.value << " Name: " << name.value << " Salary: " << salary.value << '\n';
+    for ( const EmployeeSchema::row_type& employee : results ) {
+      std::cout << "EID: " << schemacht::schema::get<"id">(employee) << " Name: " << schemacht::schema::get<"name">(employee)
+                << " Salary: " << schemacht::schema::get<"salary">(employee) << '\n';
     }
     return EXIT_SUCCESS;
   } catch ( const std::exception& error ) {

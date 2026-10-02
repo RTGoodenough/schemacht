@@ -1,11 +1,14 @@
 #pragma once
 
+#include <chrono>
 #include <concepts>
 #include <cstddef>
 #include <cstdint>
 #include <string>
 #include <string_view>
 #include <vector>
+
+#include "schemacht/schema/column_type.hpp"
 
 namespace schemacht::query::sql {
 
@@ -20,6 +23,18 @@ namespace detail {
 }
 
 template <typename data_t>
+inline constexpr bool IS_SYS_TIME = false;
+
+template <typename duration_t>
+inline constexpr bool IS_SYS_TIME<std::chrono::sys_time<duration_t>> = true;
+
+template <typename data_t>
+inline constexpr bool IS_LOCAL_TIME = false;
+
+template <typename duration_t>
+inline constexpr bool IS_LOCAL_TIME<std::chrono::local_time<duration_t>> = true;
+
+template <typename data_t>
 [[nodiscard]] constexpr std::string_view builtin_type_name() {
   if constexpr ( std::same_as<data_t, bool> ) {
     return "boolean";
@@ -31,12 +46,28 @@ template <typename data_t>
     return "real";
   } else if constexpr ( std::same_as<data_t, double> ) {
     return "double precision";
+  } else if constexpr ( IS_SYS_TIME<data_t> ) {
+    return "timestamptz";
+  } else if constexpr ( IS_LOCAL_TIME<data_t> ) {
+    return "timestamp";
+  } else if constexpr ( std::same_as<data_t, std::chrono::year_month_day> ) {
+    return "date";
   } else if constexpr ( std::signed_integral<data_t> ) {
     return integer_type_name(sizeof(data_t));
   } else if constexpr ( std::unsigned_integral<data_t> && sizeof(data_t) < sizeof(std::int64_t) ) {
     return integer_type_name(sizeof(data_t) * 2);  // PostgreSQL has no unsigned types: the next wider signed one holds every value
   } else {
     return "";
+  }
+}
+
+/** @return `data_t`'s SQL name: its `ColumnType::SQL_TYPE` if it has one, else the built-in name (empty for none). */
+template <typename data_t>
+[[nodiscard]] constexpr std::string_view default_type_name() {
+  if constexpr ( UserColumnType<data_t> ) {
+    return ColumnType<data_t>::SQL_TYPE;
+  } else {
+    return builtin_type_name<data_t>();
   }
 }
 
@@ -59,7 +90,7 @@ template <typename data_t>
 template <typename data_t>
 class SqlType {
  public:
-  static constexpr std::string_view NAME = detail::builtin_type_name<data_t>();
+  static constexpr std::string_view NAME = detail::default_type_name<data_t>();
 };
 
 /**

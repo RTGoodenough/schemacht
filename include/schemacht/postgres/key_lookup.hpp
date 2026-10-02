@@ -13,6 +13,10 @@ namespace schemacht::postgres {
 template <schema::IsSchema schema_t, util::CTString key_col>
 using key_type = schema_t::template field_by_name<key_col>::value_type;
 
+/** @brief The type of the values of `schema_t`'s primary key, which is one column. */
+template <schema::HasSingleColumnKey schema_t>
+using primary_key_type = schema::primary_key_field<schema_t>::value_type;
+
 /**
  * @return The query for every row whose `key_col` value is one of `keys`: what `select_by_key_values` of both Postgres backends runs. Not necessarily "the"
  * primary key: any column will do.

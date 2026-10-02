@@ -36,6 +36,7 @@ add_library(
   STATIC
   src/async/thread_pool.cpp
   src/postgres/async_client.cpp
+  src/postgres/chrono_codec.cpp
   src/postgres/field_codec.cpp
 )
 

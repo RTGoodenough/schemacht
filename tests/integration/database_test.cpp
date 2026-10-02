@@ -5,15 +5,20 @@
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/matchers/catch_matchers.hpp>
 
+#include <stdio.h>  // NOLINT(modernize-deprecated-headers) -- fileno is POSIX: declared here, not in <cstdio>
+#include <unistd.h>
+
 #include <atomic>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <cstdio>
 #include <cstdlib>
 #include <exception>
 #include <future>
 #include <initializer_list>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <stdexcept>
 #include <string>
@@ -119,6 +124,17 @@ void check_sample(const std::vector<Types::row_type>& rows) {
   }
 }
 
+using Score = sch::Field<double, "score">;
+using Note = sch::Field<std::optional<std::string>, "note">;
+using Scored = sch::Schema<"schemacht_it_scored", Id, Score, Note>;
+using ScoredColumns = q::On<Scored>;
+
+constexpr auto ALL_SCORED = q::select<Scored>().order_by(ScoredColumns::col<"id">().asc());
+constexpr auto RAISE_UP_TO = q::update<Scored>().set(ScoredColumns::col<"score">(), q::arg<0>()).where(ScoredColumns::col<"id">() <= q::arg<1>());
+constexpr auto CLEAR_NOTES = q::update<Scored>().set_null(ScoredColumns::col<"note">()).all_rows();
+constexpr auto DROP_BELOW = q::delete_where(ScoredColumns::col<"score">() < q::arg<0>());
+constexpr auto DROP_ALL = q::delete_all<Scored>();
+
 /** @brief An argument type whose text form is always refused. */
 struct Unwritable {};
 
@@ -144,6 +160,11 @@ TEST_CASE("integration: every built-in type round-trips, in binary and in text",
   const auto                      found = database.select_by_key_values<Types, "id">(ids).get();
   REQUIRE(found.size() == 1);
   CHECK(std::get<Id>(found[0]).value == 2);
+
+  const auto by_key = database.select_by_key<Types>(std::vector<std::int64_t>{1, 3}).get();
+  REQUIRE(by_key.size() == 1);
+  CHECK(sch::get<"id">(by_key[0]) == 1);
+  CHECK(sch::get<"text">(by_key[0]) == std::get<Text>(sample_rows()[0]).value);
 }
 
 TEST_CASE("integration: an insert larger than one statement's parameter limit", "[integration]") {
@@ -243,4 +264,138 @@ TEST_CASE("integration: a statement that cannot start reports why, through its c
   CHECK(failed);
 
   CHECK_THROWS_AS(database.execute(Series::bind(1), pg::ReadOptions{.chunk_rows = 0}).get(), std::invalid_argument);
+}
+
+TEST_CASE("integration: commands report the rows they affected", "[integration]") {
+  pg::Database database(test_db());
+
+  using Drop = q::RawStatement<"DROP TABLE IF EXISTS schemacht_it_commands", q::RawArguments<>>;
+  using Create = q::RawStatement<"CREATE TABLE schemacht_it_commands (id bigint PRIMARY KEY, score double precision NOT NULL)", q::RawArguments<>>;
+  using Fill = q::RawStatement<"INSERT INTO schemacht_it_commands SELECT n, 0 FROM generate_series(1, $1) AS n", q::RawArguments<std::int64_t>>;
+  using Raise = q::RawStatement<"UPDATE schemacht_it_commands SET score = $1 WHERE id <= $2", q::RawArguments<double, std::int64_t>>;
+  using Remove = q::RawStatement<"DELETE FROM schemacht_it_commands WHERE score > $1", q::RawArguments<double>>;
+
+  CHECK(database.execute(Drop::bind()).get() == 0);
+  CHECK(database.execute(Create::bind()).get() == 0);
+  CHECK(database.execute(Fill::bind(10)).get() == 10);
+  CHECK(database.execute(Raise::bind(2.5, 4)).get() == 4);
+  CHECK(database.execute(Remove::bind(1.0)).get() == 4);
+
+  using Broken = q::RawStatement<"UPDATE schemacht_it_no_such_table SET x = 1", q::RawArguments<>>;
+  CHECK_THROWS_AS(database.execute(Broken::bind()).get(), pg::QueryError);
+
+  using Refused = q::RawStatement<"UPDATE schemacht_it_commands SET score = 0 WHERE $1::text = ''", q::RawArguments<Unwritable>>;
+  CHECK_THROWS_WITH(database.execute(Refused::bind(Unwritable{})).get(), "this argument has no text form");
+
+  CHECK(database.execute(Drop::bind()).get() == 0);
+}
+
+TEST_CASE("integration: typed updates and deletes", "[integration]") {
+  pg::Database database(test_db());
+  database.drop_table<Scored>().get();
+  database.create_table<Scored>().get();
+  CHECK_THROWS_AS(database.create_table<Scored>().get(), pg::QueryError);  // it exists
+
+  database.insert<Scored>({Scored::make_row(1, 0.0, "a"), Scored::make_row(2, 0.0, "b"), Scored::make_row(3, 5.0, std::nullopt)}).get();
+
+  CHECK(database.execute(q::Prepared<RAISE_UP_TO>::bind(2.5, 2)).get() == 2);
+  CHECK(database.execute(q::Prepared<CLEAR_NOTES>::bind()).get() == 3);
+  const auto rows = database.execute(q::Prepared<ALL_SCORED>::bind()).get();
+  REQUIRE(rows.size() == 3);
+  CHECK(sch::get<"score">(rows[0]) == 2.5);
+  CHECK(sch::get<"score">(rows[2]) == 5.0);
+  CHECK_FALSE(sch::get<"note">(rows[0]).has_value());
+
+  CHECK(database.execute(q::Prepared<DROP_BELOW>::bind(3.0)).get() == 2);
+  CHECK(database.execute(q::Prepared<DROP_ALL>::bind()).get() == 1);
+  database.drop_table<Scored>().get();
+  database.drop_table<Scored>().get();  // already gone: nothing to do
+}
+
+namespace {
+
+using At = sch::Field<std::chrono::system_clock::time_point, "at">;
+using Wall = sch::Field<std::chrono::local_time<std::chrono::microseconds>, "wall">;
+using Day = sch::Field<std::optional<std::chrono::year_month_day>, "day">;
+using Key = sch::Field<schemacht::Uuid, "key", sch::KeyRole::Primary>;
+using Times = sch::Schema<"schemacht_it_times", Key, At, Wall, Day>;
+
+constexpr auto ALL_TIMES = q::select<Times>().order_by(q::On<Times>::col<"key">().asc());
+
+// What the server makes of literals, in its own text and binary forms.
+using ServerTimes = q::RawStatement<
+    "SELECT '00000000-0000-0000-0000-00000000000a'::uuid AS key, '2026-10-01 20:55:12.264-04'::timestamptz AS at, "
+    "'2026-10-01 12:00:00.5'::timestamp AS wall, '0044-03-15 BC'::date AS day",
+    q::RawArguments<>, Key, At, Wall, Day>;
+
+}  // namespace
+
+TEST_CASE("integration: dates, times and UUIDs round-trip, in binary and in text", "[integration]") {
+  using namespace std::chrono;
+  pg::Database database(test_db(), pg::Database::Options{.pool = {.connections = 1}});  // one connection: the SET below applies to all
+  database.drop_table<Times>().get();
+  database.create_table<Times>().get();
+
+  const schemacht::Uuid          first = schemacht::Uuid::from_string("00000000-0000-0000-0000-000000000001");
+  const schemacht::Uuid          second = schemacht::Uuid::from_string("ffffffff-0000-0000-0000-000000000002");
+  const system_clock::time_point moment = sys_days{2026y / 10 / 1} + 20h + 55min + 12s + 264ms;
+  const local_time<microseconds> wall = local_days{1999y / 12 / 31} + 23h + 59min + 59s + 999999us;
+  database
+      .insert<Times>({Times::make_row(first, moment, wall, year_month_day{2026y / 2 / 28}),
+                      Times::make_row(second, system_clock::time_point::max(), wall, std::nullopt)})
+      .get();
+
+  for ( const pg::ResultFormat format : {pg::ResultFormat::Binary, pg::ResultFormat::Text} ) {
+    const auto rows = database.execute(q::Prepared<ALL_TIMES>::bind(), pg::ReadOptions{.format = format}).get();
+    REQUIRE(rows.size() == 2);
+    CHECK(sch::get<"key">(rows[0]) == first);
+    CHECK(sch::get<"at">(rows[0]) == moment);
+    CHECK(sch::get<"wall">(rows[0]) == wall);
+    CHECK(sch::get<"day">(rows[0]) == year_month_day{2026y / 2 / 28});
+    CHECK(sch::get<"at">(rows[1]) == system_clock::time_point::max());  // infinity
+    CHECK_FALSE(sch::get<"day">(rows[1]).has_value());
+  }
+
+  // The server's own output, with a session time zone that is not UTC: its text has an offset of +05:30.
+  CHECK(database.execute(q::RawStatement<"SET TIME ZONE 'Asia/Kolkata'", q::RawArguments<>>::bind()).get() == 0);
+  for ( const pg::ResultFormat format : {pg::ResultFormat::Binary, pg::ResultFormat::Text} ) {
+    const auto rows = database.execute(ServerTimes::bind(), pg::ReadOptions{.format = format}).get();
+    REQUIRE(rows.size() == 1);
+    CHECK(sch::get<"key">(rows[0]) == schemacht::Uuid::from_string("00000000-0000-0000-0000-00000000000a"));
+    CHECK(sch::get<"at">(rows[0]) == sys_days{2026y / 10 / 2} + 55min + 12s + 264ms);
+    CHECK(sch::get<"wall">(rows[0]) == local_days{2026y / 10 / 1} + 12h + 500ms);
+    CHECK(sch::get<"day">(rows[0]) == year_month_day{year{-43}, March, day{15}});
+  }
+  database.drop_table<Times>().get();
+}
+
+TEST_CASE("integration: notices go to the handler, or nowhere", "[integration]") {
+  using Raise = q::RawStatement<"DO 'BEGIN RAISE NOTICE ''hello from the server''; END'", q::RawArguments<>>;
+  using Skip = q::RawStatement<"DROP TABLE IF EXISTS schemacht_it_never_there", q::RawArguments<>>;
+
+  std::mutex               mutex;
+  std::vector<std::string> received;  // severity and message of each
+  pg::Database             heard(test_db(), pg::Database::Options{.pool = {.on_notice = [&](const pg::Notice& notice) {
+                                                        const std::scoped_lock lock(mutex);
+                                                        received.push_back(std::string(notice.severity) + ": " + std::string(notice.message));
+                                                                  }}});
+  heard.execute(Raise::bind()).get();
+  {
+    const std::scoped_lock lock(mutex);
+    REQUIRE(received.size() == 1);
+    CHECK(received.at(0) == "NOTICE: hello from the server");
+  }
+
+  // Without a handler, nothing reaches stderr (where libpq would print it).
+  pg::Database                                          quiet(test_db());
+  const std::unique_ptr<std::FILE, int (*)(std::FILE*)> capture(std::tmpfile(), &std::fclose);
+  REQUIRE(capture != nullptr);
+  const int saved = dup(STDERR_FILENO);
+  REQUIRE(dup2(fileno(capture.get()), STDERR_FILENO) >= 0);
+  quiet.execute(Raise::bind()).get();
+  quiet.execute(Skip::bind()).get();
+  REQUIRE(std::fflush(stderr) == 0);
+  REQUIRE(dup2(saved, STDERR_FILENO) >= 0);
+  close(saved);
+  CHECK(std::ftell(capture.get()) == 0);
 }

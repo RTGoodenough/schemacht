@@ -14,6 +14,7 @@
 #include <utility>
 #include <vector>
 
+#include "schemacht/schema/column_type.hpp"
 #include "schemacht/schema/field.hpp"
 
 namespace schemacht::postgres {
@@ -113,6 +114,19 @@ class BinaryArrayReader {
   std::size_t                _size = 0;
 };
 
+}  // namespace detail
+
+/**
+ * @return `bytes` as the text they hold, valid while they are: for reading a type whose binary form is its text (a string, an
+ * enum's label, `jsonb` after its version byte).
+ */
+[[nodiscard]] inline std::string_view as_text(std::span<const std::byte> bytes) noexcept {
+  // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast) -- the one place bytes are viewed as the characters they are
+  return {reinterpret_cast<const char*>(bytes.data()), bytes.size()};
+}
+
+namespace detail {
+
 /** @brief Whether the primary `FieldCodec` handles `data_t`, in text and in binary: the built-in types. */
 template <typename data_t>
 inline constexpr bool BUILT_IN_CODEC = std::same_as<data_t, bool> || std::same_as<data_t, std::string> ||
@@ -125,31 +139,25 @@ inline constexpr bool BUILT_IN_CODEC = std::same_as<data_t, bool> || std::same_a
  * text or binary result form.
  *
  * The primary template covers the built-in types: `bool`, integers, floating point, `std::string` and
- * `std::vector<std::byte>` (`bytea`, as `\x` and hex). A `std::vector` of any other type is an array (below). A new column
- * type specializes this, next to the type's definition so it is visible wherever the type is used:
- *
- * @code
- * template <>
- * class postgres::FieldCodec<Money> {
- *  public:
- *   static Money       parse(std::string_view text);
- *   static std::string format(const Money& amount);
- *   static Money       parse_binary(std::span<const std::byte> bytes);  // optional
- *   static bool        binary_accepts(std::uint32_t type_oid);          // optional
- * };
- * @endcode
+ * `std::vector<std::byte>` (`bytea`, as `\x` and hex). A `std::vector` of any other type is an array (below). A type of your
+ * own specializes `schemacht::ColumnType` (schema/column_type.hpp), which this forwards to.
  *
  * `parse_binary` reads the value as PostgreSQL sends it in binary form, which `Database` asks for by default
  * (`HasBinaryForm`). Rows with a column whose codec lacks it are read as text instead. `binary_accepts`, if present,
  * rejects a result column of the wrong PostgreSQL type before any row is read.
+ *
+ * Specializing this class directly still works (for a type whose codec needs more than `ColumnType` says), but then
+ * `query::sql::SqlType` needs specializing too.
  */
 template <typename data_t>
 class FieldCodec {
  public:
   [[nodiscard]] constexpr static data_t parse(std::string_view text)
-    requires(detail::BUILT_IN_CODEC<data_t>)
+    requires(detail::BUILT_IN_CODEC<data_t> || UserColumnType<data_t>)
   {
-    if constexpr ( std::same_as<data_t, bool> ) {
+    if constexpr ( UserColumnType<data_t> ) {
+      return ColumnType<data_t>::parse(text);
+    } else if constexpr ( std::same_as<data_t, bool> ) {
       if ( text == "t" || text == "true" ) {
         return true;
       }
@@ -177,9 +185,11 @@ class FieldCodec {
   }
 
   [[nodiscard]] constexpr static std::string format(const data_t& value)
-    requires(detail::BUILT_IN_CODEC<data_t>)
+    requires(detail::BUILT_IN_CODEC<data_t> || UserColumnType<data_t>)
   {
-    if constexpr ( std::same_as<data_t, bool> ) {
+    if constexpr ( UserColumnType<data_t> ) {
+      return ColumnType<data_t>::format(value);
+    } else if constexpr ( std::same_as<data_t, bool> ) {
       return value ? "t" : "f";
     } else if constexpr ( std::same_as<data_t, std::string> ) {
       return value;
@@ -200,16 +210,17 @@ class FieldCodec {
    * @throws std::invalid_argument if the bytes are not a value of the type.
    */
   [[nodiscard]] static data_t parse_binary(std::span<const std::byte> bytes)
-    requires(detail::BUILT_IN_CODEC<data_t>)
+    requires(detail::BUILT_IN_CODEC<data_t> || UserColumnTypeWithBinaryForm<data_t>)
   {
-    if constexpr ( std::same_as<data_t, bool> ) {
+    if constexpr ( UserColumnTypeWithBinaryForm<data_t> ) {
+      return ColumnType<data_t>::parse_binary(bytes);
+    } else if constexpr ( std::same_as<data_t, bool> ) {
       if ( bytes.size() != 1 ) {
         throw std::invalid_argument("parse_binary: a bool is one byte, not " + std::to_string(bytes.size()));
       }
       return bytes.front() != std::byte{0};
     } else if constexpr ( std::same_as<data_t, std::string> ) {
-      return std::string(reinterpret_cast<const char*>(bytes.data()),
-                         bytes.size());  // NOLINT(cppcoreguidelines-pro-type-reinterpret-cast) -- text is bytes
+      return std::string(as_text(bytes));
     } else if constexpr ( std::same_as<data_t, std::vector<std::byte>> ) {
       return std::vector<std::byte>(bytes.begin(), bytes.end());
     } else if constexpr ( std::integral<data_t> ) {
@@ -229,9 +240,11 @@ class FieldCodec {
    * OID differs by database) is not checked, and has to reject bytes it cannot read itself.
    */
   [[nodiscard]] static constexpr bool binary_accepts(std::uint32_t type_oid)
-    requires(detail::BUILT_IN_CODEC<data_t>)
+    requires(detail::BUILT_IN_CODEC<data_t> || UserColumnTypeWithTypeCheck<data_t>)
   {
-    if constexpr ( std::same_as<data_t, bool> ) {
+    if constexpr ( UserColumnTypeWithTypeCheck<data_t> ) {
+      return ColumnType<data_t>::binary_accepts(type_oid);
+    } else if constexpr ( std::same_as<data_t, bool> ) {
       return type_oid == detail::OID_BOOL;
     } else if constexpr ( std::same_as<data_t, std::string> ) {
       return type_oid == detail::OID_TEXT || type_oid == detail::OID_VARCHAR || type_oid == detail::OID_BPCHAR || type_oid == detail::OID_NAME;
@@ -247,8 +260,8 @@ class FieldCodec {
 
 /**
  * @brief Whether `data_t` has a text form: its `FieldCodec` has `parse` and `format`. The built-in types do, as does a
- * `std::vector` of a type that does (an array); any other type needs a `FieldCodec` specialization to be a column's type or
- * a statement's argument.
+ * `std::vector` of a type that does (an array); any other type needs a `ColumnType` specialization (or a `FieldCodec` one)
+ * to be a column's type or a statement's argument.
  */
 template <typename data_t>
 concept HasTextForm = requires(const data_t& value, std::string_view text) {
@@ -400,3 +413,6 @@ class FieldCodec<std::vector<element_t>> {
 };
 
 }  // namespace schemacht::postgres
+
+// The date and time codecs: with the others, wherever `FieldCodec` is seen.
+#include "schemacht/postgres/chrono_codec.hpp"  // IWYU pragma: export

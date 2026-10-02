@@ -5,6 +5,7 @@
 #include <string_view>
 #include <vector>
 
+#include "schemacht/column_type.hpp"
 #include "schemacht/postgres/database.hpp"
 #include "schemacht/query.hpp"
 
@@ -122,6 +123,57 @@ using Bad = sch::Schema<"bad", Id, sch::Field<Opaque, "blob">>;
 struct Opaque {};
 using Bad = q::RawStatement<"SELECT 1 AS blob", q::RawArguments<>, sch::Field<Opaque, "blob">>;
 [[maybe_unused]] void run(pg::Database& database) { (void)database.execute(Bad::bind()); }
+#endif
+
+#if defined(CASE_GET_UNKNOWN_COLUMN)
+[[maybe_unused]] const auto& value = schemacht::schema::get<"nope">(Things::row_type{});
+#endif
+
+#if defined(CASE_SELECT_BY_KEY_COMPOSITE)
+using Pairs = sch::Schema<"pairs", sch::Field<std::int64_t, "a", sch::KeyRole::Primary>, sch::Field<std::int64_t, "b", sch::KeyRole::Primary>>;
+[[maybe_unused]] void run(pg::Database& database) { (void)database.select_by_key<Pairs>(std::vector<std::int64_t>{1}); }
+#endif
+
+#if defined(CASE_UPDATE_WITHOUT_WHERE)
+constexpr auto        BAD = q::update<Things>().set(q::On<Things>::col<"name">(), q::arg<0>());
+[[maybe_unused]] auto bound = q::Prepared<BAD>::bind("x");
+#endif
+
+#if defined(CASE_UPDATE_SET_TWICE)
+constexpr auto BAD = q::update<Things>().set(q::On<Things>::col<"count">(), 1).set(q::On<Things>::col<"count">(), 2).all_rows();
+#endif
+
+#if defined(CASE_UPDATE_SET_NULL_REQUIRED)
+constexpr auto BAD = q::update<Things>().set_null(q::On<Things>::col<"name">()).all_rows();
+#endif
+
+#if defined(CASE_UPDATE_NARROWING_SET)
+constexpr auto        BAD = q::update<Things>().set(q::On<Things>::col<"ratio">(), q::arg<0>()).all_rows();
+[[maybe_unused]] auto bound = q::Prepared<BAD>::bind(1.5);  // a double, for a float column
+#endif
+
+#if defined(CASE_DELETE_WHERE_EVERYTHING)
+constexpr auto BAD = q::delete_where(q::match_all<Things>());
+#endif
+
+#if defined(CASE_CREATE_TABLE_GENERATED)
+using Bad = sch::Schema<"bad", Id, sch::Field<std::int64_t, "twice", sch::KeyRole::None, true>>;
+[[maybe_unused]] void run(pg::Database& database) { (void)database.create_table<Bad>(); }
+#endif
+
+#if defined(CASE_CREATE_TABLE_WITHOUT_SQL_TYPE)
+using Bad = sch::Schema<"bad", Id, sch::Field<std::vector<std::string>, "tags">>;
+[[maybe_unused]] void run(pg::Database& database) { (void)database.create_table<Bad>(); }
+#endif
+
+#if defined(CASE_COLUMN_TYPE_WITHOUT_FORMAT)
+struct Half {};
+template <>
+struct schemacht::ColumnType<Half> {
+  static constexpr std::string_view SQL_TYPE = "half";
+  static Half                       parse(std::string_view /*text*/) { return {}; }
+};
+[[maybe_unused]] const std::string text = pg::format_field(Half{});
 #endif
 
 int main() {}

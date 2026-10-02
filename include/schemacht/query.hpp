@@ -7,6 +7,7 @@
  * Nothing here touches a database or a backend: a backend runs a query (see backend.hpp). Includes schema.hpp.
  */
 
+#include "schemacht/query/command.hpp"         // IWYU pragma: export
 #include "schemacht/query/compiled_query.hpp"  // IWYU pragma: export
 #include "schemacht/query/predicate.hpp"       // IWYU pragma: export
 #include "schemacht/query/prepared.hpp"        // IWYU pragma: export

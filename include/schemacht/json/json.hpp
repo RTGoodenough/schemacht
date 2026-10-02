@@ -9,11 +9,11 @@
 #include <utility>
 
 #include "schemacht/postgres/field_codec.hpp"
-#include "schemacht/query/sql_type.hpp"
+#include "schemacht/schema/column_type.hpp"
 
 /**
  * JSON as a column type: PostgreSQL's `jsonb`. Also an example of adding a column type (see column_type.hpp): it
- * specializes `postgres::FieldCodec` and `query::sql::SqlType`.
+ * specializes `schemacht::ColumnType`.
  */
 namespace schemacht::json {
 
@@ -48,23 +48,23 @@ class Json {
 
 }  // namespace schemacht::json
 
-namespace schemacht::postgres {
-
-/** @brief A document's text form is its JSON text, which is what PostgreSQL prints and reads for `jsonb`. */
+/**
+ * @brief A document is stored as `jsonb`. Its text form is its JSON text, which is what PostgreSQL prints and reads; its binary
+ * form is a version byte (1) and then the text.
+ */
 template <>
-class FieldCodec<json::Json> {
- public:
+struct schemacht::ColumnType<schemacht::json::Json> {
+  static constexpr std::string_view SQL_TYPE = "jsonb";
+
   [[nodiscard]] static json::Json  parse(std::string_view text) { return json::Json(std::string(text)); }
   [[nodiscard]] static std::string format(const json::Json& document) { return document.text(); }
 
-  /** @brief `jsonb` in binary is a version byte (1) and then the text. @throws std::invalid_argument for another version, or no bytes. */
+  /** @throws std::invalid_argument for a version other than 1, or no bytes. */
   [[nodiscard]] static json::Json parse_binary(std::span<const std::byte> bytes) {
     if ( bytes.empty() || bytes.front() != std::byte{JSONB_BINARY_VERSION} ) {
       throw std::invalid_argument("parse_binary: not a jsonb value (its first byte is its version, and only 1 exists)");
     }
-    return json::Json(
-        std::string(reinterpret_cast<const char*>(bytes.data()) + 1,
-                    bytes.size() - 1));  // NOLINT(cppcoreguidelines-pro-type-reinterpret-cast,cppcoreguidelines-pro-bounds-pointer-arithmetic)
+    return json::Json(std::string(postgres::as_text(bytes.subspan(1))));
   }
 
   /** @brief Only `jsonb` (OID 3802, fixed by the server): a `json` column has no version byte and is refused rather than misread. */
@@ -74,16 +74,3 @@ class FieldCodec<json::Json> {
   static constexpr std::uint32_t JSONB_OID = 3802;
   static constexpr std::uint8_t  JSONB_BINARY_VERSION = 1;
 };
-
-}  // namespace schemacht::postgres
-
-namespace schemacht::query::sql {
-
-/** @brief PostgreSQL's binary JSON type. */
-template <>
-class SqlType<json::Json> {
- public:
-  static constexpr std::string_view NAME = "jsonb";
-};
-
-}  // namespace schemacht::query::sql

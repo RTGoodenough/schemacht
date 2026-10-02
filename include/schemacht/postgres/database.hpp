@@ -2,12 +2,14 @@
 
 #include <concepts>
 #include <cstddef>
+#include <cstdint>
 #include <exception>
 #include <future>
 #include <memory>
 #include <optional>
 #include <span>
 #include <string>
+#include <string_view>
 #include <type_traits>
 #include <utility>
 #include <vector>
@@ -22,6 +24,12 @@
 /**
  * A Postgres database: a pool of connections (an `AsyncClient`) that runs typed queries, raw statements and inserts for
  * any schema, from any thread.
+ *
+ * - **Rows:** `execute` a query (`Prepared::bind`) or a raw statement for every row, or `stream` them as they arrive.
+ * - **Changes:** `execute` an update or delete (command.hpp), or a raw statement with no columns (an `UPDATE`, a `CREATE TYPE`),
+ *   for the count of rows it changed; `insert` rows of a schema.
+ * - **Tables:** `create_table` and `drop_table` from a schema, for tests, examples and a first start.
+ * - **Notices** the server sends are dropped, unless `Options::pool.on_notice` takes them.
  *
  * Every call returns a `std::future` at once and the work finishes in the background (call `get()` to wait). Each call
  * is one statement in autocommit mode: there are no transactions spanning calls.
@@ -43,6 +51,11 @@ concept ExecuteCallback = std::invocable<done_t&, std::vector<result_t>, std::ex
 /** @brief Whether `done_t` can finish a `stream_into`: called once with the error (null on success). */
 template <typename done_t>
 concept StreamCallback = std::invocable<done_t&, std::exception_ptr> && std::same_as<std::invoke_result_t<done_t&, std::exception_ptr>, void>;
+
+/** @brief Whether `done_t` can finish a command's `execute_into`: called once with the count of rows affected and the error (null on success). */
+template <typename done_t>
+concept CommandCallback = std::invocable<done_t&, std::uint64_t, std::exception_ptr> &&
+                          std::same_as<std::invoke_result_t<done_t&, std::uint64_t, std::exception_ptr>, void>;
 
 /** @return A future that is already complete with `value`. */
 template <typename value_t>
@@ -75,7 +88,7 @@ class Database {
    * @throws std::runtime_error if a connection can't be made or the session settings can't be applied.
    * @throws std::invalid_argument if `options` asks for no connections, no workers, or an empty chunk.
    */
-  Database(const std::string& conninfo, Options options) : _client(conninfo, options.pool), _read(options.read) {}
+  Database(const std::string& conninfo, const Options& options) : _client(conninfo, options.pool), _read(options.read) {}
   explicit Database(const std::string& conninfo) : Database(conninfo, Options{}) {}
 
   Database(const Database&) = delete;  // it owns the pool: one per database
@@ -185,6 +198,57 @@ class Database {
     return future;
   }
 
+  /**
+   * @brief Runs `command` (a statement that returns no rows: an update, a delete, or a raw statement with no columns such as a
+   * `CREATE TABLE`) in the background and calls `done` exactly once, on a worker thread, with the count of rows it affected and
+   * the error (null on success). The primitive the command `execute` is built on.
+   */
+  template <CommandStatement statement_t, detail::CommandCallback done_t>
+  void execute_into(const statement_t& command, done_t done) {
+    detail::WireStatement wired;
+    try {
+      wired = detail::wire(command);  // formats the arguments, which a codec may refuse
+    } catch ( ... ) {
+      _client.post([done = std::move(done), error = std::current_exception()] mutable { done(0, error); });
+      return;
+    }
+    command_into(std::string(wired.sql), std::move(wired.params), std::move(done));
+  }
+
+  /**
+   * @return A future for the count of rows `command` affected (those an `UPDATE` changed, say; 0 for a `CREATE TABLE`), or holding
+   * its error (`QueryError`).
+   */
+  template <CommandStatement statement_t>
+  [[nodiscard]] std::future<std::uint64_t> execute(const statement_t& command) {
+    const auto                 promise = std::make_shared<std::promise<std::uint64_t>>();
+    std::future<std::uint64_t> future = promise->get_future();
+    execute_into(command, [promise](std::uint64_t affected, const std::exception_ptr& error) {
+      if ( error ) {
+        promise->set_exception(error);
+      } else {
+        promise->set_value(affected);
+      }
+    });
+    return future;
+  }
+
+  /**
+   * @return A future that completes once `schema_t`'s table is created, or holds the error (`QueryError`, e.g. if it exists):
+   * `CREATE TABLE` with each column's SQL type, `NOT NULL` unless its field is a `std::optional`, and the primary key. For tests,
+   * examples and a first start; a table with more to it (indexes, constraints, a generated column) is created with SQL.
+   */
+  template <schema::IsSchema schema_t>
+  [[nodiscard]] std::future<void> create_table() {
+    return run_without_rows(detail::CreateTableSql<schema_t>::VALUE);
+  }
+
+  /** @return A future that completes once `schema_t`'s table is dropped, if it existed (`DROP TABLE IF EXISTS`), or holds the error. */
+  template <schema::IsSchema schema_t>
+  [[nodiscard]] std::future<void> drop_table() {
+    return run_without_rows(detail::DropTableSql<schema_t>::VALUE);
+  }
+
   /** @return A future for every row of `schema_t` whose `key_col` value is one of `keys`, e.g. `db.select_by_key_values<PlacesSchema, "id">(ids)`. */
   template <TextSchema schema_t, util::CTString key_col>
   [[nodiscard]] std::future<std::vector<typename schema_t::row_type>> select_by_key_values(std::span<const key_type<schema_t, key_col>> keys) {
@@ -192,6 +256,13 @@ class Database {
       return detail::ready_future(std::vector<typename schema_t::row_type>{});
     }
     return execute(by_key_values<schema_t, key_col>(keys));
+  }
+
+  /** @return A future for every row of `schema_t` whose primary key is one of `keys`, e.g. `db.select_by_key<Orders>(ids)`. */
+  template <TextSchema schema_t>
+    requires schema::HasSingleColumnKey<schema_t>
+  [[nodiscard]] std::future<std::vector<typename schema_t::row_type>> select_by_key(std::span<const primary_key_type<schema_t>> keys) {
+    return select_by_key_values<schema_t, schema::primary_key_field<schema_t>::COLUMN_NAME>(keys);
   }
 
   /**
@@ -222,6 +293,28 @@ class Database {
   }
 
  private:
+  /** @brief Runs `sql`, which returns no rows, and calls `done` with the count of rows it affected and the error (null on success). */
+  template <detail::CommandCallback done_t>
+  void command_into(std::string sql, std::vector<std::string> params, done_t done) {
+    _client.run(std::move(sql), std::move(params), [done = std::move(done)](const QueryResult& result, const std::exception_ptr& error) mutable {
+      done(error ? 0 : result.affected_rows(), error);
+    });
+  }
+
+  /** @return A future that completes once `sql` (a statement without arguments or rows) has run, or holds its error. */
+  [[nodiscard]] std::future<void> run_without_rows(std::string_view sql) {
+    const auto        promise = std::make_shared<std::promise<void>>();
+    std::future<void> future = promise->get_future();
+    command_into(std::string(sql), {}, [promise](std::uint64_t /*affected*/, const std::exception_ptr& error) {
+      if ( error ) {
+        promise->set_exception(error);
+      } else {
+        promise->set_value();
+      }
+    });
+    return future;
+  }
+
   /** @brief Runs `statements` from `next` on, one after another, then completes `promise`; the first error stops it. */
   void run_in_order(const std::shared_ptr<std::vector<detail::InsertStatement>>& statements, std::size_t next,
                     const std::shared_ptr<std::promise<void>>& promise) {

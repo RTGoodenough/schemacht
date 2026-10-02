@@ -7,10 +7,13 @@
 #include <vector>
 
 #include "schemacht/postgres/statements.hpp"
+#include "schemacht/schema/field.hpp"
+#include "schemacht/schema/schema.hpp"
 #include "support/schemas.hpp"
 
 namespace pg = schemacht::postgres;
 namespace t = schemacht::test;
+namespace sch = schemacht::schema;
 
 TEST_CASE("rows are inserted with one array per column", "[insert]") {
   const std::vector<t::People::row_type> rows{
@@ -21,8 +24,8 @@ TEST_CASE("rows are inserted with one array per column", "[insert]") {
   REQUIRE(statements.size() == 1);
   CHECK(statements[0].sql == R"(INSERT INTO "people" ("id", "name", "nick", "score", "active") )"
                              R"(SELECT * FROM unnest($1::bigint[], $2::text[], $3::text[], $4::double precision[], $5::boolean[]))");
-  CHECK(statements[0].values == std::vector<std::string>{R"({"1","2"})", R"({"a \"quoted\" name","bo"})", R"({"al",NULL})", R"({"1.5","-2"})",
-                                                         R"({"t","f"})"});
+  CHECK(statements[0].values ==
+        std::vector<std::string>{R"({"1","2"})", R"({"a \"quoted\" name","bo"})", R"({"al",NULL})", R"({"1.5","-2"})", R"({"t","f"})"});
 }
 
 TEST_CASE("generated columns are not inserted", "[insert]") {
@@ -44,4 +47,19 @@ TEST_CASE("an array-typed column falls back to VALUES, split to fit the paramete
   CHECK(statements[1].values.size() == std::size_t{2} * (40000 - 32767));
   CHECK(statements[0].sql.starts_with(R"(INSERT INTO "tagged" ("id", "tags") VALUES ($1, $2), ($3, $4))"));
   CHECK(statements[0].values[1] == R"({"a","b"})");
+}
+
+TEST_CASE("a table is created from its schema", "[ddl]") {
+  CHECK(pg::detail::CreateTableSql<t::People>::VALUE ==
+        R"(CREATE TABLE "people" ("id" bigint NOT NULL, "name" text NOT NULL, "nick" text, "score" double precision NOT NULL, )"
+        R"("active" boolean NOT NULL, PRIMARY KEY ("id")))");
+  CHECK(pg::detail::CreateTableSql<t::Counted>::VALUE ==
+        R"(CREATE TABLE "counted" ("id" bigint NOT NULL, "count" bigint NOT NULL, "doc" jsonb NOT NULL, PRIMARY KEY ("id")))");
+
+  using Pairs = sch::Schema<"pairs", sch::Field<std::int16_t, "a", sch::KeyRole::Primary>, sch::Field<bool, "b", sch::KeyRole::Primary>>;
+  CHECK(pg::detail::CreateTableSql<Pairs>::VALUE == R"(CREATE TABLE "pairs" ("a" smallint NOT NULL, "b" boolean NOT NULL, PRIMARY KEY ("a", "b")))");
+
+  using Keyless = sch::Schema<"keyless", t::Name>;
+  CHECK(pg::detail::CreateTableSql<Keyless>::VALUE == R"(CREATE TABLE "keyless" ("name" text NOT NULL))");
+  CHECK(pg::detail::DropTableSql<t::People>::VALUE == R"(DROP TABLE IF EXISTS "people")");
 }

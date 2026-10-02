@@ -7,6 +7,7 @@
 
 #include <array>
 #include <cerrno>
+#include <charconv>
 #include <cstddef>
 #include <cstdint>
 #include <deque>
@@ -88,23 +89,42 @@ std::string apply_session(PGconn* connection, std::string_view setup) {
 
 void QueryResult::Deleter::operator()(pg_result* raw) const noexcept { PQclear(raw); }
 
+namespace {
+
+/** @return The count in a result's command tag (`UPDATE 3`), or 0 for one without a count. */
+std::uint64_t affected_rows_of(pg_result* raw) {
+  if ( raw == nullptr ) {
+    return 0;
+  }
+  const std::string_view text = PQcmdTuples(raw);
+  std::uint64_t          count = 0;
+  // NOLINTNEXTLINE(cppcoreguidelines-pro-bounds-pointer-arithmetic) -- the end of the tag's digits
+  [[maybe_unused]] const auto parsed = std::from_chars(text.data(), text.data() + text.size(), count);  // no digits: stays 0
+  return count;
+}
+
+}  // namespace
+
 QueryResult::QueryResult(pg_result* raw)
     : _raw(raw),
       _row_count(raw != nullptr ? static_cast<std::size_t>(PQntuples(raw)) : 0),
       _column_count(raw != nullptr ? static_cast<std::size_t>(PQnfields(raw)) : 0),
-      _binary(_column_count > 0 && PQfformat(raw, 0) == 1) {}
+      _binary(_column_count > 0 && PQfformat(raw, 0) == 1),
+      _affected_rows(affected_rows_of(raw)) {}
 
 QueryResult::QueryResult(QueryResult&& other) noexcept
     : _raw(std::move(other._raw)),
       _row_count(std::exchange(other._row_count, 0)),
       _column_count(std::exchange(other._column_count, 0)),
-      _binary(std::exchange(other._binary, false)) {}
+      _binary(std::exchange(other._binary, false)),
+      _affected_rows(std::exchange(other._affected_rows, 0)) {}
 
 QueryResult& QueryResult::operator=(QueryResult&& other) noexcept {
   _raw = std::move(other._raw);
   _row_count = std::exchange(other._row_count, 0);
   _column_count = std::exchange(other._column_count, 0);
   _binary = std::exchange(other._binary, false);
+  _affected_rows = std::exchange(other._affected_rows, 0);
   return *this;
 }
 
@@ -141,7 +161,7 @@ std::optional<std::string_view> QueryResult::field(std::size_t row, std::size_t 
 
 class AsyncClient::Impl {
  public:
-  Impl(const std::string& conninfo, const Options& options) : _session_sql(options.session.sql()) {
+  Impl(const std::string& conninfo, const Options& options) : _session_sql(options.session.sql()), _on_notice(options.on_notice) {
     if ( PQlibVersion() < MIN_LIBPQ_VERSION ) {  // the library loaded at run time, which is not always the one built against
       throw std::runtime_error("AsyncClient needs libpq " + std::to_string(MIN_LIBPQ_VERSION / LIBPQ_MAJOR_DIVISOR) +
                                " or newer at run time, found " + std::to_string(PQlibVersion() / LIBPQ_MAJOR_DIVISOR));
@@ -263,6 +283,8 @@ class AsyncClient::Impl {
   void open_connections(const std::string& conninfo, std::size_t count) {
     for ( std::size_t i = 0; i < count; ++i ) {
       PGconn* connection = PQconnectdb(conninfo.c_str());
+      // Every notice from now on, the reconnects' included (a reset keeps the connection's receiver), goes to `on_notice`.
+      PQsetNoticeReceiver(connection, &Impl::receive_notice, this);
       if ( PQstatus(connection) != CONNECTION_OK ) {
         const std::string message = trimmed(PQerrorMessage(connection));
         PQfinish(connection);
@@ -275,6 +297,22 @@ class AsyncClient::Impl {
       if ( PQsetnonblocking(connection, 1) != 0 ) {
         throw std::runtime_error("could not put a Postgres connection in non-blocking mode");
       }
+    }
+  }
+
+  /** @brief libpq's notice receiver: hands the notice to `on_notice`, if there is one, and drops it otherwise. */
+  static void receive_notice(void* self, const pg_result* result) noexcept {
+    const auto* impl = static_cast<const Impl*>(self);
+    if ( ! impl->_on_notice ) {
+      return;
+    }
+    const auto field = [result](int code) {
+      const char* value = PQresultErrorField(result, code);
+      return value != nullptr ? std::string_view(value) : std::string_view();
+    };
+    try {
+      impl->_on_notice(Notice{.severity = field(PG_DIAG_SEVERITY), .sqlstate = field(PG_DIAG_SQLSTATE), .message = field(PG_DIAG_MESSAGE_PRIMARY)});
+    } catch ( ... ) {  // NOLINT(bugprone-empty-catch) -- a notice handler's error has nowhere to go: it must not reach libpq
     }
   }
 
@@ -853,6 +891,7 @@ class AsyncClient::Impl {
   }
 
   std::string                        _session_sql;
+  std::function<void(const Notice&)> _on_notice;
   std::vector<Reconnecting>          _reconnecting;  // reactor thread only
   std::unique_ptr<async::ThreadPool> _workers;
   std::vector<PGconn*>               _connections;
@@ -871,7 +910,7 @@ class AsyncClient::Impl {
 // AsyncClient
 // ============================================================================
 
-AsyncClient::AsyncClient(const std::string& conninfo, Options options) : _impl(std::make_unique<Impl>(conninfo, options)) {}
+AsyncClient::AsyncClient(const std::string& conninfo, const Options& options) : _impl(std::make_unique<Impl>(conninfo, options)) {}
 
 AsyncClient::~AsyncClient() = default;
 

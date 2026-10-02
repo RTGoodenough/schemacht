@@ -74,6 +74,20 @@ class Schema {
   /** @return Every column's name, in declaration order. */
   [[nodiscard]] static constexpr std::array<std::string_view, FIELD_COUNT> column_names() { return {field_ts::COLUMN_NAME.view()...}; }
 
+  /** @brief Every column's key role, in declaration order. */
+  static constexpr std::array<KeyRole, FIELD_COUNT> KEY_ROLES{field_ts::KEY_ROLE...};
+
+  /**
+   * @return A row from a plain value for each column, in declaration order: `Orders::make_row(1, "ann", std::nullopt)` instead of
+   * `{Id{1}, Name{"ann"}, Nick{std::nullopt}}`. Each value converts to its column's `data_type` without narrowing.
+   */
+  template <typename... arg_ts>
+    requires RowValues<row_type, arg_ts...>
+  [[nodiscard]] static constexpr row_type make_row(arg_ts&&... args) {
+    // NOLINTNEXTLINE(cppcoreguidelines-pro-bounds-array-to-pointer-decay) -- a string literal becomes a std::string here
+    return row_type{field_ts{typename field_ts::data_type{std::forward<arg_ts>(args)}}...};
+  }
+
   static_assert(util::is_identifier(TABLE_NAME),
                 "a table name must be lowercase letters, digits and underscores, not start with a digit, and be at most 63 bytes");
   static_assert(detail::all_distinct(std::array<std::string_view, FIELD_COUNT>{field_ts::COLUMN_NAME.view()...}),
@@ -115,7 +129,8 @@ class Schema {
   using field_by_name = field_at<checked_field_index<name>()>;
 
   /** @brief How many fields are tagged `KeyRole::Primary`; more than one makes a composite key. */
-  static constexpr std::size_t PRIMARY_KEY_FIELD_COUNT = detail::count_set(std::array<bool, FIELD_COUNT>{(field_ts::KEY_ROLE == KeyRole::Primary)...});
+  static constexpr std::size_t PRIMARY_KEY_FIELD_COUNT =
+      detail::count_set(std::array<bool, FIELD_COUNT>{(field_ts::KEY_ROLE == KeyRole::Primary)...});
   /** @brief True if any field is tagged `KeyRole::Primary`. */
   static constexpr bool HAS_PRIMARY_KEY = PRIMARY_KEY_FIELD_COUNT > 0;
 
@@ -147,5 +162,26 @@ struct is_schema<Schema<table_str, field_ts...>> : std::true_type {};
 /** @brief Detects whether `data_t` is a `Schema<...>` specialization. */
 template <typename data_t>
 concept IsSchema = detail::is_schema<data_t>::value;
+
+/** @brief Whether `schema_t` has a primary key of exactly one column, so a row can be found by that one value. */
+template <typename schema_t>
+concept HasSingleColumnKey = IsSchema<schema_t> && schema_t::PRIMARY_KEY_FIELD_COUNT == 1;
+
+namespace detail {
+
+template <HasSingleColumnKey schema_t>
+[[nodiscard]] consteval std::size_t primary_key_index() {
+  std::size_t index = 0;
+  while ( schema_t::KEY_ROLES.at(index) != KeyRole::Primary ) {
+    ++index;
+  }
+  return index;
+}
+
+}  // namespace detail
+
+/** @brief The field of `schema_t`'s primary key, which is one column. */
+template <HasSingleColumnKey schema_t>
+using primary_key_field = schema_t::template field_at<detail::primary_key_index<schema_t>()>;
 
 }  // namespace schemacht::schema

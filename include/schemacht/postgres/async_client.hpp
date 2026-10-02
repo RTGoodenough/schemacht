@@ -59,6 +59,12 @@ class QueryResult {
   [[nodiscard]] std::size_t row_count() const noexcept { return _row_count; }
   [[nodiscard]] std::size_t column_count() const noexcept { return _column_count; }
 
+  /**
+   * @return How many rows the statement affected: those an `UPDATE`, `DELETE` or `INSERT` changed, or a `SELECT` returned
+   * (PostgreSQL's command tag); 0 for a statement that reports none, such as `CREATE TABLE`.
+   */
+  [[nodiscard]] std::uint64_t affected_rows() const noexcept { return _affected_rows; }
+
   /** @return Whether the fields are in PostgreSQL's binary form rather than text; false for a result with no columns. */
   [[nodiscard]] bool is_binary() const noexcept { return _binary; }
 
@@ -92,9 +98,17 @@ class QueryResult {
 
   std::unique_ptr<pg_result, Deleter> _raw;
   // Read once from `_raw`: they are checked on every `field`.
-  std::size_t _row_count = 0;
-  std::size_t _column_count = 0;
-  bool        _binary = false;
+  std::size_t   _row_count = 0;
+  std::size_t   _column_count = 0;
+  bool          _binary = false;
+  std::uint64_t _affected_rows = 0;
+};
+
+/** @brief A message the server sent besides a result (`RAISE NOTICE`, a `WARNING`, "table does not exist, skipping"). */
+struct Notice {
+  std::string_view severity;  ///< `NOTICE`, `WARNING`, `INFO`, `LOG` or `DEBUG`.
+  std::string_view sqlstate;  ///< Its five-character SQLSTATE code (`00000` for a plain notice).
+  std::string_view message;   ///< The message itself, without the severity.
 };
 
 /** @brief Rows in each chunk of a stream unless told otherwise; in measurements, faster than 100 or 10,000. */
@@ -125,6 +139,12 @@ class AsyncClient {
     std::size_t     connections = 4;  ///< Connections opened up front; also the most statements in flight at once.
     std::size_t     workers = 2;      ///< Threads running completions.
     SessionSettings session;          ///< Applied to every connection, when it is opened and whenever it is re-opened after a lost link.
+    /**
+     * Called with each notice the server sends; without it, notices are dropped (libpq would print them to stderr). It runs on
+     * whichever thread is talking to that connection, mostly the reactor, so it must be quick, must not block, and must be safe to
+     * call from several threads. The `Notice` is valid only during the call. A throw from it is caught and dropped.
+     */
+    std::function<void(const Notice&)> on_notice;
   };
 
   /** @brief Called on a worker thread once a statement finishes. On failure the result is empty and the exception set. */
@@ -149,7 +169,7 @@ class AsyncClient {
    * @throws std::runtime_error if a connection can't be made or the session settings can't be applied.
    * @throws std::invalid_argument if `options` asks for no connections or no workers.
    */
-  explicit AsyncClient(const std::string& conninfo, Options options);
+  explicit AsyncClient(const std::string& conninfo, const Options& options);
   explicit AsyncClient(const std::string& conninfo) : AsyncClient(conninfo, Options{}) {}
 
   AsyncClient(const AsyncClient&) = delete;

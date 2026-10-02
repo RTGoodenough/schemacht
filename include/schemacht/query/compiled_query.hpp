@@ -9,13 +9,14 @@
 #include <variant>
 #include <vector>
 
+#include "schemacht/query/command.hpp"
 #include "schemacht/query/query.hpp"
 #include "schemacht/schema/schema.hpp"
 
 namespace schemacht::query {
 
 template <auto source>
-  requires IsQuerySource<std::remove_cvref_t<decltype(source)>>
+  requires IsQuerySource<std::remove_cvref_t<decltype(source)>> || IsCommandSource<std::remove_cvref_t<decltype(source)>>
 class Prepared;
 
 namespace detail {
@@ -101,7 +102,7 @@ class CompiledQuery {
 
  private:
   template <auto source>
-    requires IsQuerySource<std::remove_cvref_t<decltype(source)>>
+    requires IsQuerySource<std::remove_cvref_t<decltype(source)>> || IsCommandSource<std::remove_cvref_t<decltype(source)>>
   friend class Prepared;
 
   /**
@@ -140,7 +141,7 @@ class TypedQuery : public CompiledQuery<schema_t> {
 
  private:
   template <auto source>
-    requires IsQuerySource<std::remove_cvref_t<decltype(source)>>
+    requires IsQuerySource<std::remove_cvref_t<decltype(source)>> || IsCommandSource<std::remove_cvref_t<decltype(source)>>
   friend class Prepared;
 
   explicit TypedQuery(CompiledQuery<schema_t> query) : CompiledQuery<schema_t>(std::move(query)) {}

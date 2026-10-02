@@ -1,15 +1,18 @@
 #pragma once
 
+#include <algorithm>
 #include <array>
 #include <bit>
 #include <concepts>
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <string>
 #include <string_view>
 #include <utility>
 #include <vector>
 
+#include "schemacht/query/command.hpp"
 #include "schemacht/query/predicate.hpp"
 #include "schemacht/query/query.hpp"
 #include "schemacht/query/sql_type.hpp"
@@ -138,9 +141,20 @@ consteval std::array<bool, schema_t::FIELD_COUNT> generated_flags(std::index_seq
   return {schema_t::template field_at<idx>::GENERATED...};
 }
 
+template <schema::IsSchema schema_t, std::size_t... idx>
+consteval std::array<bool, schema_t::FIELD_COUNT> nullable_flags(std::index_sequence<idx...> /*indices*/) {
+  return {schema_t::template field_at<idx>::NULLABLE...};
+}
+
+/** @brief Whether each column of `schema_t` can be NULL (its field is a `std::optional`). */
+template <schema::IsSchema schema_t>
+inline constexpr std::array<bool, schema_t::FIELD_COUNT> COLUMN_NULLABLE =
+    nullable_flags<schema_t>(std::make_index_sequence<schema_t::FIELD_COUNT>{});
+
 /** @brief Whether each column of `schema_t` is `GENERATED` (computed by the database, never inserted). */
 template <schema::IsSchema schema_t>
-inline constexpr std::array<bool, schema_t::FIELD_COUNT> COLUMN_GENERATED = generated_flags<schema_t>(std::make_index_sequence<schema_t::FIELD_COUNT>{});
+inline constexpr std::array<bool, schema_t::FIELD_COUNT> COLUMN_GENERATED =
+    generated_flags<schema_t>(std::make_index_sequence<schema_t::FIELD_COUNT>{});
 
 /** @brief The SQL type name of each column of `schema_t` (empty where it has none), in declaration order. */
 template <schema::IsSchema schema_t>
@@ -173,6 +187,27 @@ consteval std::string_view comparison_symbol(Comparison comparison) {
       return ">=";
   }
   return "";  // unreachable: every Comparison is handled above
+}
+
+/** @brief Writes an operand: `$n` for a bound argument (`arg<N>()` is `$N+1`), or the literal itself. */
+template <std::size_t text_capacity>
+consteval void append_operand(Text<text_capacity>& text, const Operand& value) {
+  if ( value.kind == OperandKind::Arg ) {
+    text.push('$');
+    text.append_unsigned(value.slot + 1);
+    return;
+  }
+  switch ( value.constant.kind ) {
+    case ConstantKind::Bool:
+      text.append(value.constant.bits != 0 ? "TRUE" : "FALSE");
+      return;
+    case ConstantKind::Signed:
+      text.append_signed(std::bit_cast<std::int64_t>(value.constant.bits));
+      return;
+    case ConstantKind::Unsigned:
+      text.append_unsigned(value.constant.bits);
+      return;
+  }
 }
 
 /** @brief Writes a predicate tree as a SQL boolean expression, as it was written. */
@@ -305,24 +340,7 @@ class Emitter {
     }
   }
 
-  consteval void operand(const Operand& value) {
-    if ( value.kind == OperandKind::Arg ) {
-      _text->push('$');
-      _text->append_unsigned(value.slot + 1);
-      return;
-    }
-    switch ( value.constant.kind ) {
-      case ConstantKind::Bool:
-        _text->append(value.constant.bits != 0 ? "TRUE" : "FALSE");
-        return;
-      case ConstantKind::Signed:
-        _text->append_signed(std::bit_cast<std::int64_t>(value.constant.bits));
-        return;
-      case ConstantKind::Unsigned:
-        _text->append_unsigned(value.constant.bits);
-        return;
-    }
-  }
+  consteval void operand(const Operand& value) { append_operand(*_text, value); }
 
   const Predicate<schema_t, predicate_capacity>* _predicate;
   Text<text_capacity>*                           _text;
@@ -405,6 +423,89 @@ template <schema::IsSchema schema_t, std::size_t predicate_capacity, std::size_t
       text.append_unsigned(query.row_limit.slot + 1);
       break;
   }
+  return text;
+}
+
+/** @brief Writes ` WHERE <predicate>`, or nothing for a predicate that matches every row. */
+template <schema::IsSchema schema_t, std::size_t text_capacity, std::size_t predicate_capacity>
+consteval void append_where(Text<text_capacity>& text, const Predicate<schema_t, predicate_capacity>& predicate) {
+  if ( predicate.count != 0 && predicate.nodes.at(predicate.root).kind != NodeKind::True ) {
+    text.append(" WHERE ");
+    detail::Emitter<schema_t, predicate_capacity, text_capacity>(&predicate, &text).node(predicate.root);
+  }
+}
+
+/** @return `UPDATE <table> SET <column> = <value>, ... [WHERE <predicate>]`, each value `$n`, a literal, or `NULL`. */
+template <schema::IsSchema schema_t, std::size_t set_capacity, std::size_t predicate_capacity>
+[[nodiscard]] consteval Text<STATEMENT_CAPACITY> update_statement(const Update<schema_t, set_capacity, predicate_capacity>& update) {
+  Text<STATEMENT_CAPACITY> text;
+  text.append("UPDATE ");
+  text.append_identifier(schema_t::TABLE_NAME);
+  for ( std::size_t i = 0; i < update.set_count; ++i ) {
+    const SetTerm& term = update.sets.at(i);
+    text.append(i == 0 ? " SET " : ", ");
+    text.append_identifier(schema_t::column_names().at(term.column));
+    text.append(" = ");
+    if ( term.is_null ) {
+      text.append("NULL");
+    } else {
+      detail::append_operand(text, term.value);
+    }
+  }
+  append_where(text, update.predicate);
+  return text;
+}
+
+/** @return `DELETE FROM <table> [WHERE <predicate>]`. */
+template <schema::IsSchema schema_t, std::size_t predicate_capacity>
+[[nodiscard]] consteval Text<STATEMENT_CAPACITY> delete_statement(const Delete<schema_t, predicate_capacity>& del) {
+  Text<STATEMENT_CAPACITY> text;
+  text.append("DELETE FROM ");
+  text.append_identifier(schema_t::TABLE_NAME);
+  append_where(text, del.predicate);
+  return text;
+}
+
+/**
+ * @return `CREATE TABLE <table> (<column> <type> [NOT NULL], ..., PRIMARY KEY (<key columns>))`: each column with its type's
+ * SQL name, `NOT NULL` unless its field is a `std::optional`, and the primary key if the schema has one.
+ */
+template <schema::IsSchema schema_t>
+[[nodiscard]] consteval Text<STATEMENT_CAPACITY> create_table_statement() {
+  static_assert(! std::ranges::any_of(detail::COLUMN_TYPE_NAMES<schema_t>, &std::string_view::empty),
+                "create_table: a column's type has no SQL name; give it one (ColumnType::SQL_TYPE, or a query::sql::SqlType specialization)");
+  static_assert(! std::ranges::any_of(detail::COLUMN_GENERATED<schema_t>, std::identity{}),
+                "create_table can't write a generated column's expression: create a table with one yourself");
+  Text<STATEMENT_CAPACITY> text;
+  text.append("CREATE TABLE ");
+  text.append_identifier(schema_t::TABLE_NAME);
+  text.append(" (");
+  for ( std::size_t column = 0; column < schema_t::FIELD_COUNT; ++column ) {
+    if ( column != 0 ) {
+      text.append(", ");
+    }
+    text.append_identifier(schema_t::column_names().at(column));
+    text.push(' ');
+    text.append(detail::COLUMN_TYPE_NAMES<schema_t>.at(column));
+    if ( ! detail::COLUMN_NULLABLE<schema_t>.at(column) ) {
+      text.append(" NOT NULL");
+    }
+  }
+  if constexpr ( schema_t::HAS_PRIMARY_KEY ) {
+    text.append(", PRIMARY KEY (");
+    text.append_identifier_list(schema_t::primary_key_column_names());
+    text.push(')');
+  }
+  text.push(')');
+  return text;
+}
+
+/** @return `DROP TABLE IF EXISTS <table>`. */
+template <schema::IsSchema schema_t>
+[[nodiscard]] consteval Text<STATEMENT_CAPACITY> drop_table_statement() {
+  Text<STATEMENT_CAPACITY> text;
+  text.append("DROP TABLE IF EXISTS ");
+  text.append_identifier(schema_t::TABLE_NAME);
   return text;
 }
 

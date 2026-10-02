@@ -204,6 +204,30 @@ template <schema::IsSchema schema_t>
 
 }  // namespace insert_detail
 
+/** @brief `CREATE TABLE` for `schema_t` (see `query::sql::create_table_statement`), as a static string. */
+template <schema::IsSchema schema_t>
+class CreateTableSql {
+  static constexpr auto CHARS = [] {
+    constexpr auto TEXT = query::sql::create_table_statement<schema_t>();
+    return query::sql::terminated<TEXT.size()>(TEXT);
+  }();
+
+ public:
+  static constexpr std::string_view VALUE{CHARS.data(), CHARS.size() - 1};
+};
+
+/** @brief `DROP TABLE IF EXISTS` for `schema_t`, as a static string. */
+template <schema::IsSchema schema_t>
+class DropTableSql {
+  static constexpr auto CHARS = [] {
+    constexpr auto TEXT = query::sql::drop_table_statement<schema_t>();
+    return query::sql::terminated<TEXT.size()>(TEXT);
+  }();
+
+ public:
+  static constexpr std::string_view VALUE{CHARS.data(), CHARS.size() - 1};
+};
+
 /**
  * @brief Builds the statements that insert `rows`, leaving out generated columns (the database computes those).
  *
@@ -248,14 +272,25 @@ inline constexpr bool EVERY_ARGUMENT_HAS_TEXT_FORM<std::tuple<argument_ts...>> =
 }  // namespace detail
 
 /**
- * @brief What a `Database` runs, with a `result_type` (a `TextRow`): a query (`Prepared::bind`) of a `TextSchema`, or a bound raw
- * statement (`RawStatement::bind`), which is about no table, whose every argument has a text form (`HasTextForm`) to be sent as.
+ * @brief What a `Database` can send, with a `result_type` (a `TextRow`): a query or command (`Prepared::bind`) of a `TextSchema`, or a
+ * bound raw statement (`RawStatement::bind`), which is about no table, whose every argument has a text form (`HasTextForm`) to be sent as.
  */
 template <typename statement_t>
-concept RunnableStatement =
+concept SendableStatement =
     (query::IsBoundRawStatement<statement_t> && detail::EVERY_ARGUMENT_HAS_TEXT_FORM<typename statement_t::arguments_type> &&
      TextRow<typename statement_t::result_type>) ||
     (std::derived_from<statement_t, query::CompiledQuery<typename statement_t::schema_type>> && TextSchema<typename statement_t::schema_type>);
+
+/** @brief A statement that returns rows (`Database::execute` gives them): a query, or a raw statement that names its columns. */
+template <typename statement_t>
+concept RunnableStatement = SendableStatement<statement_t> && (std::tuple_size_v<typename statement_t::result_type> > 0);
+
+/**
+ * @brief A statement that returns no rows (`Database::execute` gives the count of rows it affected): a typed update or delete,
+ * or a raw statement with no columns, such as an `UPDATE`, a `DELETE` or a `CREATE TABLE`.
+ */
+template <typename statement_t>
+concept CommandStatement = SendableStatement<statement_t> && (std::tuple_size_v<typename statement_t::result_type> == 0);
 
 /** @brief A result whose columns can be counted and named (`QueryResult` is one). */
 template <typename result_t>
@@ -280,7 +315,7 @@ struct WireStatement {
  * @return `statement` as it goes to the database: a `CompiledQuery` (with the names of the columns it returns, from its schema), or a
  * `BoundRawStatement` (which is about no table). The text views point at static storage.
  */
-template <RunnableStatement statement_t>
+template <SendableStatement statement_t>
 [[nodiscard]] WireStatement wire(const statement_t& statement) {
   WireStatement wired;
   wired.sql = statement.sql();

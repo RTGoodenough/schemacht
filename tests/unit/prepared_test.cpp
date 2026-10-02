@@ -84,3 +84,13 @@ TEST_CASE("a field reads as its value", "[schema]") {
   const std::string& text = name;  // through Field's conversion to `const data_type&`
   CHECK(text == "ann");
 }
+
+TEST_CASE("a raw statement with no columns is a command", "[prepared][raw]") {
+  using Touch = q::RawStatement<"UPDATE people SET score = $1", q::RawArguments<double>>;
+  using Read = q::RawStatement<"SELECT 1::bigint AS id", q::RawArguments<>, t::Id>;
+  STATIC_REQUIRE(pg::CommandStatement<q::BoundRawStatement<Touch>>);
+  STATIC_REQUIRE_FALSE(pg::RunnableStatement<q::BoundRawStatement<Touch>>);
+  STATIC_REQUIRE(pg::RunnableStatement<q::BoundRawStatement<Read>>);
+  STATIC_REQUIRE_FALSE(pg::CommandStatement<q::BoundRawStatement<Read>>);
+  CHECK(pg::detail::wire(Touch::bind(1.5)).column_names.empty());
+}
