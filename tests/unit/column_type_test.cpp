@@ -1,7 +1,10 @@
 #include <catch2/catch_test_macros.hpp>
 
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <filesystem>
+#include <initializer_list>
 #include <span>
 #include <stdexcept>
 #include <string>
@@ -43,6 +46,35 @@ struct Labelled {
 /** @brief A type whose `ColumnType` misses `format`: not a column type. */
 struct Half {};
 
+enum class Priority : std::uint8_t {
+  Low,
+  Normal,
+  High,
+};
+
+/** @brief An exact amount in cents. */
+struct Price {
+  std::int64_t cents = 0;
+
+  auto operator<=>(const Price&) const = default;
+};
+
+/** @brief A count too narrow to be a scaled amount. */
+struct Narrow {
+  std::int32_t value = 0;
+};
+
+/** @return `values` as big-endian 16-bit words. */
+std::vector<std::byte> words(std::initializer_list<int> values) {
+  std::vector<std::byte> bytes;
+  for ( const int value : values ) {
+    const auto word = static_cast<std::uint16_t>(value);
+    bytes.push_back(static_cast<std::byte>(word >> 8U));
+    bytes.push_back(static_cast<std::byte>(word & 0xFFU));
+  }
+  return bytes;
+}
+
 std::vector<std::byte> bytes_of(std::string_view text) {
   std::vector<std::byte> bytes;
   for ( const char chr : text ) {
@@ -78,6 +110,22 @@ class schemacht::query::sql::SqlType<Labelled> {
  public:
   static constexpr std::string_view NAME = "varchar";
 };
+
+template <>
+struct schemacht::ColumnType<Priority> : schemacht::EnumIntegerColumn<Priority> {};
+
+template <>
+struct schemacht::ColumnType<Price> : schemacht::ScaledNumericColumn<&Price::cents, 2, "numeric(10,2)"> {};
+
+template <>
+struct schemacht::ColumnType<std::filesystem::path>
+    : schemacht::ConvertedColumn<std::filesystem::path, std::string, [](const std::filesystem::path& path) { return path.string(); },
+                                 [](const std::string& text) { return std::filesystem::path(text); }> {};
+
+template <>
+struct schemacht::ColumnType<std::chrono::milliseconds>
+    : schemacht::ConvertedColumn<std::chrono::milliseconds, std::int64_t, [](std::chrono::milliseconds span) { return span.count(); },
+                                 [](std::int64_t count) { return std::chrono::milliseconds(count); }> {};
 
 template <>
 struct schemacht::ColumnType<Half> {
@@ -140,4 +188,40 @@ TEST_CASE("as_text views bytes as the characters they are", "[column_type]") {
   const std::vector<std::byte> bytes = bytes_of("abc");
   CHECK(pg::as_text(bytes) == "abc");
   CHECK(pg::as_text(std::span<const std::byte>{}).empty());
+}
+
+TEST_CASE("an EnumIntegerColumn is stored as its number", "[column_type]") {
+  STATIC_REQUIRE(sql::type_name<Priority>() == "smallint");  // a uint8_t's values fit the next wider signed type
+  STATIC_REQUIRE(pg::HasBinaryForm<Priority>);
+  CHECK(pg::format_field(Priority::High) == "2");
+  CHECK(pg::parse_field<Priority>("1") == Priority::Normal);
+  CHECK(pg::FieldCodec<Priority>::parse_binary(words({2})) == Priority::High);
+  CHECK(pg::FieldCodec<Priority>::binary_accepts(pg::OID_INT2));
+  CHECK_FALSE(pg::FieldCodec<Priority>::binary_accepts(pg::OID_TEXT));
+}
+
+TEST_CASE("a ScaledNumericColumn is stored as a numeric", "[column_type]") {
+  STATIC_REQUIRE(schemacht::ScaledMember<&Price::cents>);
+  STATIC_REQUIRE_FALSE(schemacht::ScaledMember<&Narrow::value>);  // an int32 count would overflow long before a numeric(12,2) does
+  STATIC_REQUIRE(sql::type_name<Price>() == "numeric(10,2)");
+  CHECK(pg::format_field(Price{-5}) == "-0.05");
+  CHECK(pg::parse_field<Price>("19.99") == Price{1999});
+  CHECK(pg::FieldCodec<Price>::parse_binary(words({2, 0, 0, 2, 19, 9900})) == Price{1999});
+  CHECK(pg::FieldCodec<Price>::binary_accepts(pg::OID_NUMERIC));
+  CHECK_THROWS_AS(pg::parse_field<Price>("0.001"), std::invalid_argument);
+}
+
+TEST_CASE("a ConvertedColumn is stored as another type", "[column_type]") {
+  STATIC_REQUIRE(sql::type_name<std::filesystem::path>() == "text");
+  STATIC_REQUIRE(sql::type_name<std::chrono::milliseconds>() == "bigint");
+  STATIC_REQUIRE(pg::HasBinaryForm<std::chrono::milliseconds>);  // a bigint has one
+
+  CHECK(pg::format_field(std::filesystem::path("/var/log/app.log")) == "/var/log/app.log");
+  CHECK(pg::parse_field<std::filesystem::path>("a/b") == std::filesystem::path("a/b"));
+  CHECK(pg::format_field(std::chrono::milliseconds(1500)) == "1500");
+  CHECK(pg::FieldCodec<std::chrono::milliseconds>::parse_binary(words({0, 0, 0, 7})) == std::chrono::milliseconds(7));
+  CHECK(pg::FieldCodec<std::chrono::milliseconds>::binary_accepts(pg::OID_INT8));
+
+  using Wrong = decltype([](int number) { return number; });
+  STATIC_REQUIRE_FALSE(schemacht::ConvertsThrough<std::chrono::milliseconds, std::int64_t, Wrong{}, Wrong{}>);
 }

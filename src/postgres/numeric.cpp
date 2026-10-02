@@ -9,6 +9,7 @@
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <utility>
 
 #include "schemacht/postgres/binary_form.hpp"
 
@@ -89,6 +90,7 @@ std::int64_t parse_scaled_numeric(std::string_view text, unsigned scale) {
   return negative ? -units : units;
 }
 
+// NOLINTNEXTLINE(bugprone-easily-swappable-parameters) -- reached only through the public template, which takes the scale as a template argument
 std::string format_scaled_numeric(std::int64_t units, unsigned scale) {
   const bool          negative = units < 0;
   const std::uint64_t magnitude = negative ? 0U - static_cast<std::uint64_t>(units) : static_cast<std::uint64_t>(units);
@@ -126,8 +128,8 @@ std::int64_t parse_binary_scaled_numeric(std::span<const std::byte> bytes, unsig
       continue;
     }
     // The digit is worth 10000^(weight - index), which in units of 10^-scale is 10^exponent.
-    const std::int64_t exponent = (DIGITS_PER_NUMERIC_DIGIT * (weight - index)) + scale;
-    if ( exponent > static_cast<std::int64_t>(MAX_NUMERIC_SCALE) ) {
+    const std::int64_t exponent = (DIGITS_PER_NUMERIC_DIGIT * (weight - index)) + static_cast<std::int64_t>(scale);
+    if ( std::cmp_greater(exponent, MAX_NUMERIC_SCALE) ) {
       too_large();
     }
     if ( exponent >= 0 ) {

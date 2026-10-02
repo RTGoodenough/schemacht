@@ -10,7 +10,6 @@
 
 #include <atomic>
 #include <chrono>
-#include <compare>
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
@@ -149,6 +148,46 @@ struct Cents {
 };
 
 }  // namespace
+
+namespace {
+
+enum class Priority : std::uint8_t {
+  Low,
+  Normal,
+  High,
+};
+
+/** @brief An exact amount, by the helper rather than by hand. */
+struct Price {
+  std::int64_t cents = 0;
+
+  auto operator<=>(const Price&) const = default;
+};
+
+/** @brief A file's place, stored as text. */
+struct Location {
+  std::string path;
+
+  auto operator<=>(const Location&) const = default;
+};
+
+}  // namespace
+
+template <>
+struct schemacht::ColumnType<Priority> : schemacht::EnumIntegerColumn<Priority> {};
+
+template <>
+struct schemacht::ColumnType<Price> : schemacht::ScaledNumericColumn<&Price::cents, 2, "numeric(12,2)"> {};
+
+template <>
+struct schemacht::ColumnType<Location>
+    : schemacht::ConvertedColumn<Location, std::string, [](const Location& location) { return "file://" + location.path; },
+                                 [](const std::string& text) {
+                                   if ( ! text.starts_with("file://") ) {
+                                     throw std::invalid_argument("not a file URL: " + text);
+                                   }
+                                   return Location{text.substr(7)};
+                                 }> {};
 
 template <>
 struct schemacht::ColumnType<Cents> {
@@ -432,6 +471,7 @@ TEST_CASE("integration: a numeric is read exactly, in binary and in text", "[int
   for ( const pg::ResultFormat format : {pg::ResultFormat::Binary, pg::ResultFormat::Text} ) {
     const auto                rows = database.execute(Amounts::bind(), pg::ReadOptions{.format = format}).get();
     std::vector<std::int64_t> cents;
+    cents.reserve(rows.size());
     for ( const auto& row : rows ) {
       cents.push_back(sch::get<"amount">(row).value);
     }
@@ -440,4 +480,39 @@ TEST_CASE("integration: a numeric is read exactly, in binary and in text", "[int
                     std::invalid_argument);  // 0.333...: refused, not rounded
     CHECK(sch::get<"amount">(database.execute(Echo::bind(Cents{-123456}), pg::ReadOptions{.format = format}).get().at(0)) == Cents{-123456});
   }
+}
+
+TEST_CASE("integration: the column type helpers round-trip, in binary and in text", "[integration]") {
+  using Level = sch::Field<Priority, "level">;
+  using Cost = sch::Field<Price, "cost">;
+  using Where = sch::Field<std::optional<Location>, "place">;
+  using Tasks = sch::Schema<"schemacht_it_tasks", Id, Level, Cost, Where>;
+  constexpr auto ALL_TASKS = q::select<Tasks>().order_by(q::On<Tasks>::col<"id">().asc());
+  constexpr auto URGENT = q::select(q::On<Tasks>::col<"level">() == q::arg<0>()).project(q::On<Tasks>::col<"id">());
+
+  pg::Database database(test_db());
+  database.drop_table<Tasks>().get();
+  database.create_table<Tasks>().get();
+  database
+      .insert<Tasks>(
+          {Tasks::make_row(1, Priority::High, Price{1999}, Location{"/tmp/a"}), Tasks::make_row(2, Priority::Low, Price{-5}, std::nullopt)})
+      .get();
+
+  for ( const pg::ResultFormat format : {pg::ResultFormat::Binary, pg::ResultFormat::Text} ) {
+    const auto rows = database.execute(q::Prepared<ALL_TASKS>::bind(), pg::ReadOptions{.format = format}).get();
+    REQUIRE(rows.size() == 2);
+    CHECK(sch::get<"level">(rows[0]) == Priority::High);
+    CHECK(sch::get<"cost">(rows[0]) == Price{1999});
+    CHECK(sch::get<"place">(rows[0]) == Location{"/tmp/a"});
+    CHECK(sch::get<"cost">(rows[1]) == Price{-5});
+    CHECK_FALSE(sch::get<"place">(rows[1]).has_value());
+  }
+  const auto urgent = database.execute(q::Prepared<URGENT>::bind(Priority::High)).get();
+  REQUIRE(urgent.size() == 1);
+  CHECK(sch::get<"id">(urgent[0]) == 1);
+
+  using Stored = q::RawStatement<"SELECT level::text || ' ' || cost::text || ' ' || place AS stored FROM schemacht_it_tasks WHERE id = 1",
+                                 q::RawArguments<>, sch::Field<std::string, "stored">>;
+  CHECK(sch::get<"stored">(database.execute(Stored::bind()).get().at(0)) == "2 19.99 file:///tmp/a");  // as the database holds them
+  database.drop_table<Tasks>().get();
 }

@@ -85,6 +85,7 @@ BinaryArrayReader::BinaryArrayReader(std::span<const std::byte> bytes) : _reader
   constexpr std::size_t               ELEMENT_LENGTH_BYTES = 4;  // each element starts with its length
   const std::int32_t                  dimensions = _reader.int32();
   [[maybe_unused]] const std::int32_t has_null = _reader.int32();  // a NULL element is found, and refused, where it is
+  // NOLINTNEXTLINE(cppcoreguidelines-prefer-member-initializer) -- the header is read in order, and the element type is its third field
   _element_type = _reader.uint32();
   if ( dimensions == 0 ) {
     return;  // an empty array has no dimension entry

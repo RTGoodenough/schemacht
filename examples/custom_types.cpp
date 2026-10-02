@@ -7,7 +7,12 @@
 // - OrderId: a strong type over a built-in one (a `bigint`). `WrappedColumn` writes the whole specialization, binary form included.
 // - Mood: a C++ enum stored as a PostgreSQL enum. `EnumColumn` writes it from the labels, binary form included.
 // - Money: exact cents stored as `numeric(12,2)`, written by hand with the library's helpers for `numeric` (postgres/numeric.hpp)
-//   and the type's OID (postgres/binary_form.hpp), in text and in binary form.
+//   and the type's OID (postgres/binary_form.hpp), in text and in binary form. `ScaledNumericColumn` writes the same in one
+//   line; it is spelled out here to show what a `ColumnType` holds.
+//
+// The other helpers in schemacht/column_type.hpp: `EnumIntegerColumn` stores an enum as its number rather than a label, and
+// `ConvertedColumn` stores any type as another the database knows, through two functions (a path as `text`, a duration as
+// `bigint` milliseconds).
 //
 // A type without `parse_binary` works too: a row holding one is then read as text, whatever the query asks for.
 //
@@ -27,7 +32,6 @@
 #include <optional>
 #include <ostream>
 #include <span>
-#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -68,7 +72,11 @@ struct Money {
 template <>
 struct schemacht::ColumnType<shop::OrderId> : schemacht::WrappedColumn<&shop::OrderId::value> {};
 
-/** @brief A `Mood` is stored as its label; the labels are in the order of `Mood`'s values. */
+/**
+ * @brief A `Mood` is stored as its label; the labels are in the order of `Mood`'s values. (Without a PostgreSQL enum type,
+ * `EnumColumn<shop::Mood, "text", ...>` keeps the labels in a `text` column, and `EnumIntegerColumn<shop::Mood>` stores the
+ * number instead, a `smallint`.)
+ */
 template <>
 struct schemacht::ColumnType<shop::Mood> : schemacht::EnumColumn<shop::Mood, "schemacht_example_mood", "sad", "ok", "happy"> {};
 
@@ -76,6 +84,9 @@ struct schemacht::ColumnType<shop::Mood> : schemacht::EnumColumn<shop::Mood, "sc
  * @brief `Money` is a `numeric(12,2)`: in text as PostgreSQL prints one (`19.99`, `-0.05`), and in binary form as its base-10000
  * digits, both read as a count of cents by the library's `numeric` helpers. They refuse rather than round: `NaN`, an infinity,
  * or a value with a third decimal place (a `total / 3`) is an error, not a nearby amount.
+ *
+ * Written out to show what a `ColumnType` holds. The one-line equivalent:
+ * `template <> struct schemacht::ColumnType<shop::Money> : schemacht::ScaledNumericColumn<&shop::Money::cents, 2, "numeric(12,2)"> {};`
  */
 template <>
 struct schemacht::ColumnType<shop::Money> {
