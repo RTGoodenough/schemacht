@@ -40,16 +40,29 @@ using WithGenerated = sch::Schema<"with_generated", Id, Doubled, Name>;
 using NumberedId = sch::Field<std::int32_t, "id", sch::KeyRole::Primary, true>;
 using Numbered = sch::Schema<"numbered", NumberedId, Name, Nick>;
 
-/** @brief "nearest first", as a module would declare it. */
-struct Nearest {
+/** @brief pg_trgm's similarity of texts, as an extension's operations are declared: the worked example of `query::Operation`. */
+namespace trgm {
+
+/** @brief A test written as an operator: `"column" % $1::text`, similar enough by the `pg_trgm.similarity_threshold` setting. */
+struct Similar {
+  static constexpr std::string_view OPERATOR = "%";
+};
+
+/** @brief A ranking: `"column" <-> $1::text`, 1 minus the similarity, so the most similar sort first. */
+struct Distance {
   static constexpr std::string_view OPERATOR = "<->";
 };
 
-/** @brief A function test that takes a number too, as a module would declare it. */
-struct WithinDistance {
-  static constexpr std::string_view FUNCTION = "within_distance";
+/**
+ * @brief A test that takes a number too, so a function: `similar_above("column", $1::text, $2::double precision)`. Not
+ * pg_trgm's own (its threshold is a setting): the integration test creates it.
+ */
+struct SimilarAbove {
+  static constexpr std::string_view FUNCTION = "similar_above";
   static constexpr bool             TAKES_NUMBER = true;
 };
+
+}  // namespace trgm
 
 /** @brief A column type read through a function of it, as PostGIS's raster is. */
 struct Tile {

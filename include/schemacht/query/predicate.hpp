@@ -36,7 +36,7 @@ enum class NodeKind : std::uint8_t {
   And,        ///< `lhs AND rhs`
   Or,         ///< `lhs OR rhs`
   Not,        ///< `NOT lhs`
-  Call,       ///< `operation(column, operand)`: a test a module supplies, such as "the geometries intersect".
+  Call,       ///< A test an extension supplies, written as its SQL operator or function (see `Operation`).
   IsNull,     ///< `column IS NULL`
   IsNotNull,  ///< `column IS NOT NULL`
 };
@@ -72,9 +72,39 @@ struct Operand {
 };
 
 /**
- * @brief A test on a column and one argument that a module supplies, beyond the built-in comparisons.
+ * @brief A test on a column and an argument that an extension supplies, beyond the built-in comparisons: a SQL operator or
+ * function the database has (from an extension such as pg_trgm or PostGIS, or of the application's own). Made by
+ * `ColumnRef::apply` from a type that names it; not written by hand.
  *
- * What a database runs: a SQL function or operator a module names. Made by `ColumnRef::apply`; not written by hand.
+ * The worked example: pg_trgm's similarity of texts. `Similar` is a test written as an operator, `Distance` a ranking (see
+ * `Ranking`), and `SimilarAbove` a test that also takes a number, which has to be a function (here one of the application's
+ * own: pg_trgm keeps its threshold in a setting instead).
+ *
+ * @code
+ * namespace trgm {
+ * struct Similar {  // "column" % $1::text: similar enough, by the pg_trgm.similarity_threshold setting
+ *   static constexpr std::string_view OPERATOR = "%";
+ * };
+ * struct Distance {  // "column" <-> $1::text: 1 - similarity, so the most similar sort first
+ *   static constexpr std::string_view OPERATOR = "<->";
+ * };
+ * struct SimilarAbove {  // similar_above("column", $1::text, $2::double precision), after
+ *                        // CREATE FUNCTION similar_above(text, text, double precision) RETURNS boolean
+ *                        //     AS 'SELECT similarity($1, $2) > $3' LANGUAGE sql
+ *   static constexpr std::string_view FUNCTION = "similar_above";
+ *   static constexpr bool             TAKES_NUMBER = true;
+ * };
+ * }  // namespace trgm
+ *
+ * using Words = query::On<WordsSchema>;
+ * constexpr auto LIKE_THIS = query::select(Words::col<"word">().apply<trgm::Similar>(query::arg<0>()))
+ *                                .order_by(Words::col<"word">().ranked_by<trgm::Distance>(query::arg<0>()))
+ *                                .limit(5);
+ * constexpr auto CLOSE_TO = Words::col<"word">().apply<trgm::SimilarAbove>(query::arg<0>(), query::arg<1>());
+ *
+ * database.execute(query::Prepared<LIKE_THIS>::bind("word")).get();       // the 5 most like "word"
+ * database.execute(query::Prepared<CLOSE_TO>::bind("word", 0.5)).get();  // similarity above 0.5
+ * @endcode
  */
 struct Operation {
   /// The SQL function, written `name("column", $n)`, or, if `infix`, the SQL operator, written `"column" name $n`.
@@ -90,8 +120,9 @@ struct Operation {
 };
 
 /**
- * @brief A way of ranking rows by their column and an argument, smallest first: the SQL operator that does it
- * (`"column" <-> $n`, where an index answers "nearest first").
+ * @brief A way of ranking rows by their column and an argument, smallest first: the SQL operator that gives the number they
+ * are sorted by (`"column" <-> $n`), which an index can answer for "the closest N". Made by `ColumnRef::ranked_by`; see
+ * `Operation` for an example.
  */
 struct Ranking {
   std::string_view op;  ///< The SQL operator, written between the column and the argument.
@@ -348,7 +379,7 @@ template <schema::IsSchema schema_t>
 struct OrderTerm {
   std::size_t    column = 0;
   bool           descending = false;
-  const Ranking* ranking = nullptr;  ///< Set for "nearest first" and the like: sorts by `ranking`'s number for the column and the argument.
+  const Ranking* ranking = nullptr;  ///< Set for a ranking ("closest first"): sorts by `ranking`'s number for the column and the argument.
   std::size_t    slot = 0;           ///< `ranking` only: the argument.
 
   [[nodiscard]] constexpr bool operator==(const OrderTerm&) const = default;
@@ -472,8 +503,8 @@ class ColumnRef {
 
   /**
    * @brief Tests the column against the argument `slot_idx` (a `data_type`) with an operation type that names a SQL
-   * `OPERATOR` or `FUNCTION`, e.g. `col.apply<json::Contains>(arg<0>())`. Usually wrapped in a named function, like
-   * `json::contains` or `query::like`.
+   * `OPERATOR` or `FUNCTION`, e.g. `col.apply<json::Contains>(arg<0>())` or `col.apply<trgm::Similar>(arg<0>())` (see
+   * `Operation`). Usually wrapped in a named function, like `json::contains` or `query::like`.
    *
    * The query layer treats it as an opaque test. Being written as a plain function call or operator, it must not depend
    * on anything but the column and its arguments.
@@ -492,8 +523,8 @@ class ColumnRef {
   }
 
   /**
-   * @brief As above, for a function that also takes a number (it declares `TAKES_NUMBER = true`), such as "within this
-   * distance": `col.apply<WithinDistance>(arg<0>(), arg<1>())`, where argument 1 is a `double`.
+   * @brief As above, for a function that also takes a number (it declares `TAKES_NUMBER = true`), such as a threshold or a
+   * radius: `col.apply<trgm::SimilarAbove>(arg<0>(), arg<1>())`, where argument 1 is a `double` (see `Operation`).
    */
   template <typename operation_t, std::size_t slot_idx, std::size_t real_slot_idx>
     requires OperationWithReal<operation_t>
@@ -510,9 +541,9 @@ class ColumnRef {
   }
 
   /**
-   * @brief Orders rows by a module's ranking of this column against the argument `slot_idx` (a `data_type`), smallest
-   * first: `query.order_by(col.ranked_by<Nearest>(arg<0>()))`, where `Nearest::OPERATOR` is `<->`. With a `limit`, it
-   * is "the nearest N".
+   * @brief Orders rows by an extension's ranking of this column against the argument `slot_idx` (a `data_type`), smallest
+   * first: `query.order_by(col.ranked_by<trgm::Distance>(arg<0>()))`, where `trgm::Distance::OPERATOR` is `<->` (see
+   * `Operation`). With a `limit`, it is "the closest N".
    */
   template <typename ranking_t, std::size_t slot_idx>
     requires RankingOn<ranking_t>

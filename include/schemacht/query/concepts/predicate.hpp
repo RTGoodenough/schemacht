@@ -38,13 +38,13 @@ template <typename operation_t>
 concept OperationOn = (NamesFunction<operation_t> != NamesOperator<operation_t>) && ! TakesNumber<operation_t>;
 
 /**
- * @brief Like `OperationOn`, for a test that also takes a number, such as "within this distance" (which says so with
+ * @brief Like `OperationOn`, for a test that also takes a number, such as a threshold or a radius (which says so with
  * `TAKES_NUMBER`). It is a function: an operator has only two sides.
  */
 template <typename operation_t>
 concept OperationWithReal = NamesFunction<operation_t> && ! NamesOperator<operation_t> && TakesNumber<operation_t>;
 
-/** @brief Whether `ranking_t` ranks rows by their distance from an argument: it names the SQL operator (`OPERATOR`), smaller sorting first. */
+/** @brief Whether `ranking_t` ranks rows against an argument: it names the SQL operator (`OPERATOR`) whose number they sort by, smallest first. */
 template <typename ranking_t>
 concept RankingOn = requires {
   { ranking_t::OPERATOR } -> std::convertible_to<std::string_view>;

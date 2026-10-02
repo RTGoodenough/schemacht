@@ -28,8 +28,9 @@ constexpr auto ORDERED = q::select(People::col<"active">() == true)
                              .limit(10)
                              .project(People::col<"name">(), People::col<"id">());
 constexpr auto LIMIT_ARG = q::select<t::People>().limit(q::arg<0>());
-constexpr auto NEAREST = q::select<t::People>().order_by(People::col<"score">().ranked_by<t::Nearest>(q::arg<0>())).limit(3);
-constexpr auto WITHIN = People::col<"score">().apply<t::WithinDistance>(q::arg<0>(), q::arg<1>());
+constexpr auto SIMILAR = People::col<"name">().apply<t::trgm::Similar>(q::arg<0>());
+constexpr auto MOST_SIMILAR = q::select(SIMILAR).order_by(People::col<"name">().ranked_by<t::trgm::Distance>(q::arg<0>())).limit(3);
+constexpr auto SIMILAR_ABOVE = People::col<"name">().apply<t::trgm::SimilarAbove>(q::arg<0>(), q::arg<1>());
 constexpr auto CONTAINS = schemacht::json::contains(q::On<t::Counted>::col<"doc">(), q::arg<0>());
 constexpr auto COUNT_IN = q::On<t::Counted>::col<"count">().in(q::arg<0>());
 constexpr auto ALL_TILES = q::select<t::Tiles>();
@@ -55,10 +56,25 @@ TEST_CASE("comparisons and lists", "[sql]") {
 TEST_CASE("operations are written as their operator or function", "[sql]") {
   STATIC_REQUIRE(q::Prepared<NAME_LIKE>::SQL == R"(SELECT "id", "name", "nick", "score", "active" FROM "people" WHERE "name" ~~ $1::text)");
   STATIC_REQUIRE(q::Prepared<CONTAINS>::SQL == R"(SELECT "id", "count", "doc" FROM "counted" WHERE "doc" @> $1::jsonb)");
+}
+
+TEST_CASE("an extension's operations: the pg_trgm example", "[sql][extension]") {
+  // A test written as an operator, the argument cast to the column's type.
+  STATIC_REQUIRE(q::Prepared<SIMILAR>::SQL == R"(SELECT "id", "name", "nick", "score", "active" FROM "people" WHERE "name" % $1::text)");
+
+  // A test that takes a number too: a function, the number a double precision.
   STATIC_REQUIRE(
-      q::Prepared<WITHIN>::SQL ==
-      R"(SELECT "id", "name", "nick", "score", "active" FROM "people" WHERE within_distance("score", $1::double precision, $2::double precision))"
+      q::Prepared<SIMILAR_ABOVE>::SQL ==
+      R"(SELECT "id", "name", "nick", "score", "active" FROM "people" WHERE similar_above("name", $1::text, $2::double precision))"
   );
+  STATIC_REQUIRE(q::Prepared<SIMILAR_ABOVE>::SLOTS.info.at(1).is_real);
+
+  // A ranking, here with the same argument as the test.
+  STATIC_REQUIRE(
+      q::Prepared<MOST_SIMILAR>::SQL ==
+      R"(SELECT "id", "name", "nick", "score", "active" FROM "people" WHERE "name" % $1::text ORDER BY "name" <-> $1::text LIMIT 3)"
+  );
+  STATIC_REQUIRE(q::Prepared<MOST_SIMILAR>::ARG_COUNT == 1);
 }
 
 TEST_CASE("AND and OR are parenthesized only where needed", "[sql]") {
@@ -84,9 +100,6 @@ TEST_CASE("ordering, limits and projection", "[sql]") {
   STATIC_REQUIRE(Ordered::ARG_COUNT == 0);
 
   STATIC_REQUIRE(q::Prepared<LIMIT_ARG>::SQL == R"(SELECT "id", "name", "nick", "score", "active" FROM "people" LIMIT $1)");
-  STATIC_REQUIRE(
-      q::Prepared<NEAREST>::SQL == R"(SELECT "id", "name", "nick", "score", "active" FROM "people" ORDER BY "score" <-> $1::double precision LIMIT 3)"
-  );
 }
 
 TEST_CASE("a type's SelectExpression is used for the columns it returns", "[sql]") {
@@ -97,7 +110,6 @@ TEST_CASE("argument slots take their type from where they are used", "[sql]") {
   STATIC_REQUIRE(q::Prepared<OR_INSIDE_AND>::ARG_COUNT == 2);
   STATIC_REQUIRE(q::Prepared<NAME_IN>::SLOTS.info.at(0).is_list);
   STATIC_REQUIRE(q::Prepared<LIMIT_ARG>::SLOTS.info.at(0).is_limit);
-  STATIC_REQUIRE(q::Prepared<WITHIN>::SLOTS.info.at(1).is_real);
 
   STATIC_REQUIRE(std::same_as<q::Prepared<BY_ID>::result_type, t::People::row_type>);
 }

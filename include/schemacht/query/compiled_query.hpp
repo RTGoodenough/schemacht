@@ -47,7 +47,7 @@ struct ParamOf;
 
 template <schema::IsSchema schema_t, std::size_t... idx>
 struct ParamOf<schema_t, std::index_sequence<idx...>> {
-  // A `LIMIT` argument is a row count, and the number an operation takes (a distance) is a real, whatever the schema holds.
+  // A `LIMIT` argument is a row count, and the number an operation takes (a threshold, a radius) is a real, whatever the schema holds.
   using with_limit =
       AddUnique<typename AddAll<std::variant<std::monostate>, typename schema_t::template field_at<idx>::value_type...>::type, std::int64_t>::type;
   using type = AddUnique<with_limit, double>::type;

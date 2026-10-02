@@ -1,6 +1,7 @@
 // Against a real PostgreSQL: run with SCHEMACHT_TEST_DB set to a libpq connection string, e.g.
 //   SCHEMACHT_TEST_DB="host=localhost dbname=test user=test" ctest --test-dir build -R integration
-// Without it, every test here is skipped. The tests create (and drop) tables whose names start with `schemacht_it_`.
+// Without it, every test here is skipped. The tests create (and drop) tables whose names start with `schemacht_it_`; the
+// extension test also installs pg_trgm (and leaves it) and creates and drops the function `similar_above`.
 
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/matchers/catch_matchers.hpp>
@@ -33,6 +34,7 @@
 #include "schemacht/schemacht.hpp"
 #include "schemacht/util/compile_time.hpp"
 #include "support/integration.hpp"
+#include "support/schemas.hpp"
 
 namespace sch = schemacht::schema;
 namespace q = schemacht::query;
@@ -637,4 +639,61 @@ TEST_CASE("integration: updates and deletes give back the rows they change, in b
   }
 
   database.drop_table<Relabelled>().get();
+}
+
+namespace {
+
+using Word = sch::Field<std::string, "word">;
+using Words = sch::Schema<"schemacht_it_words", Id, Word>;
+using WordColumns = q::On<Words>;
+namespace trgm = schemacht::test::trgm;
+
+// The words similar to an argument, the most similar first.
+constexpr auto LIKE_THIS = q::select(WordColumns::col<"word">().apply<trgm::Similar>(q::arg<0>()))
+                               .order_by(WordColumns::col<"word">().ranked_by<trgm::Distance>(q::arg<0>()))
+                               .project(WordColumns::col<"word">());
+
+// The words more similar to an argument than a number.
+constexpr auto CLOSE_TO = q::select(WordColumns::col<"word">().apply<trgm::SimilarAbove>(q::arg<0>(), q::arg<1>()))
+                              .order_by(WordColumns::col<"id">().asc())
+                              .project(WordColumns::col<"word">());
+
+}  // namespace
+
+TEST_CASE("integration: an extension's operations: pg_trgm's", "[integration][extension]") {
+  pg::Database database(test_db());
+  try {
+    exec(database, "CREATE EXTENSION IF NOT EXISTS pg_trgm");
+  } catch ( const pg::QueryError& error ) {
+    SKIP("pg_trgm is not available: " << error.what());
+  }
+
+  exec(
+      database,
+      "CREATE OR REPLACE FUNCTION similar_above(text, text, double precision) RETURNS boolean AS 'SELECT similarity($1, $2) > $3' LANGUAGE sql"
+  );
+  database.drop_table<Words>().get();
+  database.create_table<Words>().get();
+  database
+      .insert<Words>(
+          {Words::make_row(1, "word"), Words::make_row(2, "words"), Words::make_row(3, "sword"), Words::make_row(4, "world"),
+           Words::make_row(5, "banana")}
+      )
+      .get();
+
+  // Similar by the pg_trgm.similarity_threshold setting: "word" itself first and "words" next, never "banana".
+  const auto similar = database.execute(q::Prepared<LIKE_THIS>::bind("word")).get();
+  REQUIRE(similar.size() >= 2);
+  CHECK(sch::get<"word">(similar[0]) == "word");
+  CHECK(sch::get<"word">(similar[1]) == "words");
+  CHECK(std::ranges::none_of(similar, [](const auto& row) { return sch::get<"word">(row) == "banana"; }));
+
+  // More similar than 0.5: "word" (1) and "words" (4 trigrams of 7 shared); "sword" and "world" share 3 of 8.
+  const auto close = database.execute(q::Prepared<CLOSE_TO>::bind("word", 0.5)).get();
+  REQUIRE(close.size() == 2);
+  CHECK(sch::get<"word">(close[0]) == "word");
+  CHECK(sch::get<"word">(close[1]) == "words");
+
+  database.drop_table<Words>().get();
+  exec(database, "DROP FUNCTION IF EXISTS similar_above(text, text, double precision)");
 }

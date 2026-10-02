@@ -29,7 +29,7 @@ struct SlotInfo {
   std::size_t column = 0;
   bool        is_list = false;
   bool        is_limit = false;
-  bool        is_real = false;  ///< The number an operation takes (a distance), a `double`.
+  bool        is_real = false;  ///< The number an operation takes (a threshold, a radius), a `double`.
   bool        seen = false;
 };
 
@@ -282,7 +282,7 @@ class Prepared {
    * - compared with a column: the column's `value_type` (its `data_type` without any `std::optional`; an argument is never NULL)
    * - `in(...)`: a `std::vector` of the column's `value_type`
    * - `limit(...)`: a `std::int64_t`
-   * - an operation's number (a distance): a `double`
+   * - an operation's number (a threshold, a radius): a `double`
    *
    * So `"john%"` binds to a `std::string` column and `5` to a `std::int64_t` one, but `-1` does not bind to an unsigned
    * column, `1.5` to a `float` one, or `1` to a `bool` one: those don't compile.
@@ -315,7 +315,7 @@ class Prepared {
     } else if constexpr ( SLOTS.info.at(slot_idx).is_real ) {
       static_assert(
           ! std::same_as<std::remove_cvref_t<arg_t>, bool> && util::NonNarrowingTo<arg_t, double>,
-          "this argument is a number (such as a distance) that converts to double without narrowing: write 5.0, not 5"
+          "this argument is an operation's number (such as a threshold) that converts to double without narrowing: write 5.0, not 5"
       );
 
       return param_type{std::in_place_type<double>, double{std::forward<arg_t>(arg)}};
