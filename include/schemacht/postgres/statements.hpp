@@ -13,6 +13,7 @@
 #include <vector>
 
 #include "schemacht/postgres/field_codec.hpp"
+#include "schemacht/postgres/row_reader.hpp"
 #include "schemacht/query/compiled_query.hpp"
 #include "schemacht/query/raw_statement.hpp"
 #include "schemacht/query/sql.hpp"
@@ -22,6 +23,17 @@
 /**
  * Turning bound queries and rows into what is sent to Postgres: statement text plus each argument's text. Free of libpq.
  */
+namespace schemacht::postgres {
+
+/**
+ * @brief A schema whose every column's type has a text form (`HasTextForm`): its rows can be inserted and read, and any of its
+ * columns' values given as a query's argument.
+ */
+template <typename schema_t>
+concept TextSchema = schema::IsSchema<schema_t> && TextRow<typename schema_t::row_type>;
+
+}  // namespace schemacht::postgres
+
 namespace schemacht::postgres::detail {
 
 /** @brief Appends a bound query argument's text, in the form Postgres reads for that type. */
@@ -122,11 +134,13 @@ template <schema::IsSchema schema_t, std::size_t idx>
 [[nodiscard]] std::string column_array(std::span<const typename schema_t::row_type> rows) {
   using field_t = schema_t::template field_at<idx>;
   std::string literal = "{";
-  for ( std::size_t row = 0; row < rows.size(); ++row ) {
-    if ( row != 0 ) {
+  bool        first = true;
+  for ( const typename schema_t::row_type& row : rows ) {
+    if ( ! first ) {
       literal += ',';
     }
-    if ( const auto* value = schema::value_if_present(std::get<idx>(rows[row])); value != nullptr ) {
+    first = false;
+    if ( const auto* value = schema::value_if_present(std::get<idx>(row)); value != nullptr ) {
       postgres::detail::append_array_element(literal, format_field<typename field_t::value_type>(*value));
     } else {
       literal += "NULL";
@@ -199,7 +213,7 @@ template <schema::IsSchema schema_t>
  *
  * @pre `rows` isn't empty.
  */
-template <schema::IsSchema schema_t>
+template <TextSchema schema_t>
 [[nodiscard]] std::vector<InsertStatement> build_insert(std::span<const typename schema_t::row_type> rows) {
   static_assert(schema_t::INSERTABLE_FIELD_COUNT > 0, "insert: the schema has no column that is not GENERATED");
   if constexpr ( insert_detail::USES_UNNEST<schema_t> ) {
@@ -234,12 +248,14 @@ inline constexpr bool EVERY_ARGUMENT_HAS_TEXT_FORM<std::tuple<argument_ts...>> =
 }  // namespace detail
 
 /**
- * @brief What a `Database` runs: a query (`Prepared::bind`) of any schema, or a bound raw statement (`RawStatement::bind`), which is
- * about no table, whose every argument has a text form (`HasTextForm`) to be sent as. Either has a `result_type`.
+ * @brief What a `Database` runs, with a `result_type` (a `TextRow`): a query (`Prepared::bind`) of a `TextSchema`, or a bound raw
+ * statement (`RawStatement::bind`), which is about no table, whose every argument has a text form (`HasTextForm`) to be sent as.
  */
 template <typename statement_t>
-concept RunnableStatement = (query::IsBoundRawStatement<statement_t> && detail::EVERY_ARGUMENT_HAS_TEXT_FORM<typename statement_t::arguments_type>) ||
-                            std::derived_from<statement_t, query::CompiledQuery<typename statement_t::schema_type>>;
+concept RunnableStatement =
+    (query::IsBoundRawStatement<statement_t> && detail::EVERY_ARGUMENT_HAS_TEXT_FORM<typename statement_t::arguments_type> &&
+     TextRow<typename statement_t::result_type>) ||
+    (std::derived_from<statement_t, query::CompiledQuery<typename statement_t::schema_type>> && TextSchema<typename statement_t::schema_type>);
 
 /** @brief A result whose columns can be counted and named (`QueryResult` is one). */
 template <typename result_t>

@@ -186,7 +186,7 @@ class Database {
   }
 
   /** @return A future for every row of `schema_t` whose `key_col` value is one of `keys`, e.g. `db.select_by_key_values<PlacesSchema, "id">(ids)`. */
-  template <schema::IsSchema schema_t, util::CTString key_col>
+  template <TextSchema schema_t, util::CTString key_col>
   [[nodiscard]] std::future<std::vector<typename schema_t::row_type>> select_by_key_values(std::span<const key_type<schema_t, key_col>> keys) {
     if ( keys.empty() ) {
       return detail::ready_future(std::vector<typename schema_t::row_type>{});
@@ -199,7 +199,7 @@ class Database {
    * `Field::GENERATED`) are never sent. The rows go in one statement, atomically, unless the schema has an array-typed
    * column (see `detail::build_insert`).
    */
-  template <schema::IsSchema schema_t>
+  template <TextSchema schema_t>
   [[nodiscard]] std::future<void> insert(std::vector<typename schema_t::row_type> rows) {
     const auto        promise = std::make_shared<std::promise<void>>();
     std::future<void> future = promise->get_future();
@@ -216,7 +216,7 @@ class Database {
   }
 
   /** @brief As above, copying `rows` (which the caller may then reuse or destroy at once). */
-  template <schema::IsSchema schema_t>
+  template <TextSchema schema_t>
   [[nodiscard]] std::future<void> insert(std::span<const typename schema_t::row_type> rows) {
     return insert<schema_t>(std::vector<typename schema_t::row_type>(rows.begin(), rows.end()));
   }

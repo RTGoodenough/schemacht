@@ -3,6 +3,7 @@
 #include <cstdint>
 #include <string>
 #include <string_view>
+#include <vector>
 
 #include "schemacht/postgres/database.hpp"
 #include "schemacht/query.hpp"
@@ -109,6 +110,18 @@ using Bad = q::RawStatement<"SELECT $1 AS n", int, sch::Field<int, "n">>;
 struct Opaque {};
 using Bad = q::RawStatement<"SELECT $1::text AS n", q::RawArguments<Opaque>, sch::Field<std::string, "n">>;
 [[maybe_unused]] void run(pg::Database& database) { (void)database.execute(Bad::bind(Opaque{})); }
+#endif
+
+#if defined(CASE_INSERT_FIELD_WITHOUT_TEXT_FORM)
+struct Opaque {};
+using Bad = sch::Schema<"bad", Id, sch::Field<Opaque, "blob">>;
+[[maybe_unused]] void run(pg::Database& database) { (void)database.insert<Bad>(std::vector<Bad::row_type>{}); }
+#endif
+
+#if defined(CASE_RAW_RESULT_WITHOUT_TEXT_FORM)
+struct Opaque {};
+using Bad = q::RawStatement<"SELECT 1 AS blob", q::RawArguments<>, sch::Field<Opaque, "blob">>;
+[[maybe_unused]] void run(pg::Database& database) { (void)database.execute(Bad::bind()); }
 #endif
 
 int main() {}

@@ -1,7 +1,8 @@
 #pragma once
 
 /**
- * What adding a column type of your own takes (json/json.hpp is a complete example):
+ * What adding a column type of your own takes. examples/custom_types.cpp walks through three kinds (a strong type over a
+ * built-in one, an enum, and a type with a text form only), and json/json.hpp is one the library ships:
  *
  * - Specialize `postgres::FieldCodec<T>` with `parse` and `format`: the type's text form.
  * - Add `parse_binary` to it (and optionally `binary_accepts`) so results can be read in PostgreSQL's binary form, the

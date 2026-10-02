@@ -12,6 +12,7 @@
 #include "support/schemas.hpp"
 
 namespace q = schemacht::query;
+namespace sch = schemacht::schema;
 namespace t = schemacht::test;
 namespace pg = schemacht::postgres;
 
@@ -60,12 +61,22 @@ TEST_CASE("a raw statement sends a list as one array, and bytea as bytes", "[pre
   CHECK(pg::detail::wire(bound).params == std::vector<std::string>{R"({"a","b"})", R"(\x01ff)"});
 }
 
-TEST_CASE("a raw statement runs only if each of its arguments has a text form", "[prepared][raw]") {
+TEST_CASE("a raw statement runs only if each of its arguments and columns has a text form", "[prepared][raw]") {
   struct Opaque {};
   using Fine = q::RawStatement<"SELECT $1::bigint AS id", q::RawArguments<std::int64_t>, t::Id>;
   using Unsendable = q::RawStatement<"SELECT $1::text AS name", q::RawArguments<Opaque>, t::Name>;
+  using Unreadable = q::RawStatement<"SELECT 1 AS opaque", q::RawArguments<>, sch::Field<Opaque, "opaque">>;
   STATIC_REQUIRE(pg::RunnableStatement<q::BoundRawStatement<Fine>>);
   STATIC_REQUIRE_FALSE(pg::RunnableStatement<q::BoundRawStatement<Unsendable>>);
+  STATIC_REQUIRE_FALSE(pg::RunnableStatement<q::BoundRawStatement<Unreadable>>);
+}
+
+TEST_CASE("a schema is used only if each of its columns has a text form", "[prepared][schema]") {
+  struct Opaque {};
+  using Opaques = sch::Schema<"opaques", t::Id, sch::Field<Opaque, "opaque">>;
+  STATIC_REQUIRE(pg::TextSchema<t::People>);
+  STATIC_REQUIRE_FALSE(pg::TextSchema<Opaques>);
+  STATIC_REQUIRE_FALSE(pg::TextSchema<int>);
 }
 
 TEST_CASE("a field reads as its value", "[schema]") {

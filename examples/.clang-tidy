@@ -1,0 +1,8 @@
+# The library's checks, minus those that fight example code: literal sample data, short natural names (`id`), and an
+# application's types defined in the one file, which a real program would declare in a header.
+InheritParentConfig: true
+Checks: >
+  -readability-magic-numbers,
+  -cppcoreguidelines-avoid-magic-numbers,
+  -readability-identifier-length,
+  -misc-use-internal-linkage

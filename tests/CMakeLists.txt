@@ -63,6 +63,8 @@ schemacht_compile_fail(RAW_NARROWING_BIND "raw statement declares, or would be n
 schemacht_compile_fail(RAW_REFERENCE_ARGUMENT "RawArgument")
 schemacht_compile_fail(RAW_NOT_ARGUMENTS "IsRawArguments")
 schemacht_compile_fail(RAW_ARGUMENT_WITHOUT_TEXT_FORM "EVERY_ARGUMENT_HAS_TEXT_FORM")
+schemacht_compile_fail(INSERT_FIELD_WITHOUT_TEXT_FORM "TextSchema")
+schemacht_compile_fail(RAW_RESULT_WITHOUT_TEXT_FORM "TextRow")
 
 # With no case defined, cases.cpp must compile: the failures above are the cases', not the file's.
 add_test(NAME compile_fail.baseline COMMAND ${CMAKE_CXX_COMPILER} -std=c++23 -fsyntax-only -I${PROJECT_SOURCE_DIR}/include

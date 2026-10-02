@@ -70,6 +70,9 @@ struct Keep {
   }
 };
 
+/** @brief A column type with no codec at all. */
+struct Opaque {};
+
 /** @brief A column type with a text form only. */
 struct TextOnly {
   std::string text;
@@ -90,6 +93,9 @@ TEST_CASE("the reader's concepts", "[row_reader]") {
   STATIC_REQUIRE(sch::FieldTuple<Row>);
   STATIC_REQUIRE_FALSE(sch::FieldTuple<std::tuple<int, t::Id>>);
   STATIC_REQUIRE_FALSE(sch::FieldTuple<t::Id>);
+  STATIC_REQUIRE(pg::TextRow<Row>);
+  STATIC_REQUIRE(pg::TextRow<std::tuple<sch::Field<TextOnly, "only">>>);
+  STATIC_REQUIRE_FALSE(pg::TextRow<std::tuple<t::Id, sch::Field<Opaque, "opaque">>>);
   STATIC_REQUIRE(pg::BinaryReadableRow<Row>);
   STATIC_REQUIRE_FALSE(pg::BinaryReadableRow<std::tuple<sch::Field<TextOnly, "only">>>);
   STATIC_REQUIRE(pg::RowCallback<Keep, Row>);

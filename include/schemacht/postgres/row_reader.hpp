@@ -43,11 +43,24 @@ concept ResultChunk = requires(const chunk_t& chunk, std::size_t index) {
 namespace detail {
 
 template <schema::FieldTuple result_t, std::size_t... pos>
+consteval bool every_field_has_text_form(std::index_sequence<pos...> /*positions*/) {
+  return (HasTextForm<typename std::tuple_element_t<pos, result_t>::value_type> && ...);
+}
+
+template <schema::FieldTuple result_t, std::size_t... pos>
 consteval bool every_field_has_binary_form(std::index_sequence<pos...> /*positions*/) {
   return (HasBinaryForm<typename std::tuple_element_t<pos, result_t>::value_type> && ...);
 }
 
 }  // namespace detail
+
+/**
+ * @brief A row whose every column's type has a text form (`HasTextForm`): it can be read from a text result, and written as a
+ * statement's values. Every row a `Database` reads or writes is one.
+ */
+template <typename result_t>
+concept TextRow =
+    schema::FieldTuple<result_t> && detail::every_field_has_text_form<result_t>(std::make_index_sequence<std::tuple_size_v<result_t>>{});
 
 /**
  * @brief A row whose every column's type can be read from PostgreSQL's binary form (`HasBinaryForm`). A row that is not is
@@ -93,7 +106,7 @@ template <schema::IsField field_t, ResultFormat format>
  * @throws std::runtime_error naming the column, for a NULL in a field that is not a `std::optional`.
  */
 template <schema::FieldTuple result_t, ResultFormat format, ResultChunk chunk_t>
-  requires(format == ResultFormat::Text || BinaryReadableRow<result_t>)
+  requires((format == ResultFormat::Text && TextRow<result_t>) || (format == ResultFormat::Binary && BinaryReadableRow<result_t>))
 [[nodiscard]] result_t read_row(const chunk_t& chunk, std::size_t row) {
   return [&]<std::size_t... pos>(std::index_sequence<pos...> /*positions*/) {
     return result_t{std::tuple_element_t<pos, result_t>{detail::read_field<std::tuple_element_t<pos, result_t>, format>(chunk.field(row, pos))}...};
@@ -124,7 +137,7 @@ void check_column_types(const chunk_t& chunk) {
  * @return Whether `on_row` wants more rows (false: it returned `false`, and the rows after that were not read).
  * @throws as `read_row`, `check_column_types` and `on_row`; std::logic_error for a binary chunk of a row that is not `BinaryReadableRow`.
  */
-template <schema::FieldTuple result_t, ResultChunk chunk_t, RowCallback<result_t> handler_t>
+template <TextRow result_t, ResultChunk chunk_t, RowCallback<result_t> handler_t>
 bool read_rows(const chunk_t& chunk, handler_t& on_row) {
   const auto each_row = [&]<ResultFormat format> {
     for ( std::size_t row = 0; row < chunk.row_count(); ++row ) {
