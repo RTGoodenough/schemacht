@@ -3,6 +3,7 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include <cstddef>
+#include <string>
 
 #include "schemacht/query/raw_statement.hpp"
 
@@ -38,4 +39,14 @@ TEST_CASE("what the scanner refuses", "[raw]") {
   STATIC_REQUIRE(q::check_placeholders("SELECT $$text$$", 0) == problem(q::PlaceholderProblem::DollarQuote));
   STATIC_REQUIRE(q::check_placeholders("SELECT 'open", 0) == problem(q::PlaceholderProblem::Unterminated));
   STATIC_REQUIRE(q::check_placeholders("SELECT /* open", 0) == problem(q::PlaceholderProblem::Unterminated));
+}
+
+TEST_CASE("a raw statement's arguments are value types", "[raw]") {
+  STATIC_REQUIRE(q::RawArgument<int>);
+  STATIC_REQUIRE(q::RawArgument<std::string>);
+  STATIC_REQUIRE_FALSE(q::RawArgument<const int>);
+  STATIC_REQUIRE_FALSE(q::RawArgument<int&>);
+  STATIC_REQUIRE_FALSE(q::RawArgument<void>);
+  STATIC_REQUIRE(q::IsRawArguments<q::RawArguments<int, std::string>>);
+  STATIC_REQUIRE_FALSE(q::IsRawArguments<int>);
 }

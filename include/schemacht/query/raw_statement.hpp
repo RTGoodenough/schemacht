@@ -1,6 +1,7 @@
 #pragma once
 
 #include <array>
+#include <concepts>
 #include <cstddef>
 #include <cstdint>
 #include <span>
@@ -15,11 +16,32 @@
 
 namespace schemacht::query {
 
+/**
+ * @brief A type a raw statement's argument can have: a value type (not a reference, not `const`), which the bound statement
+ * holds. Whether a backend can send it (`postgres::HasTextForm`) is checked where the statement is run.
+ */
+template <typename data_t>
+concept RawArgument = std::same_as<data_t, std::remove_cvref_t<data_t>> && std::move_constructible<data_t>;
+
 /** @brief The C++ types of a `RawStatement`'s arguments, in the order of its `$1`, `$2`, ... */
-template <typename... argument_ts>
+template <RawArgument... argument_ts>
 struct RawArguments {
   using types = std::tuple<argument_ts...>;
 };
+
+namespace detail {
+
+template <typename type_t>
+struct is_raw_arguments : std::false_type {};
+
+template <typename... argument_ts>
+struct is_raw_arguments<RawArguments<argument_ts...>> : std::true_type {};
+
+}  // namespace detail
+
+/** @brief Detects whether `type_t` is a `RawArguments<...>`: the argument list of a `RawStatement`. */
+template <typename type_t>
+concept IsRawArguments = detail::is_raw_arguments<type_t>::value;
 
 /** @brief What is wrong with a raw statement's placeholders, if anything; see `check_placeholders`. */
 enum class PlaceholderProblem : std::uint8_t {
@@ -157,7 +179,7 @@ class SqlScanner {
  */
 [[nodiscard]] constexpr PlaceholderCheck check_placeholders(std::string_view sql, std::size_t argument_count) {
   std::array<bool, MAX_RAW_ARGUMENTS + 1> used{};
-  detail::SqlScanner                     scanner(sql);
+  detail::SqlScanner                      scanner(sql);
   while ( ! scanner.done() ) {
     const detail::Skipped skipped = scanner.skip_non_code();
     if ( skipped == detail::Skipped::Unterminated ) {
@@ -195,7 +217,7 @@ class SqlScanner {
   return {};
 }
 
-template <util::CTString sql_text, typename arguments_t, schema::IsField... field_ts>
+template <util::CTString sql_text, IsRawArguments arguments_t, schema::IsField... field_ts>
 class RawStatement;
 
 /**
@@ -267,7 +289,7 @@ class BoundRawStatement {
  * @tparam arguments_t  `RawArguments<...>`: the type of each argument.
  * @tparam field_ts     The columns of the result: at least one.
  */
-template <util::CTString sql_text, typename arguments_t, schema::IsField... field_ts>
+template <util::CTString sql_text, IsRawArguments arguments_t, schema::IsField... field_ts>
 class RawStatement {
  public:
   static_assert(sizeof...(field_ts) > 0, "a raw statement returns rows: name at least one column");
@@ -317,7 +339,7 @@ namespace detail {
 template <typename type_t>
 struct is_raw_statement : std::false_type {};
 
-template <util::CTString sql_text, typename arguments_t, schema::IsField... field_ts>
+template <util::CTString sql_text, IsRawArguments arguments_t, schema::IsField... field_ts>
 struct is_raw_statement<RawStatement<sql_text, arguments_t, field_ts...>> : std::true_type {};
 
 template <typename type_t>

@@ -1,5 +1,6 @@
 #include <catch2/catch_test_macros.hpp>
 
+#include <cstddef>
 #include <cstdint>
 #include <stdexcept>
 #include <string>
@@ -38,7 +39,7 @@ TEST_CASE("a limit argument is a non-negative std::int64_t", "[prepared]") {
 }
 
 TEST_CASE("bound arguments are sent as text, a list as one array", "[prepared][statements]") {
-  const auto              bound = q::Prepared<IDS_LIMITED>::bind(std::vector<std::int64_t>{1, 2}, 5);
+  const auto                      bound = q::Prepared<IDS_LIMITED>::bind(std::vector<std::int64_t>{1, 2}, 5);
   const pg::detail::WireStatement wired = pg::detail::wire(bound);
   CHECK(wired.params == std::vector<std::string>{R"({"1","2"})", "5"});
   CHECK(wired.column_names == std::vector<std::string_view>{"id", "name", "nick", "score", "active"});
@@ -50,6 +51,21 @@ TEST_CASE("a raw statement binds its declared types", "[prepared][raw]") {
   const pg::detail::WireStatement wired = pg::detail::wire(bound);
   CHECK(wired.params == std::vector<std::string>{"7", "1.5"});
   CHECK(wired.column_names == std::vector<std::string_view>{"name"});
+}
+
+TEST_CASE("a raw statement sends a list as one array, and bytea as bytes", "[prepared][raw]") {
+  using ByNicks = q::RawStatement<"SELECT name AS name FROM people WHERE nick = ANY($1) AND data = $2",
+                                  q::RawArguments<std::vector<std::string>, std::vector<std::byte>>, t::Name>;
+  const auto bound = ByNicks::bind(std::vector<std::string>{"a", "b"}, std::vector<std::byte>{std::byte{0x01}, std::byte{0xff}});
+  CHECK(pg::detail::wire(bound).params == std::vector<std::string>{R"({"a","b"})", R"(\x01ff)"});
+}
+
+TEST_CASE("a raw statement runs only if each of its arguments has a text form", "[prepared][raw]") {
+  struct Opaque {};
+  using Fine = q::RawStatement<"SELECT $1::bigint AS id", q::RawArguments<std::int64_t>, t::Id>;
+  using Unsendable = q::RawStatement<"SELECT $1::text AS name", q::RawArguments<Opaque>, t::Name>;
+  STATIC_REQUIRE(pg::RunnableStatement<q::BoundRawStatement<Fine>>);
+  STATIC_REQUIRE_FALSE(pg::RunnableStatement<q::BoundRawStatement<Unsendable>>);
 }
 
 TEST_CASE("a field reads as its value", "[schema]") {

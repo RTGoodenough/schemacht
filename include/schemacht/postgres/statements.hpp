@@ -37,16 +37,10 @@ class TextBinder {
 
   void operator()(std::monostate /*unset*/) const { throw std::logic_error("query argument was never set"); }
 
-  template <typename data_t>
+  /** @brief A list argument (a `std::vector`, other than `bytea`'s) becomes one array parameter (`= ANY($n)`), not one per element. */
+  template <HasTextForm data_t>
   void operator()(const data_t& value) const {
     _texts->push_back(format_field<data_t>(value));
-  }
-
-  /** @brief A list argument becomes one array parameter (`= ANY($n)`), not one parameter per element. */
-  template <typename data_t>
-    requires(! std::same_as<data_t, std::byte>)  // a `std::vector<std::byte>` is a bytea value, not a list
-  void operator()(const std::vector<data_t>& values) const {
-    _texts->push_back(format_array<data_t>(values));
   }
 
  private:
@@ -229,10 +223,23 @@ template <schema::IsSchema schema_t>
 
 namespace schemacht::postgres {
 
-/** @brief What a `Database` runs: a query (`Prepared::bind`) of any schema, or a bound raw statement (`RawStatement::bind`), which is about no table. Either has a `result_type`. */
+namespace detail {
+
+template <typename arguments_t>
+inline constexpr bool EVERY_ARGUMENT_HAS_TEXT_FORM = false;
+
+template <typename... argument_ts>
+inline constexpr bool EVERY_ARGUMENT_HAS_TEXT_FORM<std::tuple<argument_ts...>> = (HasTextForm<argument_ts> && ...);
+
+}  // namespace detail
+
+/**
+ * @brief What a `Database` runs: a query (`Prepared::bind`) of any schema, or a bound raw statement (`RawStatement::bind`), which is
+ * about no table, whose every argument has a text form (`HasTextForm`) to be sent as. Either has a `result_type`.
+ */
 template <typename statement_t>
-concept RunnableStatement =
-    query::IsBoundRawStatement<statement_t> || std::derived_from<statement_t, query::CompiledQuery<typename statement_t::schema_type>>;
+concept RunnableStatement = (query::IsBoundRawStatement<statement_t> && detail::EVERY_ARGUMENT_HAS_TEXT_FORM<typename statement_t::arguments_type>) ||
+                            std::derived_from<statement_t, query::CompiledQuery<typename statement_t::schema_type>>;
 
 /** @brief A result whose columns can be counted and named (`QueryResult` is one). */
 template <typename result_t>

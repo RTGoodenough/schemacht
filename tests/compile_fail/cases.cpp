@@ -4,10 +4,12 @@
 #include <string>
 #include <string_view>
 
+#include "schemacht/postgres/database.hpp"
 #include "schemacht/query.hpp"
 
 namespace sch = schemacht::schema;
 namespace q = schemacht::query;
+namespace pg = schemacht::postgres;
 
 using Id = sch::Field<std::int64_t, "id", sch::KeyRole::Primary>;
 using Name = sch::Field<std::string, "name">;
@@ -45,17 +47,17 @@ using Bad = Things::field_by_name<"nope">;
 #endif
 
 #if defined(CASE_NARROWING_BIND)
-constexpr auto BY_RATIO = q::On<Things>::col<"ratio">() == q::arg<0>();
+constexpr auto        BY_RATIO = q::On<Things>::col<"ratio">() == q::arg<0>();
 [[maybe_unused]] auto bound = q::Prepared<BY_RATIO>::bind(1.5);  // a double, for a float column
 #endif
 
 #if defined(CASE_NEGATIVE_FOR_UNSIGNED_BIND)
-constexpr auto BY_COUNT = q::On<Things>::col<"count">() == q::arg<0>();
+constexpr auto        BY_COUNT = q::On<Things>::col<"count">() == q::arg<0>();
 [[maybe_unused]] auto bound = q::Prepared<BY_COUNT>::bind(-1);
 #endif
 
 #if defined(CASE_WRONG_ARGUMENT_COUNT)
-constexpr auto BY_ID = q::On<Things>::col<"id">() == q::arg<0>();
+constexpr auto        BY_ID = q::On<Things>::col<"id">() == q::arg<0>();
 [[maybe_unused]] auto bound = q::Prepared<BY_ID>::bind(1, 2);
 #endif
 
@@ -91,6 +93,22 @@ using Bad = q::RawStatement<"SELECT $$text$$ AS n", q::RawArguments<>, sch::Fiel
 #if defined(CASE_RAW_NARROWING_BIND)
 using Bad = q::RawStatement<"SELECT $1::real AS n", q::RawArguments<float>, sch::Field<float, "n">>;
 [[maybe_unused]] auto bound = Bad::bind(1.5);
+#endif
+
+#if defined(CASE_RAW_REFERENCE_ARGUMENT)
+using Bad = q::RawStatement<"SELECT $1 AS n", q::RawArguments<const int&>, sch::Field<int, "n">>;
+[[maybe_unused]] Bad::row_type row;
+#endif
+
+#if defined(CASE_RAW_NOT_ARGUMENTS)
+using Bad = q::RawStatement<"SELECT $1 AS n", int, sch::Field<int, "n">>;
+[[maybe_unused]] Bad::row_type row;
+#endif
+
+#if defined(CASE_RAW_ARGUMENT_WITHOUT_TEXT_FORM)
+struct Opaque {};
+using Bad = q::RawStatement<"SELECT $1::text AS n", q::RawArguments<Opaque>, sch::Field<std::string, "n">>;
+[[maybe_unused]] void run(pg::Database& database) { (void)database.execute(Bad::bind(Opaque{})); }
 #endif
 
 int main() {}

@@ -60,6 +60,9 @@ schemacht_compile_fail(RAW_UNUSED_ARGUMENT "has no \\$n placeholder")
 schemacht_compile_fail(RAW_PLACEHOLDER_BEYOND "beyond the arguments it declares")
 schemacht_compile_fail(RAW_DOLLAR_QUOTE "dollar-quoted text is not supported")
 schemacht_compile_fail(RAW_NARROWING_BIND "raw statement declares, or would be narrowed")
+schemacht_compile_fail(RAW_REFERENCE_ARGUMENT "RawArgument")
+schemacht_compile_fail(RAW_NOT_ARGUMENTS "IsRawArguments")
+schemacht_compile_fail(RAW_ARGUMENT_WITHOUT_TEXT_FORM "EVERY_ARGUMENT_HAS_TEXT_FORM")
 
 # With no case defined, cases.cpp must compile: the failures above are the cases', not the file's.
 add_test(NAME compile_fail.baseline COMMAND ${CMAKE_CXX_COMPILER} -std=c++23 -fsyntax-only -I${PROJECT_SOURCE_DIR}/include

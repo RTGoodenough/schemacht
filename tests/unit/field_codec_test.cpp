@@ -26,6 +26,18 @@ std::vector<std::byte> bytes(std::initializer_list<unsigned> values) {
 
 }  // namespace
 
+TEST_CASE("which types have a text form", "[codec]") {
+  struct Opaque {};
+  STATIC_REQUIRE(pg::HasTextForm<bool>);
+  STATIC_REQUIRE(pg::HasTextForm<std::int16_t>);
+  STATIC_REQUIRE(pg::HasTextForm<double>);
+  STATIC_REQUIRE(pg::HasTextForm<std::string>);
+  STATIC_REQUIRE(pg::HasTextForm<std::vector<std::byte>>);    // bytea
+  STATIC_REQUIRE(pg::HasTextForm<std::vector<std::string>>);  // an array
+  STATIC_REQUIRE_FALSE(pg::HasTextForm<Opaque>);
+  STATIC_REQUIRE_FALSE(pg::HasTextForm<std::vector<Opaque>>);
+}
+
 TEST_CASE("integers parse only when the whole text is a number", "[codec]") {
   CHECK(pg::FieldCodec<std::int64_t>::parse("42") == 42);
   CHECK(pg::FieldCodec<std::int64_t>::parse("-9223372036854775808") == std::numeric_limits<std::int64_t>::min());
@@ -87,7 +99,7 @@ TEST_CASE("binary integers are read by their length and range-checked", "[codec]
   CHECK(pg::FieldCodec<std::int32_t>::parse_binary(bytes({0x00, 0x00, 0x01, 0x00})) == 256);
   CHECK(pg::FieldCodec<std::int64_t>::parse_binary(bytes({0, 0, 0, 0, 0, 0, 0, 7})) == 7);
   CHECK_THROWS_AS(pg::FieldCodec<std::int16_t>::parse_binary(bytes({0, 0, 0x80, 0})), std::invalid_argument);  // 32768
-  CHECK_THROWS_AS(pg::FieldCodec<std::uint32_t>::parse_binary(bytes({0xff, 0xff})), std::invalid_argument);   // -1
+  CHECK_THROWS_AS(pg::FieldCodec<std::uint32_t>::parse_binary(bytes({0xff, 0xff})), std::invalid_argument);    // -1
   CHECK_THROWS_AS(pg::FieldCodec<std::int64_t>::parse_binary(bytes({1, 2, 3})), std::invalid_argument);
   CHECK(pg::FieldCodec<bool>::parse_binary(bytes({1})));
   CHECK(pg::FieldCodec<std::int64_t>::binary_accepts(pg::detail::OID_INT4));
@@ -96,10 +108,10 @@ TEST_CASE("binary integers are read by their length and range-checked", "[codec]
 
 TEST_CASE("binary arrays", "[codec][binary]") {
   // One dimension, no NULLs, int4 elements: 3 then -1.
-  const std::vector<std::byte> array = bytes({0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 23,  // dimensions, has-NULL, element OID
-                                              0, 0, 0, 2, 0, 0, 0, 1,                // length 2, lower bound 1
-                                              0, 0, 0, 4, 0, 0, 0, 3,                // 4 bytes: 3
-                                              0, 0, 0, 4, 0xff, 0xff, 0xff, 0xff});  // 4 bytes: -1
+  const std::vector<std::byte> array = bytes({0, 0, 0, 1, 0,    0,    0,    0,   0, 0, 0, 23,  // dimensions, has-NULL, element OID
+                                              0, 0, 0, 2, 0,    0,    0,    1,                 // length 2, lower bound 1
+                                              0, 0, 0, 4, 0,    0,    0,    3,                 // 4 bytes: 3
+                                              0, 0, 0, 4, 0xff, 0xff, 0xff, 0xff});            // 4 bytes: -1
   CHECK(pg::FieldCodec<std::vector<std::int64_t>>::parse_binary(array) == std::vector<std::int64_t>{3, -1});
 
   std::vector<std::byte> with_null = array;
