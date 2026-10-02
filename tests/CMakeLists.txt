@@ -1,0 +1,66 @@
+include(FetchContent)
+
+FetchContent_Declare(
+  Catch2
+  GIT_REPOSITORY https://github.com/catchorg/Catch2.git
+  GIT_TAG v3.7.1
+  GIT_SHALLOW TRUE
+  FIND_PACKAGE_ARGS 3
+)
+FetchContent_MakeAvailable(Catch2)
+list(APPEND CMAKE_MODULE_PATH ${catch2_SOURCE_DIR}/extras)
+include(Catch)
+
+# ==============================================================================
+# Compile-time (static) checks, unit tests and integration tests: one executable
+# ==============================================================================
+# The integration tests skip themselves unless SCHEMACHT_TEST_DB holds a libpq connection string.
+add_executable(
+  schemacht_tests
+  compile/raw_statement_test.cpp
+  compile/schema_test.cpp
+  compile/sql_test.cpp
+  unit/field_codec_test.cpp
+  unit/prepared_test.cpp
+  unit/row_sink_test.cpp
+  unit/statements_test.cpp
+  unit/thread_pool_test.cpp
+  integration/database_test.cpp
+)
+target_include_directories(schemacht_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+target_link_libraries(schemacht_tests PRIVATE schemacht::schemacht Catch2::Catch2WithMain)
+catch_discover_tests(schemacht_tests)
+
+# ==============================================================================
+# Compile-fail tests
+# ==============================================================================
+# Each compiles compile_fail/cases.cpp with one case defined, and passes if the compiler's output has the expected message
+# (which it can only print by failing).
+function(schemacht_compile_fail case regex)
+  add_test(
+    NAME compile_fail.${case}
+    COMMAND ${CMAKE_CXX_COMPILER} -std=c++23 -fsyntax-only -I${PROJECT_SOURCE_DIR}/include -DCASE_${case}
+            ${CMAKE_CURRENT_SOURCE_DIR}/compile_fail/cases.cpp
+  )
+  set_tests_properties(compile_fail.${case} PROPERTIES PASS_REGULAR_EXPRESSION "${regex}")
+endfunction()
+
+schemacht_compile_fail(BAD_TABLE_NAME "a table name must be lowercase")
+schemacht_compile_fail(BAD_COLUMN_NAME "a column name must be lowercase")
+schemacht_compile_fail(DUPLICATE_COLUMN "two fields of the schema have the same column name")
+schemacht_compile_fail(UINT64_FIELD "64-bit unsigned column")
+schemacht_compile_fail(UNKNOWN_COL "no column with that name")
+schemacht_compile_fail(UNKNOWN_FIELD_BY_NAME "the schema has no column with that name")
+schemacht_compile_fail(NARROWING_BIND "would be narrowed")
+schemacht_compile_fail(NEGATIVE_FOR_UNSIGNED_BIND "would be narrowed")
+schemacht_compile_fail(WRONG_ARGUMENT_COUNT "wrong number of arguments for this query")
+schemacht_compile_fail(BAD_OPERATOR "must be a single SQL operator")
+schemacht_compile_fail(BAD_FUNCTION "must be a SQL function name")
+schemacht_compile_fail(RAW_UNUSED_ARGUMENT "has no \\$n placeholder")
+schemacht_compile_fail(RAW_PLACEHOLDER_BEYOND "beyond the arguments it declares")
+schemacht_compile_fail(RAW_DOLLAR_QUOTE "dollar-quoted text is not supported")
+schemacht_compile_fail(RAW_NARROWING_BIND "raw statement declares, or would be narrowed")
+
+# With no case defined, cases.cpp must compile: the failures above are the cases', not the file's.
+add_test(NAME compile_fail.baseline COMMAND ${CMAKE_CXX_COMPILER} -std=c++23 -fsyntax-only -I${PROJECT_SOURCE_DIR}/include
+                                            ${CMAKE_CURRENT_SOURCE_DIR}/compile_fail/cases.cpp)

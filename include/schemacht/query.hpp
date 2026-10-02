@@ -2,7 +2,7 @@
 
 /**
  * Writing queries: the predicate builder (`query::On`, `col`, `arg`, `select`), the compile-time statement (`query::Prepared`),
- * `query::like`, and the typed raw statement (`query::Raw_Statement`) for what the builder cannot say.
+ * `query::like`, and the typed raw statement (`query::RawStatement`) for what the builder cannot say.
  *
  * Nothing here touches a database or a backend: a backend runs a query (see backend.hpp). Includes schema.hpp.
  */

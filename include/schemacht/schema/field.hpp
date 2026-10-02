@@ -1,5 +1,6 @@
 #pragma once
 
+#include <concepts>
 #include <cstdint>
 #include <optional>
 #include <stdexcept>
@@ -7,6 +8,7 @@
 #include <type_traits>
 
 #include "schemacht/util/compile_time.hpp"
+#include "schemacht/util/identifier.hpp"
 
 namespace schemacht::schema {
 
@@ -54,11 +56,8 @@ struct Unwrapped<std::optional<t>> {
  * @tparam data_t     The column's C++ value type, in a `std::optional` if the column can be NULL.
  * @tparam column_str The column's name, as a compile-time string.
  * @tparam key_role   Whether this column is (part of) a primary/unique key.
- * @tparam generated  True for a DB-computed column (e.g. `geom GENERATED
- *                    ALWAYS AS (...) STORED`, as on the raster table's
- *                    computed geometry). Read-only: a future write
- *                    path (INSERT/UPSERT) must exclude these rather than
- *                    trying to supply a value for them.
+ * @tparam generated  True for a column the database computes (`GENERATED ALWAYS AS (...) STORED`). It is read like any
+ *                    other, and never inserted.
  */
 template <typename data_t, util::CTString column_str, KeyRole key_role = KeyRole::None, bool generated = false>
 struct Field {
@@ -69,17 +68,20 @@ struct Field {
   /// Whether the column can be NULL (its `data_type` is a `std::optional`).
   static constexpr bool NULLABLE = detail::Unwrapped<data_t>::NULLABLE;
 
+  static_assert(util::is_identifier(column_str.view()),
+                "a column name must be lowercase letters, digits and underscores, not start with a digit, and be at most 63 bytes");
   static_assert(! detail::Unwrapped<value_type>::NULLABLE, "a Field's std::optional cannot be nested: NULL is one state");
+  static_assert(! std::unsigned_integral<value_type> || sizeof(value_type) < sizeof(std::int64_t),
+                "a 64-bit unsigned column does not fit PostgreSQL's largest integer type (bigint): use std::int64_t");
   static_assert(! NULLABLE || key_role != KeyRole::Primary, "a primary key column cannot be NULL, so it cannot be a std::optional");
 
   static constexpr util::CTString COLUMN_NAME{column_str};
   static constexpr KeyRole        KEY_ROLE = key_role;
   static constexpr bool           GENERATED = generated;
 
-  operator data_type() const { return value; }
-  operator data_type const&() const { return value; }
-  operator data_type&() const { return value; }
-  operator data_type&&() const&& { return value; }
+  /// Reads the value without naming `.value`: `std::string text = name_field;`.
+  // NOLINTNEXTLINE(google-explicit-constructor, hicpp-explicit-conversions, cppcoreguidelines-explicit-constructor, misc-explicit-constructor) -- implicit on purpose: a Field reads as its value
+  constexpr operator const data_type&() const& noexcept { return value; }
 
   data_t value;
 };
@@ -92,13 +94,7 @@ template <typename data_t, util::CTString column_str, KeyRole key_role, bool gen
 struct is_field<Field<data_t, column_str, key_role, generated>> : std::true_type {};
 }  // namespace detail
 
-/**
- * @brief Detects whether `data_t` is a `Field<...>` specialization.
- *
- * `util::detail::IsSpecializationOf` can't be used here: it only matches
- * templates shaped `template<typename...> class`, but `Field`'s other
- * parameters are non-type parameters, not types.
- */
+/** @brief Detects whether `data_t` is a `Field<...>` specialization. */
 template <typename data_t>
 concept IsField = detail::is_field<data_t>::value;
 

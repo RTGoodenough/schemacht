@@ -24,7 +24,6 @@ constexpr decltype(auto) visit_index_from(std::size_t index, visitor_t& visitor)
 
 }  // namespace detail
 
-// TODO(rolland): what the fuck is this
 /**
  * @brief Turns a run-time index into a compile-time one.
  *

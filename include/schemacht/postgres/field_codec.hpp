@@ -14,11 +14,11 @@
 #include <utility>
 #include <vector>
 
-namespace schemacht {
+namespace schemacht::postgres {
 
 namespace detail {
 
-/** @brief Always false, used for `static_assert` if the given data_t does not have a Field_Codec specialization. */
+/** @brief Always false, used for `static_assert` if the given data_t does not have a FieldCodec specialization. */
 template <typename data_t>
 inline constexpr bool NO_TEXT_FORM = false;
 
@@ -28,20 +28,20 @@ inline constexpr bool NO_TEXT_FORM = false;
 /**
  * @brief Walks the elements of a one-dimensional PostgreSQL array in text form: `{}`, `{1,2,3}`, `{"a b","c\"d"}`.
  *
- * Not a template, so its code is compiled once and not for each element type; `Field_Codec<std::vector<T>>` hands each element's
- * text to `Field_Codec<T>`. Refuses, with `std::invalid_argument`, what a `std::vector<T>` cannot hold: a NULL element, a
+ * Not a template, so its code is compiled once and not for each element type; `FieldCodec<std::vector<T>>` hands each element's
+ * text to `FieldCodec<T>`. Refuses, with `std::invalid_argument`, what a `std::vector<T>` cannot hold: a NULL element, a
  * nested (multi-dimensional) array, a dimension prefix (`[0:2]={...}`), and text that is not an array.
  */
-class Array_Reader {
+class ArrayReader {
  public:
   /** @throws std::invalid_argument if `text` is not a one-dimensional array. */
-  explicit Array_Reader(std::string_view text);
+  explicit ArrayReader(std::string_view text);
 
-  Array_Reader(const Array_Reader&) = default;
-  Array_Reader(Array_Reader&&) noexcept = default;
-  Array_Reader& operator=(const Array_Reader&) = default;
-  Array_Reader& operator=(Array_Reader&&) noexcept = default;
-  ~Array_Reader() = default;
+  ArrayReader(const ArrayReader&) = default;
+  ArrayReader(ArrayReader&&) noexcept = default;
+  ArrayReader& operator=(const ArrayReader&) = default;
+  ArrayReader& operator=(ArrayReader&&) noexcept = default;
+  ~ArrayReader() = default;
 
   /** @return At least how many elements there are (a count of the commas, so it may be more): to reserve for. */
   [[nodiscard]] std::size_t element_estimate() const noexcept { return _estimate; }
@@ -86,19 +86,19 @@ inline constexpr std::uint32_t OID_VARCHAR = 1043;
  * @brief Walks the elements of a one-dimensional PostgreSQL array in binary form: a header (dimension count, has-NULL flag, the
  * element type's OID, and for one dimension its length and lower bound), then each element as a 4-byte length and its bytes.
  *
- * Not a template, like `Array_Reader`. Refuses, with `std::invalid_argument`, what a `std::vector<T>` cannot hold: a NULL
+ * Not a template, like `ArrayReader`. Refuses, with `std::invalid_argument`, what a `std::vector<T>` cannot hold: a NULL
  * element (length -1) and more than one dimension; and bytes that end early. An empty array (no dimensions) has no elements.
  */
-class Binary_Array_Reader {
+class BinaryArrayReader {
  public:
   /** @throws std::invalid_argument if `bytes` is not a one-dimensional array's binary form. */
-  explicit Binary_Array_Reader(std::span<const std::byte> bytes);
+  explicit BinaryArrayReader(std::span<const std::byte> bytes);
 
-  Binary_Array_Reader(const Binary_Array_Reader&) = default;
-  Binary_Array_Reader(Binary_Array_Reader&&) noexcept = default;
-  Binary_Array_Reader& operator=(const Binary_Array_Reader&) = default;
-  Binary_Array_Reader& operator=(Binary_Array_Reader&&) noexcept = default;
-  ~Binary_Array_Reader() = default;
+  BinaryArrayReader(const BinaryArrayReader&) = default;
+  BinaryArrayReader(BinaryArrayReader&&) noexcept = default;
+  BinaryArrayReader& operator=(const BinaryArrayReader&) = default;
+  BinaryArrayReader& operator=(BinaryArrayReader&&) noexcept = default;
+  ~BinaryArrayReader() = default;
 
   /** @return The element type's OID, from the header. */
   [[nodiscard]] std::uint32_t element_type() const noexcept { return _element_type; }
@@ -115,7 +115,7 @@ class Binary_Array_Reader {
   std::size_t                _size = 0;
 };
 
-/** @brief Whether the built-in codec reads `data_t` from binary (`Field_Codec<data_t>::parse_binary`). */
+/** @brief Whether the built-in codec reads `data_t` from binary (`FieldCodec<data_t>::parse_binary`). */
 template <typename data_t>
 inline constexpr bool BUILT_IN_BINARY_FORM = std::same_as<data_t, bool> || std::same_as<data_t, std::string> ||
                                              std::same_as<data_t, std::vector<std::byte>> || std::integral<data_t> || std::floating_point<data_t>;
@@ -123,35 +123,40 @@ inline constexpr bool BUILT_IN_BINARY_FORM = std::same_as<data_t, bool> || std::
 }  // namespace detail
 
 /**
- * @brief The text form of one column type: how a value of `data_t` is written to, and read back from, a text
- * protocol (Postgres parameters and results).
+ * @brief How a value of `data_t` is written as text (query arguments, inserted values) and read back from PostgreSQL's
+ * text or binary result form.
  *
  * The primary template covers the built-in types: `bool`, integers, floating point, `std::string` and
- * `std::vector<std::byte>` (hex); a `std::vector` of any other type is an array (below). **A new column type supplies its own by specializing this**, in the module that
- * defines the type, e.g.:
+ * `std::vector<std::byte>` (`bytea`, as `\x` and hex). A `std::vector` of any other type is an array (below). A new column
+ * type specializes this, next to the type's definition so it is visible wherever the type is used:
  *
  * @code
  * template <>
- * class backend::Field_Codec<Money> {
+ * class postgres::FieldCodec<Money> {
  *  public:
  *   static Money       parse(std::string_view text);
  *   static std::string format(const Money& amount);
+ *   static Money       parse_binary(std::span<const std::byte> bytes);  // optional
+ *   static bool        binary_accepts(std::uint32_t type_oid);          // optional
  * };
  * @endcode
  *
- * A type that a query returns through an asynchronous backend also needs `static T parse_binary(std::span<const std::byte>)` (and may add
- * `static bool binary_accepts(std::uint32_t type_oid)`): the value as PostgreSQL sends it in binary form, which is how `postgres::Database` asks for results
- * (`HasBinaryForm`). A query that returns a column of a type that lacks it does not compile with an asynchronous backend (`query::BinaryReadableRow`); a schema may
- * have such a column if the query leaves it out. The text form is what the blocking backend and `ResultFormat::Text` use.
- *
- * @note The specialization must be visible wherever the type is used, so define it alongside the type.
+ * `parse_binary` reads the value as PostgreSQL sends it in binary form, which `Database` asks for by default
+ * (`HasBinaryForm`). Rows with a column whose codec lacks it are read as text instead. `binary_accepts`, if present,
+ * rejects a result column of the wrong PostgreSQL type before any row is read.
  */
 template <typename data_t>
-class Field_Codec {
+class FieldCodec {
  public:
   [[nodiscard]] constexpr static data_t parse(std::string_view text) {
     if constexpr ( std::same_as<data_t, bool> ) {
-      return text == "1" || text == "t" || text == "true";
+      if ( text == "t" || text == "true" ) {
+        return true;
+      }
+      if ( text == "f" || text == "false" ) {
+        return false;
+      }
+      throw std::invalid_argument("parse_field: '" + std::string(text) + "' is not a boolean (t, f, true or false)");
     } else if constexpr ( std::same_as<data_t, std::string> ) {
       return std::string(text);
     } else if constexpr ( std::same_as<data_t, std::vector<std::byte>> ) {
@@ -160,13 +165,16 @@ class Field_Codec {
       }
       return detail::parse_hex_bytes(text);
     } else if constexpr ( std::integral<data_t> || std::floating_point<data_t> ) {
-      data_t value{};
-      if ( std::from_chars(text.begin(), text.end(), value).ec != std::errc{} ) {
-        throw std::invalid_argument("parse_field: could not parse '" + std::string(text) + "'");
+      data_t                       value{};
+      const char* const            end = text.data() + text.size();  // NOLINT(cppcoreguidelines-pro-bounds-pointer-arithmetic)
+      // NOLINTNEXTLINE(bugprone-suspicious-stringview-data-usage) -- the end is passed: from_chars needs no terminator
+      const std::from_chars_result result = std::from_chars(text.data(), end, value);
+      if ( result.ec != std::errc{} || result.ptr != end ) {
+        throw std::invalid_argument("parse_field: could not parse '" + std::string(text) + "' as a number of the column's type");
       }
       return value;
     } else {
-      static_assert(detail::NO_TEXT_FORM<data_t>, "parse_field: no text form defined for this data_type; specialize backend::Field_Codec");
+      static_assert(detail::NO_TEXT_FORM<data_t>, "parse_field: no text form defined for this data_type; specialize postgres::FieldCodec");
     }
   }
 
@@ -176,14 +184,14 @@ class Field_Codec {
     } else if constexpr ( std::same_as<data_t, std::string> ) {
       return value;
     } else if constexpr ( std::same_as<data_t, std::vector<std::byte>> ) {
-      return detail::format_hex_bytes(value);
+      return "\\x" + detail::format_hex_bytes(value);  // the `\x` says hex: without it, PostgreSQL would store the hex digits as text
     } else if constexpr ( std::integral<data_t> || std::floating_point<data_t> ) {
       static constexpr std::size_t            NUMERIC_TEXT_CAPACITY = 64;
       std::array<char, NUMERIC_TEXT_CAPACITY> buffer{};
       const auto                              result = std::to_chars(buffer.begin(), buffer.end(), value);
       return std::string(buffer.data(), result.ptr);
     } else {
-      static_assert(detail::NO_TEXT_FORM<data_t>, "format_field: no text form defined for this data_type; specialize backend::Field_Codec");
+      static_assert(detail::NO_TEXT_FORM<data_t>, "format_field: no text form defined for this data_type; specialize postgres::FieldCodec");
     }
   }
 
@@ -239,21 +247,21 @@ class Field_Codec {
   }
 };
 
-/** @brief Whether `data_t` can be read from PostgreSQL's binary form: its `Field_Codec` has `parse_binary`. */
+/** @brief Whether `data_t` can be read from PostgreSQL's binary form: its `FieldCodec` has `parse_binary`. */
 template <typename data_t>
 concept HasBinaryForm = requires(std::span<const std::byte> bytes) {
-  { Field_Codec<data_t>::parse_binary(bytes) } -> std::same_as<data_t>;
+  { FieldCodec<data_t>::parse_binary(bytes) } -> std::same_as<data_t>;
 };
 
 /**
  * @brief Parses a column's text representation into a `Field`'s declared `data_type`.
  *
- * The one place text ever turns into a typed value: what a result sink (`query::Row_Sink::put_text`) and the Postgres backends'
+ * The one place text ever turns into a typed value: what a result sink (`query::RowSink::put_text`) and the Postgres backends'
  * result reading use.
  */
 template <typename data_t>
 [[nodiscard]] constexpr data_t parse_field(std::string_view text) {
-  return Field_Codec<data_t>::parse(text);
+  return FieldCodec<data_t>::parse(text);
 }
 
 /**
@@ -269,12 +277,12 @@ template <typename field_t>
   }
 }
 
-/** @brief `parse_column` for a value in binary form (`Field_Codec::parse_binary`); the error names the column the same way. */
+/** @brief `parse_column` for a value in binary form (`FieldCodec::parse_binary`); the error names the column the same way. */
 template <typename field_t>
   requires HasBinaryForm<typename field_t::value_type>
 [[nodiscard]] field_t::value_type parse_binary_column(std::span<const std::byte> bytes) {
   try {
-    return Field_Codec<typename field_t::value_type>::parse_binary(bytes);
+    return FieldCodec<typename field_t::value_type>::parse_binary(bytes);
   } catch ( const std::invalid_argument& error ) {
     throw std::invalid_argument("column '" + std::string(field_t::COLUMN_NAME.view()) + "': " + error.what());
   }
@@ -286,7 +294,7 @@ template <typename field_t>
  */
 template <typename field_t>
 [[nodiscard]] constexpr bool binary_column_accepted(std::uint32_t type_oid) {
-  using codec_t = Field_Codec<typename field_t::value_type>;
+  using codec_t = FieldCodec<typename field_t::value_type>;
   if constexpr ( requires { codec_t::binary_accepts(type_oid); } ) {
     return codec_t::binary_accepts(type_oid);
   } else {
@@ -297,32 +305,40 @@ template <typename field_t>
 /** @brief The inverse of `parse_field`: a typed value's text representation. */
 template <typename data_t>
 [[nodiscard]] constexpr std::string format_field(const data_t& value) {
-  return Field_Codec<data_t>::format(value);
+  return FieldCodec<data_t>::format(value);
 }
+
+namespace detail {
+
+/** @brief Appends one element's text to an array literal: double-quoted, with `"` and `\` escaped, so any text round-trips. */
+inline void append_array_element(std::string& literal, std::string_view text) {
+  literal += '"';
+  for ( const char chr : text ) {
+    if ( chr == '"' || chr == '\\' ) {
+      literal += '\\';
+    }
+    literal += chr;
+  }
+  literal += '"';
+}
+
+}  // namespace detail
 
 /**
  * @brief Formats values as a Postgres array literal (e.g. `{"a","b"}`), for binding as a single array parameter.
  *
- * Each element is `format_field`'s text, double-quoted with `"` and `\` escaped, so any element type, strings
- * included, round-trips.
+ * Each element is `format_field`'s text, quoted and escaped, so any element type, strings included, round-trips.
  */
 template <typename data_t>
-[[nodiscard]] constexpr std::string format_array(const std::vector<data_t>& values) {
+[[nodiscard]] std::string format_array(const std::vector<data_t>& values) {
   std::string literal = "{";
   bool        first = true;
-  for ( const auto& value : values ) {
+  for ( const data_t& value : values ) {
     if ( ! first ) {
       literal += ',';
     }
     first = false;
-    literal += '"';
-    for ( const char chr : format_field<data_t>(value) ) {
-      if ( chr == '"' || chr == '\\' ) {
-        literal += '\\';
-      }
-      literal += chr;
-    }
-    literal += '"';
+    detail::append_array_element(literal, format_field<data_t>(value));
   }
   literal += '}';
   return literal;
@@ -330,7 +346,7 @@ template <typename data_t>
 
 /**
  * @brief The text form of an array column: a `std::vector<element_t>` is a one-dimensional PostgreSQL array (`bigint[]`,
- * `text[]`, ...), for any element type that has a `Field_Codec` of its own.
+ * `text[]`, ...), for any element type that has a `FieldCodec` of its own.
  *
  * Written as `format_array` writes a list argument, and read from the `{1,2,3}` form the server sends. A NULL element is an error
  * (`std::invalid_argument`): a `std::vector<T>` cannot hold one. `std::vector<std::byte>` is not an array but a `bytea` value
@@ -338,14 +354,14 @@ template <typename data_t>
  */
 template <typename element_t>
   requires(! std::same_as<element_t, std::byte>)
-class Field_Codec<std::vector<element_t>> {
+class FieldCodec<std::vector<element_t>> {
  public:
   [[nodiscard]] static std::vector<element_t> parse(std::string_view text) {
-    detail::Array_Reader   reader(text);
+    detail::ArrayReader   reader(text);
     std::vector<element_t> values;
     values.reserve(reader.element_estimate());
     while ( const std::optional<std::string_view> element = reader.next() ) {
-      values.push_back(Field_Codec<element_t>::parse(*element));
+      values.push_back(FieldCodec<element_t>::parse(*element));
     }
     return values;
   }
@@ -359,9 +375,9 @@ class Field_Codec<std::vector<element_t>> {
   [[nodiscard]] static std::vector<element_t> parse_binary(std::span<const std::byte> bytes)
     requires HasBinaryForm<element_t>
   {
-    detail::Binary_Array_Reader reader(bytes);
-    if constexpr ( requires { Field_Codec<element_t>::binary_accepts(reader.element_type()); } ) {
-      if ( ! Field_Codec<element_t>::binary_accepts(reader.element_type()) ) {
+    detail::BinaryArrayReader reader(bytes);
+    if constexpr ( requires { FieldCodec<element_t>::binary_accepts(reader.element_type()); } ) {
+      if ( ! FieldCodec<element_t>::binary_accepts(reader.element_type()) ) {
         throw std::invalid_argument("parse_binary: the array's elements have the type with OID " + std::to_string(reader.element_type()) +
                                     ", which this column cannot read");
       }
@@ -369,10 +385,10 @@ class Field_Codec<std::vector<element_t>> {
     std::vector<element_t> values;
     values.reserve(reader.size());
     for ( std::size_t i = 0; i < reader.size(); ++i ) {
-      values.push_back(Field_Codec<element_t>::parse_binary(reader.next()));
+      values.push_back(FieldCodec<element_t>::parse_binary(reader.next()));
     }
     return values;
   }
 };
 
-}  // namespace schemacht
+}  // namespace schemacht::postgres

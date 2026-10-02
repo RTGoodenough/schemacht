@@ -1,0 +1,2 @@
+add_executable(schemacht_example_basic basic.cpp)
+target_link_libraries(schemacht_example_basic PRIVATE schemacht::schemacht)

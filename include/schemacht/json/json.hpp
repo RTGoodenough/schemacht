@@ -12,9 +12,8 @@
 #include "schemacht/query/sql_type.hpp"
 
 /**
- * JSON as a column type: PostgreSQL's `jsonb`, for the attributes a table keeps as a document (the loaders' `properties`
- * column). Like every column type it is a customization of the core's generic extension points (`backend::Field_Codec`
- * for its text form, `query::sql::SQL_Type` for its SQL name).
+ * JSON as a column type: PostgreSQL's `jsonb`. Also an example of adding a column type (see column_type.hpp): it
+ * specializes `postgres::FieldCodec` and `query::sql::SqlType`.
  */
 namespace schemacht::json {
 
@@ -49,11 +48,11 @@ class Json {
 
 }  // namespace schemacht::json
 
-namespace schemacht {
+namespace schemacht::postgres {
 
 /** @brief A document's text form is its JSON text, which is what PostgreSQL prints and reads for `jsonb`. */
 template <>
-class Field_Codec<json::Json> {
+class FieldCodec<json::Json> {
  public:
   [[nodiscard]] static json::Json  parse(std::string_view text) { return json::Json(std::string(text)); }
   [[nodiscard]] static std::string format(const json::Json& document) { return document.text(); }
@@ -76,13 +75,13 @@ class Field_Codec<json::Json> {
   static constexpr std::uint8_t  JSONB_BINARY_VERSION = 1;
 };
 
-}  // namespace schemacht
+}  // namespace schemacht::postgres
 
 namespace schemacht::query::sql {
 
 /** @brief PostgreSQL's binary JSON type. */
 template <>
-class SQL_Type<json::Json> {
+class SqlType<json::Json> {
  public:
   static constexpr std::string_view NAME = "jsonb";
 };

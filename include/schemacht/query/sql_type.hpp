@@ -11,6 +11,14 @@ namespace schemacht::query::sql {
 
 namespace detail {
 
+/** @return The PostgreSQL integer type of at least `bytes` bytes. */
+[[nodiscard]] constexpr std::string_view integer_type_name(std::size_t bytes) {
+  if ( bytes <= sizeof(std::int16_t) ) {
+    return "smallint";
+  }
+  return bytes <= sizeof(std::int32_t) ? "integer" : "bigint";
+}
+
 template <typename data_t>
 [[nodiscard]] constexpr std::string_view builtin_type_name() {
   if constexpr ( std::same_as<data_t, bool> ) {
@@ -23,12 +31,10 @@ template <typename data_t>
     return "real";
   } else if constexpr ( std::same_as<data_t, double> ) {
     return "double precision";
-  } else if constexpr ( std::integral<data_t> && sizeof(data_t) <= sizeof(std::int16_t) ) {
-    return "smallint";
-  } else if constexpr ( std::integral<data_t> && sizeof(data_t) == sizeof(std::int32_t) ) {
-    return "integer";
-  } else if constexpr ( std::integral<data_t> && sizeof(data_t) == sizeof(std::int64_t) ) {
-    return "bigint";
+  } else if constexpr ( std::signed_integral<data_t> ) {
+    return integer_type_name(sizeof(data_t));
+  } else if constexpr ( std::unsigned_integral<data_t> && sizeof(data_t) < sizeof(std::int64_t) ) {
+    return integer_type_name(sizeof(data_t) * 2);  // PostgreSQL has no unsigned types: the next wider signed one holds every value
   } else {
     return "";
   }
@@ -44,37 +50,36 @@ template <typename data_t>
  *
  * @code
  * template <>
- * class query::sql::SQL_Type<Money> {
+ * class query::sql::SqlType<Money> {
  *  public:
  *   static constexpr std::string_view NAME = "numeric";
  * };
  * @endcode
  */
 template <typename data_t>
-class SQL_Type {
+class SqlType {
  public:
   static constexpr std::string_view NAME = detail::builtin_type_name<data_t>();
 };
 
 /**
- * @brief How a column of `data_t` is written in a `SELECT` list: by default as itself (`"col"`), and if the type says otherwise, as a function of it
- * under the column's own name (`FUNCTION("col") AS "col"`).
+ * @brief How a column of `data_t` is written in a `SELECT` list: by default as itself (`"col"`), or, if the type names a
+ * function, as that function of it under the column's own name (`FUNCTION("col") AS "col"`).
  *
- * For a type whose value is read through another form than the column's own: PostGIS's `raster` has no binary output, so it is selected as
- * `ST_AsBinary("rast") AS "rast"`, whose bytes the type's `Field_Codec` reads (in binary as they are, in text after a `\x`). The type says it once,
- * and every query that returns the column reads it correctly, projected or not. Only the returned columns are affected: a `WHERE` or `ORDER BY` names the
- * column. **A column type supplies it by specializing this**, in the module that defines the type:
+ * For a type that is read in another form than the column's own. For example, PostGIS's `raster` has no binary output,
+ * so a raster type would be selected as `ST_AsBinary("rast") AS "rast"`. Only the returned columns are affected: `WHERE`
+ * and `ORDER BY` still name the column itself. A column type opts in by specializing this:
  *
  * @code
  * template <>
- * class query::sql::Select_Expression<Raster_Tile> {
+ * class query::sql::SelectExpression<RasterTile> {
  *  public:
  *   static constexpr std::string_view FUNCTION = "ST_AsBinary";
  * };
  * @endcode
  */
 template <typename data_t>
-class Select_Expression {
+class SelectExpression {
  public:
   static constexpr std::string_view FUNCTION{};  ///< Empty: the column is selected as it is.
 };
@@ -82,7 +87,7 @@ class Select_Expression {
 /** @return The SQL name of `data_t`, or an empty view if it has none. */
 template <typename data_t>
 [[nodiscard]] constexpr std::string_view type_name() {
-  return SQL_Type<data_t>::NAME;
+  return SqlType<data_t>::NAME;
 }
 
 }  // namespace schemacht::query::sql

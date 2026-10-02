@@ -12,6 +12,7 @@
 
 #include "schemacht/schema/schema.hpp"
 #include "schemacht/util/compile_time.hpp"
+#include "schemacht/util/identifier.hpp"
 
 namespace schemacht::query {
 
@@ -72,18 +73,17 @@ struct Operand {
 /**
  * @brief A test on a column and one argument that a module supplies, beyond the built-in comparisons.
  *
- * What a database runs: a SQL function or operator a module names. Made by `Column_Ref::apply`; not written by hand.
+ * What a database runs: a SQL function or operator a module names. Made by `ColumnRef::apply`; not written by hand.
  */
 struct Operation {
   /// The SQL function, written `name("column", $n)`, or, if `infix`, the SQL operator, written `"column" name $n`.
-  /// An index answers an operator (`@>`, `&&`, `LIKE`). It answers the same test written as a function call only if
-  /// PostgreSQL gave that function a planner support function (PostGIS's `ST_*` have one; `jsonb_contains` does not,
-  /// and is then a sequential scan).
+  /// Prefer an operator (`@>`, `&&`, `~~`): an index can always answer one, but answers a function call only if the
+  /// function has a planner support function (`jsonb_contains`, for one, has none).
   std::string_view name;
   bool             infix = false;       ///< Whether `name` is an operator, written between the column and the argument.
   bool             takes_real = false;  ///< Whether the test has a second, numeric argument: `name("column", $n, $m)`. Functions only.
-  /// SQL written around the argument (`$n::type`), for a test that wants it changed first: `ST_Transform(` and `, 4326)` give
-  /// `"column" && ST_Transform($1::geometry, 4326)`. Fixed text a module writes, never a value: the value stays a parameter.
+  /// Fixed SQL written around the argument (`$n::type`), to convert it first. E.g. `lower(` and `)` give
+  /// `"column" ~~ lower($1::text)`. The value itself is always a parameter.
   std::string_view argument_prefix;
   std::string_view argument_suffix;
 };
@@ -173,7 +173,7 @@ template <typename operation_t>
 }
 
 /**
- * @brief Whether `operation_t` is a test usable in a query (see `Column_Ref::apply`): it names the SQL that does the test, as a
+ * @brief Whether `operation_t` is a test usable in a query (see `ColumnRef::apply`): it names the SQL that does the test, as a
  * function (`FUNCTION`) or as an operator (`OPERATOR`; the form an index can answer for `@>`, `&&`, `LIKE` and the like). Naming
  * both, or neither, is not a test.
  */
@@ -207,8 +207,13 @@ template <typename operation_t>
 
 /** @brief The `Operation` for `operation_t`: the one object every use of it shares. */
 template <typename operation_t>
-class Bound_Operation {
+class BoundOperation {
  public:
+  static_assert(! NamesOperator<operation_t> || util::is_sql_operator(spelling<operation_t>()),
+                "an operation's OPERATOR must be a single SQL operator: only the characters <>-|#&~=@+*/%^!?, no -- or comment start");
+  static_assert(NamesOperator<operation_t> || util::is_sql_function_name(spelling<operation_t>()),
+                "an operation's FUNCTION must be a SQL function name: letters, digits and underscores, not starting with a digit");
+
   static constexpr Operation VALUE{
       .name = spelling<operation_t>(),
       .infix = NamesOperator<operation_t>,
@@ -220,8 +225,11 @@ class Bound_Operation {
 
 /** @brief The `Ranking` for `ranking_t`. */
 template <typename ranking_t>
-class Bound_Ranking {
+class BoundRanking {
  public:
+  static_assert(util::is_sql_operator(ranking_t::OPERATOR),
+                "a ranking's OPERATOR must be a single SQL operator: only the characters <>-|#&~=@+*/%^!?, no -- or comment start");
+
   static constexpr Ranking VALUE{.op = ranking_t::OPERATOR};
 };
 
@@ -296,14 +304,14 @@ template <typename data_t>
 
 /** @brief A placeholder for a value supplied when the query is bound; `slot_idx` numbers the arguments from 0. */
 template <std::size_t slot_idx>
-class Arg_Ref {
+class ArgRef {
  public:
   static constexpr std::size_t SLOT = slot_idx;
 };
 
 /** @return The `slot_idx`-th bound argument. Its type comes from the column it's compared with. */
 template <std::size_t slot_idx>
-[[nodiscard]] constexpr Arg_Ref<slot_idx> arg() {
+[[nodiscard]] constexpr ArgRef<slot_idx> arg() {
   return {};
 }
 
@@ -392,7 +400,7 @@ struct OrderTerm {
   [[nodiscard]] constexpr bool operator==(const OrderTerm&) const = default;
 };
 
-/** @brief An `OrderTerm` known to refer to a column of `schema_t`; make one with `Column_Ref::asc()`/`desc()`. */
+/** @brief An `OrderTerm` known to refer to a column of `schema_t`; make one with `ColumnRef::asc()`/`desc()`. */
 template <schema::IsSchema schema_t>
 struct Ordering {
   OrderTerm term;
@@ -408,7 +416,7 @@ struct Ordering {
  */
 template <schema::IsSchema schema_t, std::size_t column_idx>
   requires(column_idx < schema_t::FIELD_COUNT)
-class Column_Ref {
+class ColumnRef {
  public:
   /// The type of the column's values: arguments and literals it is compared with are of this type, even if the column
   /// can be NULL (its field's `data_type` is then a `std::optional` of it).
@@ -422,27 +430,27 @@ class Column_Ref {
   static constexpr std::size_t INDEX = column_idx;
 
   template <std::size_t slot_idx>
-  [[nodiscard]] constexpr auto operator==(Arg_Ref<slot_idx> /*arg*/) const {
+  [[nodiscard]] constexpr auto operator==(ArgRef<slot_idx> /*arg*/) const {
     return compare_arg<slot_idx>(Comparison::Equal);
   }
   template <std::size_t slot_idx>
-  [[nodiscard]] constexpr auto operator!=(Arg_Ref<slot_idx> /*arg*/) const {
+  [[nodiscard]] constexpr auto operator!=(ArgRef<slot_idx> /*arg*/) const {
     return compare_arg<slot_idx>(Comparison::NotEqual);
   }
   template <std::size_t slot_idx>
-  [[nodiscard]] constexpr auto operator<(Arg_Ref<slot_idx> /*arg*/) const {
+  [[nodiscard]] constexpr auto operator<(ArgRef<slot_idx> /*arg*/) const {
     return compare_arg<slot_idx>(Comparison::Less);
   }
   template <std::size_t slot_idx>
-  [[nodiscard]] constexpr auto operator<=(Arg_Ref<slot_idx> /*arg*/) const {
+  [[nodiscard]] constexpr auto operator<=(ArgRef<slot_idx> /*arg*/) const {
     return compare_arg<slot_idx>(Comparison::LessEqual);
   }
   template <std::size_t slot_idx>
-  [[nodiscard]] constexpr auto operator>(Arg_Ref<slot_idx> /*arg*/) const {
+  [[nodiscard]] constexpr auto operator>(ArgRef<slot_idx> /*arg*/) const {
     return compare_arg<slot_idx>(Comparison::Greater);
   }
   template <std::size_t slot_idx>
-  [[nodiscard]] constexpr auto operator>=(Arg_Ref<slot_idx> /*arg*/) const {
+  [[nodiscard]] constexpr auto operator>=(ArgRef<slot_idx> /*arg*/) const {
     return compare_arg<slot_idx>(Comparison::GreaterEqual);
   }
 
@@ -509,53 +517,55 @@ class Column_Ref {
   }
 
   /**
-   * @brief Tests the column against the argument `slot_idx` (a `data_type`) with a module's operation, e.g.
-   * `col.apply<spatial::Intersects>(arg<0>())`. Modules usually wrap this in a named function.
+   * @brief Tests the column against the argument `slot_idx` (a `data_type`) with an operation type that names a SQL
+   * `OPERATOR` or `FUNCTION`, e.g. `col.apply<json::Contains>(arg<0>())`. Usually wrapped in a named function, like
+   * `json::contains` or `query::like`.
    *
    * The query layer treats it as an opaque test. Being written as a plain function call or operator, it must not depend
    * on anything but the column and its arguments.
    */
   template <typename operation_t, std::size_t slot_idx>
     requires OperationOn<operation_t>
-  [[nodiscard]] constexpr Predicate<schema_t, 1> apply(Arg_Ref<slot_idx> /*arg*/) const {
+  [[nodiscard]] constexpr Predicate<schema_t, 1> apply(ArgRef<slot_idx> /*arg*/) const {
     return single(Node{
         .kind = NodeKind::Call,
         .column = column_idx,
         .operand = Operand{.kind = OperandKind::Arg, .slot = slot_idx},
-        .operation = &detail::Bound_Operation<operation_t>::VALUE,
+        .operation = &detail::BoundOperation<operation_t>::VALUE,
     });
   }
 
   /**
-   * @brief As above, for an operation that also takes a number, such as "within this distance":
-   * `col.apply<spatial::Within_Distance>(arg<0>(), arg<1>())`, where argument 1 is a `double`.
+   * @brief As above, for a function that also takes a number (it declares `TAKES_NUMBER = true`), such as "within this
+   * distance": `col.apply<WithinDistance>(arg<0>(), arg<1>())`, where argument 1 is a `double`.
    */
   template <typename operation_t, std::size_t slot_idx, std::size_t real_slot_idx>
     requires OperationWithReal<operation_t>
-  [[nodiscard]] constexpr Predicate<schema_t, 1> apply(Arg_Ref<slot_idx> /*arg*/, Arg_Ref<real_slot_idx> /*real*/) const {
+  [[nodiscard]] constexpr Predicate<schema_t, 1> apply(ArgRef<slot_idx> /*arg*/, ArgRef<real_slot_idx> /*real*/) const {
     return single(Node{
         .kind = NodeKind::Call,
         .column = column_idx,
         .operand = Operand{.kind = OperandKind::Arg, .slot = slot_idx},
-        .operation = &detail::Bound_Operation<operation_t>::VALUE,
+        .operation = &detail::BoundOperation<operation_t>::VALUE,
         .extra = Operand{.kind = OperandKind::Arg, .slot = real_slot_idx},
     });
   }
 
   /**
    * @brief Orders rows by a module's ranking of this column against the argument `slot_idx` (a `data_type`), smallest
-   * first: `query.order_by(col.ranked_by<spatial::Nearest>(arg<0>()))`. With a `limit`, it is "the nearest N".
+   * first: `query.order_by(col.ranked_by<Nearest>(arg<0>()))`, where `Nearest::OPERATOR` is `<->`. With a `limit`, it
+   * is "the nearest N".
    */
   template <typename ranking_t, std::size_t slot_idx>
     requires RankingOn<ranking_t>
-  [[nodiscard]] constexpr Ordering<schema_t> ranked_by(Arg_Ref<slot_idx> /*arg*/) const {
+  [[nodiscard]] constexpr Ordering<schema_t> ranked_by(ArgRef<slot_idx> /*arg*/) const {
     return Ordering<schema_t>{
-        OrderTerm{.column = column_idx, .descending = false, .ranking = &detail::Bound_Ranking<ranking_t>::VALUE, .slot = slot_idx}};
+        OrderTerm{.column = column_idx, .descending = false, .ranking = &detail::BoundRanking<ranking_t>::VALUE, .slot = slot_idx}};
   }
 
   /** @brief The column's value is one of the values in the list argument `slot_idx` (a `std::vector<data_type>`). */
   template <std::size_t slot_idx>
-  [[nodiscard]] constexpr Predicate<schema_t, 1> in(Arg_Ref<slot_idx> /*arg*/) const {
+  [[nodiscard]] constexpr Predicate<schema_t, 1> in(ArgRef<slot_idx> /*arg*/) const {
     return single(Node{
         .kind = NodeKind::InList,
         .column = column_idx,
@@ -604,7 +614,7 @@ struct On {
   [[nodiscard]] static constexpr auto col() {
     constexpr std::size_t IDX = schema_t::template field_index<name>();
     static_assert(IDX != schema_t::FIELD_COUNT, "query::On::col: the schema has no column with that name");
-    return Column_Ref<schema_t, IDX>{};
+    return ColumnRef<schema_t, IDX>{};
   }
 };
 

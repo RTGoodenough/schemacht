@@ -14,9 +14,9 @@ struct SessionSettings {
   /**
    * @brief Turns off PostgreSQL's JIT compilation for the session.
    *
-   * The library's statements are lookups and fetches, and JIT only costs them: from about 10,000 rows in a result the server
-   * compiles the query, which took 9 ms of a 47 ms fetch and 41 ms of a 100,000-row one (benchmarks/README.md). Set this to
-   * `false` to leave the server's own setting alone, e.g. for a raw statement that is a long analytic query.
+   * The library's statements are lookups and fetches, and JIT compilation only slows them down: past about 10,000 result
+   * rows the server compiles the query, which can take a large share of a fetch's time. Set this to `false` to keep the
+   * server's own setting, e.g. for raw statements that are long analytic queries.
    */
   bool disable_jit = true;
 

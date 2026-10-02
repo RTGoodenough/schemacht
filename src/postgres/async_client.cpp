@@ -6,7 +6,6 @@
 #include <unistd.h>
 
 #include <array>
-#include <atomic>
 #include <cerrno>
 #include <cstddef>
 #include <cstdint>
@@ -19,7 +18,6 @@
 #include <string>
 #include <string_view>
 #include <thread>
-#include <tuple>
 #include <utility>
 #include <vector>
 
@@ -46,7 +44,7 @@ std::exception_ptr runtime_error_ptr(const std::string& message) { return std::m
 
 std::exception_ptr query_error_ptr(const pg_result* result) {
   const char* state = PQresultErrorField(result, PG_DIAG_SQLSTATE);
-  return std::make_exception_ptr(Query_Error(trimmed(PQresultErrorMessage(result)), state != nullptr ? state : ""));
+  return std::make_exception_ptr(QueryError(trimmed(PQresultErrorMessage(result)), state != nullptr ? state : ""));
 }
 
 // poll() flags are small signed ints; combine and test them as unsigned to keep the bit arithmetic well-defined.
@@ -84,25 +82,25 @@ std::string apply_session(PGconn* connection, std::string_view setup) {
 }  // namespace
 
 // ============================================================================
-// Query_Result
+// QueryResult
 // ============================================================================
 
-void Query_Result::Deleter::operator()(pg_result* raw) const noexcept { PQclear(raw); }
+void QueryResult::Deleter::operator()(pg_result* raw) const noexcept { PQclear(raw); }
 
-std::size_t Query_Result::row_count() const noexcept { return _raw ? static_cast<std::size_t>(PQntuples(_raw.get())) : 0; }
+std::size_t QueryResult::row_count() const noexcept { return _raw ? static_cast<std::size_t>(PQntuples(_raw.get())) : 0; }
 
-std::size_t Query_Result::column_count() const noexcept { return _raw ? static_cast<std::size_t>(PQnfields(_raw.get())) : 0; }
+std::size_t QueryResult::column_count() const noexcept { return _raw ? static_cast<std::size_t>(PQnfields(_raw.get())) : 0; }
 
-std::string_view Query_Result::column_name(std::size_t column) const {
+std::string_view QueryResult::column_name(std::size_t column) const {
   if ( column >= column_count() ) {
-    throw std::out_of_range("Query_Result::column_name: no such column");
+    throw std::out_of_range("QueryResult::column_name: no such column");
   }
   return PQfname(_raw.get(), static_cast<int>(column));
 }
 
-std::optional<std::string_view> Query_Result::text(std::size_t row, std::size_t column) const {
+std::optional<std::string_view> QueryResult::text(std::size_t row, std::size_t column) const {
   if ( row >= row_count() || column >= column_count() ) {
-    throw std::out_of_range("Query_Result::text: no such field");
+    throw std::out_of_range("QueryResult::text: no such field");
   }
   const int row_index = static_cast<int>(row);
   const int column_index = static_cast<int>(column);
@@ -113,14 +111,14 @@ std::optional<std::string_view> Query_Result::text(std::size_t row, std::size_t 
                           static_cast<std::size_t>(PQgetlength(_raw.get(), row_index, column_index))};
 }
 
-bool Query_Result::is_binary() const noexcept { return _raw && PQnfields(_raw.get()) > 0 && PQfformat(_raw.get(), 0) == 1; }
+bool QueryResult::is_binary() const noexcept { return _raw && PQnfields(_raw.get()) > 0 && PQfformat(_raw.get(), 0) == 1; }
 
-std::optional<std::span<const std::byte>> Query_Result::binary(std::size_t row, std::size_t column) const {
+std::optional<std::span<const std::byte>> QueryResult::binary(std::size_t row, std::size_t column) const {
   if ( ! is_binary() ) {
-    throw std::logic_error("Query_Result::binary: the result is text");
+    throw std::logic_error("QueryResult::binary: the result is text");
   }
   if ( row >= row_count() || column >= column_count() ) {
-    throw std::out_of_range("Query_Result::binary: no such field");
+    throw std::out_of_range("QueryResult::binary: no such field");
   }
   const int row_index = static_cast<int>(row);
   const int column_index = static_cast<int>(column);
@@ -133,28 +131,28 @@ std::optional<std::span<const std::byte>> Query_Result::binary(std::size_t row, 
       static_cast<std::size_t>(PQgetlength(_raw.get(), row_index, column_index))};
 }
 
-std::uint32_t Query_Result::column_type(std::size_t column) const {
+std::uint32_t QueryResult::column_type(std::size_t column) const {
   if ( column >= column_count() ) {
-    throw std::out_of_range("Query_Result::column_type: no such column");
+    throw std::out_of_range("QueryResult::column_type: no such column");
   }
   return PQftype(_raw.get(), static_cast<int>(column));
 }
 
 // ============================================================================
-// Async_Client::Impl
+// AsyncClient::Impl
 // ============================================================================
 
-class Async_Client::Impl {
+class AsyncClient::Impl {
  public:
   Impl(const std::string& conninfo, const Options& options) : _session_sql(options.session.sql()) {
     if ( PQlibVersion() < MIN_LIBPQ_VERSION ) {  // the library loaded at run time, which is not always the one built against
-      throw std::runtime_error("Async_Client needs libpq " + std::to_string(MIN_LIBPQ_VERSION / LIBPQ_MAJOR_DIVISOR) +
+      throw std::runtime_error("AsyncClient needs libpq " + std::to_string(MIN_LIBPQ_VERSION / LIBPQ_MAJOR_DIVISOR) +
                                " or newer at run time, found " + std::to_string(PQlibVersion() / LIBPQ_MAJOR_DIVISOR));
     }
     if ( options.connections == 0 ) {
-      throw std::invalid_argument("Async_Client needs at least one connection");
+      throw std::invalid_argument("AsyncClient needs at least one connection");
     }
-    _workers = std::make_unique<async::Thread_Pool>(options.workers);
+    _workers = std::make_unique<async::ThreadPool>(options.workers);
 
     try {
       open_connections(conninfo, options.connections);
@@ -179,7 +177,8 @@ class Async_Client::Impl {
     }
     wake();
     _reactor.join();
-    _workers.reset();  // runs every completion still posted, while the connections they may reset are still open
+    _workers->shutdown();  // runs every completion still posted, while `_workers` is still valid for the ones that post more
+    // A reconnect still in progress is dropped: its connection is closed below with the others.
     close_everything();
   }
 
@@ -187,7 +186,7 @@ class Async_Client::Impl {
     enqueue(Operation{.sql = std::move(sql), .params = std::move(params), .done = std::move(done), .stream = nullptr});
   }
 
-  void stream(std::string sql, std::vector<std::string> params, StreamOptions options, Chunk_Handler on_chunk, Stream_Completion done) {
+  void stream(std::string sql, std::vector<std::string> params, StreamOptions options, ChunkHandler on_chunk, StreamCompletion done) {
     if ( options.chunk_rows == 0 || options.max_buffered_chunks == 0 ) {
       throw std::invalid_argument("a stream needs chunks of at least one row and at least one buffered chunk");
     }
@@ -207,15 +206,15 @@ class Async_Client::Impl {
    * Everything but `options`, `on_chunk` (only ever used by the one delivering task) and `done` is guarded by `mutex`.
    */
   struct Stream {
-    Stream(StreamOptions stream_options, Chunk_Handler chunk_handler, Stream_Completion completion)
+    Stream(StreamOptions stream_options, ChunkHandler chunk_handler, StreamCompletion completion)
         : options(stream_options), on_chunk(std::move(chunk_handler)), done(std::move(completion)) {}
 
     StreamOptions     options;
-    Chunk_Handler     on_chunk;
-    Stream_Completion done;
+    ChunkHandler     on_chunk;
+    StreamCompletion done;
 
     std::mutex               mutex;
-    std::deque<Query_Result> ready;               // chunks read and waiting for the handler
+    std::deque<QueryResult> ready;               // chunks read and waiting for the handler
     bool                     delivering = false;  // a worker task is handling chunks
     bool                     stop = false;        // the consumer is done (it said so, or threw) or the client is shutting down: chunks are dropped
     bool                     aborted = false;     // ... because of the shutdown: the stream did not end by itself
@@ -243,9 +242,20 @@ class Async_Client::Impl {
     // A stream's state, all of it used by the reactor thread only:
     bool                               paused = false;     // not reading: the consumer has fallen behind
     bool                               read_done = false;  // every result has been read; only a cancel still running holds the connection
-    bool                               cancel_sent = false;
-    bool                               query_canceled = false;  // the statement ended with a cancellation (SQLSTATE 57014)
-    std::shared_ptr<std::atomic<bool>> cancel_running;          // true while a worker is sending the cancel
+    bool          cancel_sent = false;
+    bool          query_canceled = false;  // the statement ended with a cancellation (SQLSTATE 57014)
+    PGcancelConn* cancel = nullptr;        // a cancel being sent, driven by the reactor (owned); null when there is none
+    std::int16_t  cancel_events = 0;       // what the cancel waits for on its own socket
+  };
+
+  /**
+   * @brief A connection whose link was lost, being re-established by the reactor: first the reset, then the session's `SET`.
+   * Until it is done, the connection is neither idle nor running a statement.
+   */
+  struct Reconnecting {
+    PGconn*      connection = nullptr;
+    bool         resetting = true;  // false: the reset is done and the session settings are being applied
+    std::int16_t events = 0;        // what it waits for on the connection's socket
   };
 
   // ---- setup and teardown --------------------------------------------------
@@ -316,7 +326,7 @@ class Async_Client::Impl {
   }
 
   void complete_with_error(Completion done, const std::string& message) {
-    _workers->post([done = std::move(done), message] mutable { done(Query_Result{}, runtime_error_ptr(message)); });
+    _workers->post([done = std::move(done), message] mutable { done(QueryResult{}, runtime_error_ptr(message)); });
   }
 
   /** @brief Ends an operation that never started: its completion gets the error. */
@@ -343,43 +353,91 @@ class Async_Client::Impl {
 
   // ---- the reactor ---------------------------------------------------------
 
+  /** @brief Where each socket the reactor waits on is in its `pollfd` list. */
+  struct PollLayout {
+    std::vector<std::size_t> cancel_at;          // per active statement: its cancel's index, or 0 for none
+    std::size_t              reconnects_at = 0;  // the first reconnect's index
+  };
+
   void reactor_loop() {
     std::vector<Active> active;
     std::vector<pollfd> descriptors;
+    PollLayout          layout;
     while ( true ) {
       const bool stopping = start_queued(active);
       serve_streams(active, stopping);
       if ( stopping && active.empty() ) {
         return;
       }
-
-      descriptors.clear();
-      descriptors.push_back(pollfd{.fd = _wake_read, .events = poll_events(POLLIN), .revents = 0});
-      for ( const Active& statement : active ) {
-        descriptors.push_back(pollfd{.fd = PQsocket(statement.connection), .events = interest_of(statement), .revents = 0});
-      }
-
+      collect_descriptors(active, descriptors, layout);
       if ( poll(descriptors.data(), static_cast<nfds_t>(descriptors.size()), -1) < 0 ) {
-        if ( errno == EINTR ) {
-          continue;
+        if ( errno != EINTR ) {
+          fail_everything(active);
         }
-        for ( Active& statement : active ) {  // poll itself failed: nothing more can be waited on
-          statement.error = runtime_error_ptr("poll failed while waiting for Postgres");
-          finish(statement);
-        }
-        active.clear();
         continue;
       }
-
       if ( descriptors.front().revents != 0 ) {
         drain_wake();
       }
-      for ( std::size_t i = active.size(); i-- > 0; ) {
-        const std::int16_t events = descriptors.at(i + 1).revents;
-        if ( events != 0 && advance(active.at(i), events) ) {
-          finish(active.at(i));
-          active.erase(active.begin() + static_cast<std::ptrdiff_t>(i));
-        }
+      advance_reconnects(descriptors, layout);
+      advance_statements(active, descriptors, layout);
+    }
+  }
+
+  /** @brief The wake-up pipe, then each statement's socket, then the sockets of its cancel (if any), then those of reconnects. */
+  void collect_descriptors(const std::vector<Active>& active, std::vector<pollfd>& descriptors, PollLayout& layout) const {
+    descriptors.clear();
+    layout.cancel_at.clear();
+    descriptors.push_back(pollfd{.fd = _wake_read, .events = poll_events(POLLIN), .revents = 0});
+    for ( const Active& statement : active ) {
+      descriptors.push_back(pollfd{.fd = PQsocket(statement.connection), .events = interest_of(statement), .revents = 0});
+    }
+    for ( const Active& statement : active ) {
+      layout.cancel_at.push_back(statement.cancel != nullptr ? descriptors.size() : 0);
+      if ( statement.cancel != nullptr ) {
+        descriptors.push_back(pollfd{.fd = PQcancelSocket(statement.cancel), .events = statement.cancel_events, .revents = 0});
+      }
+    }
+    layout.reconnects_at = descriptors.size();
+    for ( const Reconnecting& reconnect : _reconnecting ) {
+      descriptors.push_back(pollfd{.fd = PQsocket(reconnect.connection), .events = reconnect.events, .revents = 0});
+    }
+  }
+
+  /** @brief `poll` itself failed, so nothing more can be waited on: every statement fails, and reconnecting connections go back as they are. */
+  void fail_everything(std::vector<Active>& active) {
+    for ( Active& statement : active ) {
+      statement.error = runtime_error_ptr("poll failed while waiting for Postgres");
+      finish(statement);
+    }
+    active.clear();
+    for ( const Reconnecting& reconnect : _reconnecting ) {
+      push_idle(reconnect.connection);  // the next statement on it fails, and tries again
+    }
+    _reconnecting.clear();
+  }
+
+  void advance_reconnects(const std::vector<pollfd>& descriptors, const PollLayout& layout) {
+    for ( std::size_t i = _reconnecting.size(); i-- > 0; ) {
+      const std::int16_t events = descriptors.at(layout.reconnects_at + i).revents;
+      if ( events != 0 && advance_reconnect(_reconnecting.at(i), events) ) {
+        push_idle(_reconnecting.at(i).connection);
+        _reconnecting.erase(_reconnecting.begin() + static_cast<std::ptrdiff_t>(i));
+      }
+    }
+  }
+
+  void advance_statements(std::vector<Active>& active, const std::vector<pollfd>& descriptors, const PollLayout& layout) {
+    for ( std::size_t i = active.size(); i-- > 0; ) {
+      Active&           statement = active.at(i);
+      const std::size_t cancel_at = layout.cancel_at.at(i);
+      bool              done = cancel_at != 0 && descriptors.at(cancel_at).revents != 0 && advance_cancel(statement);
+      if ( const std::int16_t events = descriptors.at(i + 1).revents; ! done && events != 0 ) {
+        done = advance(statement, events);
+      }
+      if ( done ) {
+        finish(statement);
+        active.erase(active.begin() + static_cast<std::ptrdiff_t>(i));
       }
     }
   }
@@ -499,13 +557,13 @@ class Async_Client::Impl {
   /** @brief Hands a chunk to the stream's handler; anything else is the statement's outcome. */
   void take(Active& statement, pg_result* result) {
     if ( statement.operation.stream && PQresultStatus(result) == PGRES_TUPLES_CHUNK ) {
-      enqueue_chunk(statement.operation.stream, Query_Result(result));
+      enqueue_chunk(statement.operation.stream, QueryResult(result));
       return;
     }
     record(statement, result);
   }
 
-  static bool is_cancelling(const Active& statement) { return statement.cancel_running != nullptr && statement.cancel_running->load(); }
+  static bool is_cancelling(const Active& statement) { return statement.cancel != nullptr; }
 
   static void record(Active& statement, pg_result* result) {
     if ( is_success(PQresultStatus(result)) ) {
@@ -525,15 +583,18 @@ class Async_Client::Impl {
 
   /** @brief Returns the connection to the pool and hands the outcome to a worker. */
   void finish(Active& statement) {
+    if ( statement.cancel != nullptr ) {  // only when poll failed: a finished statement normally waits for its cancel
+      end_cancel(statement);
+    }
     if ( statement.operation.stream ) {
       finish_stream(statement);
       return;
     }
     PGconn*            connection = statement.connection;
-    Query_Result       result;
+    QueryResult       result;
     std::exception_ptr error = statement.error;
     if ( ! error ) {
-      result = Query_Result(statement.result);
+      result = QueryResult(statement.result);
     } else if ( statement.result != nullptr ) {
       PQclear(statement.result);
     }
@@ -552,7 +613,7 @@ class Async_Client::Impl {
   }
 
   /** @brief Queues a chunk for the handler, and starts the task that handles them if none is running. A stopped stream drops it. */
-  void enqueue_chunk(const std::shared_ptr<Stream>& stream, Query_Result chunk) {
+  void enqueue_chunk(const std::shared_ptr<Stream>& stream, QueryResult chunk) {
     {
       const std::scoped_lock lock(stream->mutex);
       if ( stream->stop ) {
@@ -570,7 +631,7 @@ class Async_Client::Impl {
   /** @brief The worker task: handles the stream's chunks one at a time, in order, until none is waiting or the stream is stopped. */
   void deliver(const std::shared_ptr<Stream>& stream) {
     while ( true ) {
-      Query_Result chunk;
+      QueryResult chunk;
       {
         const std::scoped_lock lock(stream->mutex);
         if ( stream->stop ) {
@@ -683,40 +744,116 @@ class Async_Client::Impl {
   }
 
   /**
-   * @brief Cancels the statement on the server. The connection stays with the statement until that has been done, so a late
-   * cancel can never land on the next statement that connection runs.
+   * @brief Starts cancelling the statement on the server, over a connection of the cancel's own that the reactor drives
+   * (`advance_cancel`). The statement keeps its connection until the cancel is done, so a late cancel can never land on
+   * the next statement that connection runs.
    */
-  void cancel(Active& statement) {
+  static void cancel(Active& statement) {
     statement.cancel_sent = true;
-    PGcancelConn* request = PQcancelCreate(statement.connection);  // made here: the reactor thread owns the connection
+    PGcancelConn* request = PQcancelCreate(statement.connection);
     if ( request == nullptr ) {
       return;  // no memory for it: the statement runs to its end and its rows are dropped
     }
-    statement.cancel_running = std::make_shared<std::atomic<bool>>(true);
-    _workers->post([this, request, running = statement.cancel_running] {
-      std::ignore = PQcancelBlocking(request);  // it opens a connection of its own; if it fails the statement just runs on
-      PQcancelFinish(request);
-      running->store(false);
-      wake();
-    });
+    if ( PQcancelStart(request) == 0 || PQcancelSocket(request) < 0 ) {
+      PQcancelFinish(request);  // it could not even start: likewise
+      return;
+    }
+    statement.cancel = request;
+    statement.cancel_events = poll_events(POLLOUT);  // a cancel starts by connecting, as if the last poll said "writing"
   }
 
-  /** @brief Makes `connection` available again, first reconnecting it (off the reactor thread) if the link was lost. */
+  /** @brief Does the next step of the statement's cancel. @return True once the statement is finished: its results were all read, and the cancel is over. */
+  static bool advance_cancel(Active& statement) {
+    switch ( PQcancelPoll(statement.cancel) ) {
+      case PGRES_POLLING_READING:
+        statement.cancel_events = poll_events(POLLIN);
+        return false;
+      case PGRES_POLLING_WRITING:
+        statement.cancel_events = poll_events(POLLOUT);
+        return false;
+      case PGRES_POLLING_ACTIVE:
+        return false;
+      case PGRES_POLLING_OK:
+      case PGRES_POLLING_FAILED:  // if it failed, the statement just runs on
+        break;
+    }
+    end_cancel(statement);
+    return statement.read_done;
+  }
+
+  static void end_cancel(Active& statement) {
+    PQcancelFinish(statement.cancel);
+    statement.cancel = nullptr;
+  }
+
+  /** @brief Makes `connection` available again, first re-establishing it (driven by the reactor) if the link was lost. */
   void release(PGconn* connection) {
     if ( PQstatus(connection) != CONNECTION_BAD ) {
       push_idle(connection);
       return;
     }
-    _workers->post([this, connection] {
-      PQreset(connection);
-      std::ignore = apply_session(connection, _session_sql);  // a reset connection is a new session; a failure here is the next statement's to find
+    if ( PQresetStart(connection) == 0 || PQsocket(connection) < 0 ) {
+      push_idle(connection);  // the reset could not start: the next statement on it fails, and tries again
+      return;
+    }
+    _reconnecting.push_back(Reconnecting{.connection = connection, .resetting = true, .events = poll_events(POLLOUT)});
+  }
+
+  /** @brief Does the next step of a reconnect. @return True once it is over (worked or not), and the connection can go back to the pool. */
+  bool advance_reconnect(Reconnecting& reconnect, std::int16_t events) {
+    PGconn* connection = reconnect.connection;
+    if ( reconnect.resetting ) {
+      switch ( PQresetPoll(connection) ) {
+        case PGRES_POLLING_READING:
+          reconnect.events = poll_events(POLLIN);
+          return false;
+        case PGRES_POLLING_WRITING:
+          reconnect.events = poll_events(POLLOUT);
+          return false;
+        case PGRES_POLLING_ACTIVE:
+          return false;
+        case PGRES_POLLING_FAILED:
+          return true;  // the next statement on it fails, and tries again
+        case PGRES_POLLING_OK:
+          break;
+      }
+      // A reset connection is a new session: apply the settings again, without blocking.
       PQsetnonblocking(connection, 1);
-      push_idle(connection);  // even if the reset failed: the next statement will fail and try again
-    });
+      if ( _session_sql.empty() || PQsendQuery(connection, _session_sql.c_str()) == 0 ) {
+        return true;
+      }
+      reconnect.resetting = false;
+      reconnect.events = poll_events(POLLIN, POLLOUT);
+      return false;
+    }
+
+    if ( has_any(events, static_cast<unsigned>(POLLOUT)) ) {
+      const int flushed = PQflush(connection);
+      if ( flushed < 0 ) {
+        return true;
+      }
+      if ( flushed == 0 ) {
+        reconnect.events = poll_events(POLLIN);
+      }
+    }
+    if ( has_any(events, READABLE) ) {
+      if ( PQconsumeInput(connection) == 0 ) {
+        return true;
+      }
+      while ( PQisBusy(connection) == 0 ) {
+        pg_result* result = PQgetResult(connection);
+        if ( result == nullptr ) {
+          return true;
+        }
+        PQclear(result);  // if the SET failed, the session keeps the server's defaults
+      }
+    }
+    return false;
   }
 
   std::string                         _session_sql;
-  std::unique_ptr<async::Thread_Pool> _workers;
+  std::vector<Reconnecting>           _reconnecting;  // reactor thread only
+  std::unique_ptr<async::ThreadPool> _workers;
   std::vector<PGconn*>                _connections;
   int                                 _wake_read = -1;
   int                                 _wake_write = -1;
@@ -730,21 +867,21 @@ class Async_Client::Impl {
 };
 
 // ============================================================================
-// Async_Client
+// AsyncClient
 // ============================================================================
 
-Async_Client::Async_Client(const std::string& conninfo, Options options) : _impl(std::make_unique<Impl>(conninfo, options)) {}
+AsyncClient::AsyncClient(const std::string& conninfo, Options options) : _impl(std::make_unique<Impl>(conninfo, options)) {}
 
-Async_Client::~Async_Client() = default;
+AsyncClient::~AsyncClient() = default;
 
-void Async_Client::run(std::string sql, std::vector<std::string> params, Completion done) {
+void AsyncClient::run(std::string sql, std::vector<std::string> params, Completion done) {
   _impl->run(std::move(sql), std::move(params), std::move(done));
 }
 
-void Async_Client::stream(std::string sql, std::vector<std::string> params, StreamOptions options, Chunk_Handler on_chunk, Stream_Completion done) {
+void AsyncClient::stream(std::string sql, std::vector<std::string> params, StreamOptions options, ChunkHandler on_chunk, StreamCompletion done) {
   _impl->stream(std::move(sql), std::move(params), options, std::move(on_chunk), std::move(done));
 }
 
-void Async_Client::post(std::move_only_function<void()> task) { _impl->post(std::move(task)); }
+void AsyncClient::post(std::move_only_function<void()> task) { _impl->post(std::move(task)); }
 
 }  // namespace schemacht::postgres

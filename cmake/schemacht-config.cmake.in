@@ -10,13 +10,6 @@ find_dependency(Threads)
 # Streaming results need libpq 17 (PQsetChunkedRowsMode, PQcancelCreate).
 find_dependency(PostgreSQL 17)
 
-# libpqxx: the copy installed beside this package if there is one (it was built with the compiler that built schemacht, and
-# its headers are generated for it), otherwise one the consumer has.
-find_package(libpqxx CONFIG QUIET PATHS "${PACKAGE_PREFIX_DIR}" NO_DEFAULT_PATH)
-if(NOT libpqxx_FOUND)
-  find_dependency(libpqxx CONFIG)
-endif()
-
 include("${CMAKE_CURRENT_LIST_DIR}/schemacht-targets.cmake")
 
 check_required_components(schemacht)

@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <array>
 #include <bit>
+#include <concepts>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -13,7 +14,7 @@
 #include <string_view>
 #include <vector>
 
-namespace schemacht::detail {
+namespace schemacht::postgres::detail {
 
 namespace {
 
@@ -40,8 +41,8 @@ constexpr std::array<std::uint8_t, CHAR_VALUES> make_nibble_table() {
   return table;
 }
 
-// A table, not a chain of range checks: hex text is random digits, so a branch per digit is mispredicted about one time
-// in three and decoding a geometry cost 1.5 us against 0.12 us (benchmarks/README.md).
+// A table, not a chain of range checks: hex digits are effectively random, so a branch per digit is often mispredicted,
+// and a table lookup decodes large values several times faster.
 constexpr std::array<std::uint8_t, CHAR_VALUES> NIBBLES = make_nibble_table();
 
 /** @brief The characters that end an unquoted array element, or cannot be inside one: `,` `"` `{` `}`. */
@@ -105,7 +106,7 @@ std::string format_hex_bytes(const std::vector<std::byte>& bytes) {
   return text;
 }
 
-void Array_Reader::fail(std::string_view reason) const {
+void ArrayReader::fail(std::string_view reason) const {
   std::string text(_text.substr(0, MESSAGE_TEXT_LIMIT));
   if ( _text.size() > MESSAGE_TEXT_LIMIT ) {
     text += "...";
@@ -113,7 +114,7 @@ void Array_Reader::fail(std::string_view reason) const {
   throw std::invalid_argument("parse_field: the array " + std::string(reason) + ": '" + text + "'");
 }
 
-Array_Reader::Array_Reader(std::string_view text) : _text(text) {
+ArrayReader::ArrayReader(std::string_view text) : _text(text) {
   const std::string_view whole = trimmed(text);
   if ( ! whole.empty() && whole.front() == '[' ) {
     fail("has a dimension prefix ([lower:upper]=), which is not supported");
@@ -130,13 +131,13 @@ Array_Reader::Array_Reader(std::string_view text) : _text(text) {
   }
 }
 
-void Array_Reader::skip_spaces() {
+void ArrayReader::skip_spaces() {
   while ( _at < _body.size() && is_space(_body.at(_at)) ) {
     ++_at;
   }
 }
 
-std::string_view Array_Reader::bare_element() {
+std::string_view ArrayReader::bare_element() {
   // One pass to the comma that ends the element; a quote or a brace on the way is not allowed in an unquoted element.
   const std::string_view rest = _body.substr(_at);
   const auto* const      stop = std::ranges::find_if(rest, [](char chr) { return ENDS_BARE_ELEMENT.at(static_cast<unsigned char>(chr)); });
@@ -158,7 +159,7 @@ std::string_view Array_Reader::bare_element() {
   return token;
 }
 
-std::string_view Array_Reader::quoted_element() {
+std::string_view ArrayReader::quoted_element() {
   const std::size_t start = _at + 1;  // past the opening quote
   std::size_t       end = start;
   bool              escaped = false;
@@ -187,7 +188,7 @@ std::string_view Array_Reader::quoted_element() {
   return _unescaped;
 }
 
-std::optional<std::string_view> Array_Reader::next() {
+std::optional<std::string_view> ArrayReader::next() {
   skip_spaces();
   if ( _at >= _body.size() ) {
     if ( _after_comma ) {
@@ -256,7 +257,7 @@ double binary_real(std::span<const std::byte> bytes) {
   }
 }
 
-Binary_Array_Reader::Binary_Array_Reader(std::span<const std::byte> bytes) {
+BinaryArrayReader::BinaryArrayReader(std::span<const std::byte> bytes) {
   if ( bytes.size() < BINARY_ARRAY_HEADER ) {
     throw std::invalid_argument("parse_binary: too short to be an array");
   }
@@ -280,7 +281,7 @@ Binary_Array_Reader::Binary_Array_Reader(std::span<const std::byte> bytes) {
   _size = static_cast<std::size_t>(length);
 }
 
-std::span<const std::byte> Binary_Array_Reader::next() {
+std::span<const std::byte> BinaryArrayReader::next() {
   if ( _rest.size() < BINARY_LENGTH_BYTES ) {
     throw std::invalid_argument("parse_binary: the array ends before its last element");
   }
@@ -296,4 +297,4 @@ std::span<const std::byte> Binary_Array_Reader::next() {
   return element;
 }
 
-}  // namespace schemacht::detail
+}  // namespace schemacht::postgres::detail

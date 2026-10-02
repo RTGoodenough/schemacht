@@ -11,24 +11,29 @@
 namespace schemacht::async {
 
 /**
- * @brief A fixed set of worker threads running posted tasks in the order they were posted.
+ * @brief A fixed set of worker threads running posted tasks.
  *
- * Used to run completions -- parsing a result into rows and fulfilling a
- * promise -- so that waiting for the network never occupies one of these
- * threads: only work that is ready to run does.
+ * Tasks start in the order they were posted, and with more than one thread they run concurrently. Used to run completions
+ * (parsing a result into rows, fulfilling a promise) so that waiting for the network never occupies one of these threads.
  *
- * @note Thread-safe. Destroying the pool runs every task already posted, then joins.
+ * @note Thread-safe. `shutdown` (and the destructor) runs every task posted, including tasks that running tasks post, then joins.
  */
-class Thread_Pool {
+class ThreadPool {
  public:
   /** @throws std::invalid_argument if `threads` is 0. */
-  explicit Thread_Pool(std::size_t threads);
+  explicit ThreadPool(std::size_t threads);
 
-  Thread_Pool(const Thread_Pool&) = delete;
-  Thread_Pool(Thread_Pool&&) = delete;
-  Thread_Pool& operator=(const Thread_Pool&) = delete;
-  Thread_Pool& operator=(Thread_Pool&&) = delete;
-  ~Thread_Pool();
+  ThreadPool(const ThreadPool&) = delete;
+  ThreadPool(ThreadPool&&) = delete;
+  ThreadPool& operator=(const ThreadPool&) = delete;
+  ThreadPool& operator=(ThreadPool&&) = delete;
+  ~ThreadPool();
+
+  /**
+   * @brief Runs every task already posted, and any those tasks post, then joins the threads. Safe to call more than once,
+   * and from no task of this pool. The pool stays usable as an object: a task posted afterwards is dropped.
+   */
+  void shutdown();
 
   /**
    * @brief Queues `task` to run on some worker.
@@ -45,6 +50,7 @@ class Thread_Pool {
   std::condition_variable                     _wake;
   std::deque<std::move_only_function<void()>> _tasks;
   bool                                        _stopping = false;
+  bool                                        _joined = false;
   std::vector<std::thread>                    _threads;
 };
 

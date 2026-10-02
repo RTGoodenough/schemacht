@@ -9,8 +9,7 @@
 #include "schemacht/schema/schema.hpp"
 
 /**
- * Text tests for queries. Each is one operation, written as the SQL operator a database answers from an index; none has
- * .
+ * Text tests for queries. Each is written as the SQL operator (not the equivalent function) so that an index can answer it.
  */
 namespace schemacht::query {
 
@@ -40,8 +39,8 @@ class Like {
  * @brief Rows whose text column matches the `LIKE` pattern bound to `arg<N>()`:
  *
  * @code
- * constexpr auto NAMED = query::select(query::like(Roads::col<"name">(), query::arg<0>()));
- * roads.execute(query::Prepared<NAMED>::bind(query::escape_like("Main") + "%"));   // starts with "Main"
+ * constexpr auto NAMED = query::select(query::like(Streets::col<"name">(), query::arg<0>()));
+ * database.execute(query::Prepared<NAMED>::bind(query::escape_like("Main") + "%"));   // starts with "Main"
  * @endcode
  *
  * `%` matches any run of characters, `_` any one character, and a backslash makes the next character literal.
@@ -49,8 +48,8 @@ class Like {
  * trigram index (`pg_trgm`) any pattern. A leading `%` cannot use a btree. Negate with `!` for `NOT LIKE`.
  */
 template <schema::IsSchema schema_t, std::size_t column_idx, std::size_t slot_idx>
-  requires std::same_as<typename Column_Ref<schema_t, column_idx>::data_type, std::string>
-[[nodiscard]] constexpr auto like(const Column_Ref<schema_t, column_idx>& column, Arg_Ref<slot_idx> arg) {
+  requires std::same_as<typename ColumnRef<schema_t, column_idx>::data_type, std::string>
+[[nodiscard]] constexpr auto like(const ColumnRef<schema_t, column_idx>& column, ArgRef<slot_idx> arg) {
   return column.template apply<Like>(arg);
 }
 

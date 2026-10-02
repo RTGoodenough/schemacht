@@ -7,7 +7,7 @@
 #include "schemacht/schema/schema.hpp"
 #include "schemacht/util/compile_time.hpp"
 
-namespace schemacht {
+namespace schemacht::postgres {
 
 /** @brief The type of the values of the column named `key_col` in `schema_t` (a lookup is by value, and never for a NULL). */
 template <schema::IsSchema schema_t, util::CTString key_col>
@@ -23,4 +23,4 @@ template <schema::IsSchema schema_t, util::CTString key_col>
   return query::Prepared<BY_KEYS>::bind(std::vector<key_type<schema_t, key_col>>(keys.begin(), keys.end()));
 }
 
-}  // namespace schemacht
+}  // namespace schemacht::postgres

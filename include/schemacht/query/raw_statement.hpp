@@ -11,10 +11,11 @@
 
 #include "schemacht/schema/field.hpp"
 #include "schemacht/util/compile_time.hpp"
+#include "schemacht/util/type_utils.hpp"
 
 namespace schemacht::query {
 
-/** @brief The C++ types of a `Raw_Statement`'s arguments, in the order of its `$1`, `$2`, ... */
+/** @brief The C++ types of a `RawStatement`'s arguments, in the order of its `$1`, `$2`, ... */
 template <typename... argument_ts>
 struct RawArguments {
   using types = std::tuple<argument_ts...>;
@@ -37,12 +38,12 @@ struct PlaceholderCheck {
   [[nodiscard]] constexpr bool operator==(const PlaceholderCheck&) const = default;
 };
 
-inline constexpr std::size_t DECIMAL_BASE = 10;
-
 /** @brief The most arguments a raw statement may declare. */
 inline constexpr std::size_t MAX_RAW_ARGUMENTS = 128;
 
 namespace detail {
+
+inline constexpr std::size_t DECIMAL_BASE = 10;
 
 [[nodiscard]] constexpr bool is_name_char(char chr) {
   return (chr >= 'a' && chr <= 'z') || (chr >= 'A' && chr <= 'Z') || (chr >= '0' && chr <= '9') || chr == '_' || chr == '$';
@@ -50,7 +51,7 @@ namespace detail {
 
 [[nodiscard]] constexpr bool is_digit(char chr) { return chr >= '0' && chr <= '9'; }
 
-/** @brief What `SQL_Scanner::skip_non_code` found at the scanner's position. */
+/** @brief What `SqlScanner::skip_non_code` found at the scanner's position. */
 enum class Skipped : std::uint8_t {
   Nothing,       ///< Code: nothing was skipped.
   Text,          ///< A string, quoted name or comment, now skipped.
@@ -63,15 +64,15 @@ enum class Skipped : std::uint8_t {
  * What is left is where a `$n` is a placeholder. A `$` that follows a name character is part of a name (`a$1`), not a
  * placeholder.
  */
-class SQL_Scanner {
+class SqlScanner {
  public:
-  explicit constexpr SQL_Scanner(std::string_view sql) : _sql(sql) {}
+  explicit constexpr SqlScanner(std::string_view sql) : _sql(sql) {}
 
-  constexpr SQL_Scanner(const SQL_Scanner&) = default;
-  constexpr SQL_Scanner(SQL_Scanner&&) noexcept = default;
-  constexpr SQL_Scanner& operator=(const SQL_Scanner&) = default;
-  constexpr SQL_Scanner& operator=(SQL_Scanner&&) noexcept = default;
-  constexpr ~SQL_Scanner() = default;
+  constexpr SqlScanner(const SqlScanner&) = default;
+  constexpr SqlScanner(SqlScanner&&) noexcept = default;
+  constexpr SqlScanner& operator=(const SqlScanner&) = default;
+  constexpr SqlScanner& operator=(SqlScanner&&) noexcept = default;
+  constexpr ~SqlScanner() = default;
 
   [[nodiscard]] constexpr bool done() const { return _at >= _sql.size(); }
   [[nodiscard]] constexpr char peek(std::size_t ahead = 0) const { return _at + ahead < _sql.size() ? _sql.at(_at + ahead) : '\0'; }
@@ -156,7 +157,7 @@ class SQL_Scanner {
  */
 [[nodiscard]] constexpr PlaceholderCheck check_placeholders(std::string_view sql, std::size_t argument_count) {
   std::array<bool, MAX_RAW_ARGUMENTS + 1> used{};
-  detail::SQL_Scanner                     scanner(sql);
+  detail::SqlScanner                     scanner(sql);
   while ( ! scanner.done() ) {
     const detail::Skipped skipped = scanner.skip_non_code();
     if ( skipped == detail::Skipped::Unterminated ) {
@@ -175,7 +176,7 @@ class SQL_Scanner {
     }
     std::size_t number = 0;
     while ( detail::is_digit(scanner.peek()) ) {
-      number = (number * DECIMAL_BASE) + static_cast<std::size_t>(scanner.peek() - '0');
+      number = (number * detail::DECIMAL_BASE) + static_cast<std::size_t>(scanner.peek() - '0');
       scanner.advance();
       if ( number > MAX_RAW_ARGUMENTS ) {
         return {.problem = PlaceholderProblem::Beyond, .number = number};
@@ -195,32 +196,32 @@ class SQL_Scanner {
 }
 
 template <util::CTString sql_text, typename arguments_t, schema::IsField... field_ts>
-class Raw_Statement;
+class RawStatement;
 
 /**
- * @brief A `Raw_Statement` with its arguments bound: what a backend runs, as it runs a `Typed_Query`.
+ * @brief A `RawStatement` with its arguments bound: what a backend runs, as it runs a `TypedQuery`.
  *
- * Build one with `Raw_Statement::bind(...)`. It holds the arguments as the C++ types the statement declares; the backend writes them as text.
+ * Build one with `RawStatement::bind(...)`. It holds the arguments as the C++ types the statement declares; the backend writes them as text.
  *
- * @tparam statement_t The `Raw_Statement` it is a use of.
+ * @tparam statement_t The `RawStatement` it is a use of.
  */
 template <typename statement_t>
-class Bound_Raw_Statement {
+class BoundRawStatement {
  public:
   using statement_type = statement_t;
 
-  /** @brief One result row: a `std::tuple` of the statement's `Field`s, as a `Typed_Query`'s `result_type`. */
+  /** @brief One result row: a `std::tuple` of the statement's `Field`s, as a `TypedQuery`'s `result_type`. */
   using result_type = statement_t::row_type;
 
   using arguments_type = statement_t::argument_types;
 
-  explicit Bound_Raw_Statement(arguments_type arguments) : _arguments(std::move(arguments)) {}
+  explicit BoundRawStatement(arguments_type arguments) : _arguments(std::move(arguments)) {}
 
-  Bound_Raw_Statement(const Bound_Raw_Statement&) = default;
-  Bound_Raw_Statement(Bound_Raw_Statement&&) noexcept = default;
-  Bound_Raw_Statement& operator=(const Bound_Raw_Statement&) = default;
-  Bound_Raw_Statement& operator=(Bound_Raw_Statement&&) noexcept = default;
-  ~Bound_Raw_Statement() = default;
+  BoundRawStatement(const BoundRawStatement&) = default;
+  BoundRawStatement(BoundRawStatement&&) noexcept = default;
+  BoundRawStatement& operator=(const BoundRawStatement&) = default;
+  BoundRawStatement& operator=(BoundRawStatement&&) noexcept = default;
+  ~BoundRawStatement() = default;
 
   /** @return The statement, with `$n` placeholders for `arguments()`. */
   [[nodiscard]] static constexpr std::string_view sql() noexcept { return statement_t::SQL; }
@@ -241,25 +242,25 @@ class Bound_Raw_Statement {
  * The statement and its types are all in one type, so a use is checked like any other query:
  *
  * @code
- * using Elevation = query::Raw_Statement<
- *     "SELECT ST_Value(rast, 1, ST_SetSRID(ST_MakePoint($1, $2), 4326)) AS metres "
- *     "FROM elevation WHERE ST_Intersects(rast, ST_SetSRID(ST_MakePoint($1, $2), 4326))",
- *     query::RawArguments<double, double>,
- *     schema::Field<std::optional<double>, "metres">>;
+ * using TopSpenders = query::RawStatement<
+ *     "SELECT customer_id AS customer, sum(total) AS spent FROM orders "
+ *     "WHERE placed_at >= now() - make_interval(days => $1) GROUP BY customer_id ORDER BY spent DESC LIMIT $2",
+ *     query::RawArguments<std::int32_t, std::int64_t>,
+ *     schema::Field<std::int64_t, "customer">, schema::Field<std::optional<double>, "spent">>;
  *
- * std::vector<Elevation::row_type> found = database.execute(Elevation::bind(-122.4, 37.8)).get();
+ * std::vector<TopSpenders::row_type> top = database.execute(TopSpenders::bind(30, 10)).get();
  * @endcode
  *
  * - **No injection by construction.** The text is a compile-time constant, and values reach it only as `$n` arguments,
  *   sent apart from the text. Nothing is spliced in.
- * - **Arguments** are the C++ types listed, each written as text by `backend::Field_Codec` (a `std::vector` of one becomes
+ * - **Arguments** are the C++ types listed, each written as text by `postgres::FieldCodec` (a `std::vector` of one becomes
  *   an array). Parameters are untyped on the wire, so where PostgreSQL cannot tell a `$n`'s type from its context, cast
- *   it in the statement (`$1::geometry`). An argument cannot be NULL yet.
+ *   it in the statement (`$1::jsonb`). An argument cannot be NULL yet.
  * - **Columns** are the `Field`s, in the order of the statement's select list and **named as the columns it returns**
- *   (`... AS metres`): a result whose columns differ from the fields is an error, not silently the wrong values. A
+ *   (`... AS spent`): a result whose columns differ from the fields is an error, not silently the wrong values. A
  *   column that can be NULL is a `std::optional` field, as everywhere.
  * - **Placeholders are checked at compile time** (`check_placeholders`).
- * - **Run like any query**: `bind` gives a `Bound_Raw_Statement`, which a `postgres::Database` executes like a query (a raw statement is about no table).
+ * - **Run like any query**: `bind` gives a `BoundRawStatement`, which a `postgres::Database` executes like a query (a raw statement is about no table).
  * - **Only Postgres runs one.**
  *
  * @tparam sql_text     The statement, with `$1`, `$2`, ... for the arguments.
@@ -267,7 +268,7 @@ class Bound_Raw_Statement {
  * @tparam field_ts     The columns of the result: at least one.
  */
 template <util::CTString sql_text, typename arguments_t, schema::IsField... field_ts>
-class Raw_Statement {
+class RawStatement {
  public:
   static_assert(sizeof...(field_ts) > 0, "a raw statement returns rows: name at least one column");
 
@@ -284,17 +285,23 @@ class Raw_Statement {
   static constexpr std::array<std::string_view, COLUMN_COUNT> COLUMN_NAMES{field_ts::COLUMN_NAME.view()...};
 
   /**
-   * @brief Supplies the arguments, one for each of the declared ones (each must convert to the declared type).
+   * @brief Supplies the arguments, one for each of the declared ones; each must convert to its declared type without narrowing.
    * @return The statement, ready for a backend's `execute`.
    */
   template <typename... arg_ts>
-  [[nodiscard]] static Bound_Raw_Statement<Raw_Statement> bind(const arg_ts&... args) {
+  [[nodiscard]] static BoundRawStatement<RawStatement> bind(arg_ts&&... args) {
     static_assert(sizeof...(arg_ts) == ARGUMENT_COUNT, "wrong number of arguments for this raw statement");
-    static_assert(std::is_constructible_v<argument_types, const arg_ts&...>, "an argument does not have the type its raw statement declares");
-    return Bound_Raw_Statement<Raw_Statement>(argument_types(args...));
+    return bind_in_order(std::index_sequence_for<arg_ts...>{}, std::forward<arg_ts>(args)...);
   }
 
  private:
+  template <std::size_t... idx, typename... arg_ts>
+  [[nodiscard]] static BoundRawStatement<RawStatement> bind_in_order(std::index_sequence<idx...> /*indices*/, arg_ts&&... args) {
+    static_assert((util::NonNarrowingTo<arg_ts, std::tuple_element_t<idx, argument_types>> && ...),
+                  "an argument does not have the type its raw statement declares, or would be narrowed");
+    return BoundRawStatement<RawStatement>(argument_types{std::tuple_element_t<idx, argument_types>{std::forward<arg_ts>(args)}...});
+  }
+
   static constexpr PlaceholderCheck PLACEHOLDERS = check_placeholders(SQL, ARGUMENT_COUNT);
 
   static_assert(ARGUMENT_COUNT <= MAX_RAW_ARGUMENTS, "a raw statement takes at most MAX_RAW_ARGUMENTS arguments");
@@ -311,21 +318,21 @@ template <typename type_t>
 struct is_raw_statement : std::false_type {};
 
 template <util::CTString sql_text, typename arguments_t, schema::IsField... field_ts>
-struct is_raw_statement<Raw_Statement<sql_text, arguments_t, field_ts...>> : std::true_type {};
+struct is_raw_statement<RawStatement<sql_text, arguments_t, field_ts...>> : std::true_type {};
 
 template <typename type_t>
 struct is_bound_raw_statement : std::false_type {};
 
 template <typename statement_t>
-struct is_bound_raw_statement<Bound_Raw_Statement<statement_t>> : std::true_type {};
+struct is_bound_raw_statement<BoundRawStatement<statement_t>> : std::true_type {};
 
 }  // namespace detail
 
-/** @brief Detects whether `type_t` is a `Raw_Statement<...>` specialization. */
+/** @brief Detects whether `type_t` is a `RawStatement<...>` specialization. */
 template <typename type_t>
 concept IsRawStatement = detail::is_raw_statement<type_t>::value;
 
-/** @brief Detects whether `type_t` is a `Bound_Raw_Statement<...>`: a raw statement with its arguments. */
+/** @brief Detects whether `type_t` is a `BoundRawStatement<...>`: a raw statement with its arguments. */
 template <typename type_t>
 concept IsBoundRawStatement = detail::is_bound_raw_statement<type_t>::value;
 

@@ -1,6 +1,7 @@
 #pragma once
 
 #include <array>
+#include <cstddef>
 #include <string_view>
 #include <tuple>
 #include <type_traits>
@@ -8,61 +9,111 @@
 
 #include "schemacht/schema/field.hpp"
 #include "schemacht/util/compile_time.hpp"
-#include "schemacht/util/type_utils.hpp"
+#include "schemacht/util/identifier.hpp"
 #include "schemacht/util/visit_index.hpp"
 
 namespace schemacht::schema {
+
+namespace detail {
+
+/** @return Whether no two of `names` are equal. */
+template <std::size_t count>
+[[nodiscard]] consteval bool all_distinct(const std::array<std::string_view, count>& names) {
+  for ( std::size_t i = 0; i < count; ++i ) {
+    for ( std::size_t j = i + 1; j < count; ++j ) {
+      if ( names.at(i) == names.at(j) ) {
+        return false;
+      }
+    }
+  }
+  return true;
+}
+
+/** @return How many of `flags` are set. */
+template <std::size_t count>
+[[nodiscard]] consteval std::size_t count_set(const std::array<bool, count>& flags) {
+  std::size_t result = 0;
+  for ( const bool flag : flags ) {
+    result += flag ? 1 : 0;
+  }
+  return result;
+}
+
+/** @return The entries of `names` whose flag is set, in order. */
+template <std::size_t selected, std::size_t count>
+[[nodiscard]] consteval std::array<std::string_view, selected> select_names(const std::array<std::string_view, count>& names,
+                                                                            const std::array<bool, count>&             flags) {
+  std::array<std::string_view, selected> result{};
+  std::size_t                            next = 0;
+  for ( std::size_t i = 0; i < count; ++i ) {
+    if ( flags.at(i) ) {
+      result.at(next++) = names.at(i);
+    }
+  }
+  return result;
+}
+
+}  // namespace detail
 
 /**
  * @brief Compile-time description of a database table.
  *
  * @tparam table_str The table's name, as a compile-time string.
- * @tparam field_ts  The table's columns, each a `Field<...>`.
+ * @tparam field_ts  The table's columns, each a `Field<...>`, with distinct names.
  */
 template <util::CTString table_str, IsField... field_ts>
-  requires util::UniqueTypes<field_ts...>
 class Schema {
  public:
   static constexpr std::string_view TABLE_NAME{table_str.view()};
-  /** @brief The table's name, kept as the `util::CTString` it was declared with (`Field::COLUMN_NAME` is one too); for splicing into another compile-time string (`util::concat_ctstrings`). Most callers want `TABLE_NAME`. */
+  /** @brief The table's name as a `util::CTString`, for building other compile-time strings. Most callers want `TABLE_NAME`. */
   static constexpr util::CTString TABLE_NAME_CTSTRING = table_str;
-  static constexpr size_t         FIELD_COUNT = sizeof...(field_ts);
+  static constexpr std::size_t    FIELD_COUNT = sizeof...(field_ts);
 
   /** @brief One row's worth of field values, in declaration order. */
   using row_type = std::tuple<field_ts...>;
 
   /** @return Every column's name, in declaration order. */
-  [[nodiscard]] static constexpr auto column_names() -> std::array<std::string_view, FIELD_COUNT> {
-    return std::array<std::string_view, FIELD_COUNT>{field_ts::COLUMN_NAME.view()...};
-  }
+  [[nodiscard]] static constexpr std::array<std::string_view, FIELD_COUNT> column_names() { return {field_ts::COLUMN_NAME.view()...}; }
+
+  static_assert(util::is_identifier(TABLE_NAME),
+                "a table name must be lowercase letters, digits and underscores, not start with a digit, and be at most 63 bytes");
+  static_assert(detail::all_distinct(std::array<std::string_view, FIELD_COUNT>{field_ts::COLUMN_NAME.view()...}),
+                "two fields of the schema have the same column name");
 
   /**
    * @brief Finds a field's index by its column name.
-   *
-   * @tparam name The column name to look for.
    * @return The field's index, or `FIELD_COUNT` if no field has that name.
    */
   template <util::CTString name>
-  [[nodiscard]] static constexpr size_t field_index();
+  [[nodiscard]] static consteval std::size_t field_index() {
+    for ( std::size_t i = 0; i < FIELD_COUNT; ++i ) {
+      if ( column_names().at(i) == name.view() ) {
+        return i;
+      }
+    }
+    return FIELD_COUNT;
+  }
 
-  /**
-   * @brief Finds a field's index by its `data_type`.
-   *
-   * Lets a layer that owns a column type find "its" column, e.g. a domain module locating a schema's column of its own type.
-   *
-   * @tparam target_t The `data_type` to look for.
-   * @return The first matching field's index, or `FIELD_COUNT` if none match.
-   */
-  template <typename target_t>
-  [[nodiscard]] static constexpr size_t field_index_by_type();
+  /** @return Whether the schema has a column named `name`. */
+  template <util::CTString name>
+  [[nodiscard]] static consteval bool has_column() {
+    return field_index<name>() != FIELD_COUNT;
+  }
 
   /** @brief The field type at a given index. */
-  template <size_t idx_sz>
-  using field_at = std::tuple_element_t<idx_sz, std::tuple<field_ts...>>;
+  template <std::size_t idx_sz>
+  using field_at = std::tuple_element_t<idx_sz, row_type>;
 
-  /** @brief The field type with a given column name. */
+  /** @return `field_index<name>()`; an unknown name is a compile error that says so. */
   template <util::CTString name>
-  using field_by_name = field_at<Schema::field_index<name>()>;
+  [[nodiscard]] static consteval std::size_t checked_field_index() {
+    static_assert(has_column<name>(), "the schema has no column with that name");
+    return has_column<name>() ? field_index<name>() : 0;  // 0 after the assertion fails, so no second error follows
+  }
+
+  /** @brief The field type with a given column name; an unknown name is a compile error that says so. */
+  template <util::CTString name>
+  using field_by_name = field_at<checked_field_index<name>()>;
 
   /**
    * @brief Turns a run-time column index into a compile-time one; see `util::visit_index`.
@@ -77,164 +128,24 @@ class Schema {
     return util::visit_index<FIELD_COUNT>(column, std::forward<visitor_t>(visitor));
   }
 
-  /**
-   * @brief How many fields are tagged `KeyRole::Primary`.
-   *
-   * A composite key is any schema with more than one such field; nothing
-   * here assumes exactly one.
-   */
-  [[nodiscard]] static constexpr size_t primary_key_field_count();
-
-  static constexpr size_t PRIMARY_KEY_FIELD_COUNT = primary_key_field_count();
+  /** @brief How many fields are tagged `KeyRole::Primary`; more than one makes a composite key. */
+  static constexpr std::size_t PRIMARY_KEY_FIELD_COUNT = detail::count_set(std::array<bool, FIELD_COUNT>{(field_ts::KEY_ROLE == KeyRole::Primary)...});
   /** @brief True if any field is tagged `KeyRole::Primary`. */
   static constexpr bool HAS_PRIMARY_KEY = PRIMARY_KEY_FIELD_COUNT > 0;
 
   /** @return The primary key's column name(s), in declaration order. */
-  [[nodiscard]] static constexpr auto primary_key_column_names() -> std::array<std::string_view, PRIMARY_KEY_FIELD_COUNT>;
+  [[nodiscard]] static constexpr std::array<std::string_view, PRIMARY_KEY_FIELD_COUNT> primary_key_column_names() {
+    return detail::select_names<PRIMARY_KEY_FIELD_COUNT>(column_names(), {(field_ts::KEY_ROLE == KeyRole::Primary)...});
+  }
 
-  /**
-   * @brief The index of the (sole) field tagged `KeyRole::Primary`.
-   *
-   * For a composite key this returns the first tagged field's index --
-   * meaningful mainly via `primary_key_field` below, which is only useful
-   * when `PRIMARY_KEY_FIELD_COUNT == 1`.
-   *
-   * @return The field's index, or `FIELD_COUNT` if there's no primary key.
-   */
-  [[nodiscard]] static constexpr size_t primary_key_field_index();
-
-  /**
-   * @brief The field type of a single-column primary key.
-   *
-   * Always well-formed, even for a schema with no primary key at all --
-   * falls back to `field_at<0>` rather than hard-erroring, because a
-   * `requires`-constrained method elsewhere (e.g. a future keyed-lookup
-   * method) may still need to *name* this type in its signature for
-   * schemas where it doesn't apply. A constrained method's parameter types
-   * are instantiated as soon as the enclosing class template is, regardless
-   * of whether its `requires` clause is satisfied -- unlike a function
-   * body, which is only instantiated on actual use. Callers must still
-   * gate actual use on `PRIMARY_KEY_FIELD_COUNT == 1`; this alone doesn't
-   * mean a single-column primary key exists.
-   */
-  using primary_key_field = field_at<primary_key_field_index() == FIELD_COUNT ? 0 : primary_key_field_index()>;
-
-  /**
-   * @brief How many fields are *not* tagged `GENERATED`.
-   *
-   * These are the columns a future INSERT/UPSERT should supply a value
-   * for; a `GENERATED` column (e.g. the raster table's `geom GENERATED
-   * ALWAYS AS (...) STORED`) is computed by the database itself, which
-   * would reject a supplied value for it.
-   */
-  [[nodiscard]] static constexpr size_t insertable_field_count();
-
-  static constexpr size_t INSERTABLE_FIELD_COUNT = insertable_field_count();
+  /** @brief How many fields are not `GENERATED`: the columns an INSERT supplies (the database computes generated ones). */
+  static constexpr std::size_t INSERTABLE_FIELD_COUNT = detail::count_set(std::array<bool, FIELD_COUNT>{(! field_ts::GENERATED)...});
 
   /** @return The non-generated column names, in declaration order. */
-  [[nodiscard]] static constexpr auto insertable_column_names() -> std::array<std::string_view, INSERTABLE_FIELD_COUNT>;
+  [[nodiscard]] static constexpr std::array<std::string_view, INSERTABLE_FIELD_COUNT> insertable_column_names() {
+    return detail::select_names<INSERTABLE_FIELD_COUNT>(column_names(), {(! field_ts::GENERATED)...});
+  }
 };
-
-template <util::CTString table_str, IsField... field_ts>
-  requires util::UniqueTypes<field_ts...>
-template <util::CTString name>
-constexpr size_t Schema<table_str, field_ts...>::field_index() {
-  constexpr std::array<std::string_view, FIELD_COUNT> NAMES = {field_ts::COLUMN_NAME.view()...};
-
-  for ( size_t i = 0; i < NAMES.size(); ++i ) {
-    if ( NAMES[i] == name.view() ) {
-      return i;
-    }
-  }
-  return FIELD_COUNT;  // not found
-}
-
-template <util::CTString table_str, IsField... field_ts>
-  requires util::UniqueTypes<field_ts...>
-template <typename target_t>
-constexpr size_t Schema<table_str, field_ts...>::field_index_by_type() {
-  constexpr std::array<bool, FIELD_COUNT> MATCHES = {std::is_same_v<typename field_ts::data_type, target_t>...};
-
-  for ( size_t i = 0; i < MATCHES.size(); ++i ) {
-    if ( MATCHES[i] ) {
-      return i;
-    }
-  }
-  return FIELD_COUNT;  // not found
-}
-
-template <util::CTString table_str, IsField... field_ts>
-  requires util::UniqueTypes<field_ts...>
-constexpr size_t Schema<table_str, field_ts...>::primary_key_field_index() {
-  constexpr std::array<bool, FIELD_COUNT> IS_PRIMARY = {(field_ts::KEY_ROLE == KeyRole::Primary)...};
-
-  for ( size_t i = 0; i < FIELD_COUNT; ++i ) {
-    if ( IS_PRIMARY[i] ) {
-      return i;
-    }
-  }
-  return FIELD_COUNT;  // no primary key
-}
-
-template <util::CTString table_str, IsField... field_ts>
-  requires util::UniqueTypes<field_ts...>
-constexpr size_t Schema<table_str, field_ts...>::primary_key_field_count() {
-  constexpr std::array<bool, FIELD_COUNT> IS_PRIMARY = {(field_ts::KEY_ROLE == KeyRole::Primary)...};
-
-  size_t count = 0;
-  for ( const bool is_primary : IS_PRIMARY ) {
-    if ( is_primary ) {
-      ++count;
-    }
-  }
-  return count;
-}
-
-template <util::CTString table_str, IsField... field_ts>
-  requires util::UniqueTypes<field_ts...>
-constexpr auto Schema<table_str, field_ts...>::primary_key_column_names() -> std::array<std::string_view, PRIMARY_KEY_FIELD_COUNT> {
-  constexpr std::array<bool, FIELD_COUNT>             IS_PRIMARY = {(field_ts::KEY_ROLE == KeyRole::Primary)...};
-  constexpr std::array<std::string_view, FIELD_COUNT> NAMES = {field_ts::COLUMN_NAME.view()...};
-
-  std::array<std::string_view, PRIMARY_KEY_FIELD_COUNT> result{};
-  size_t                                                idx = 0;
-  for ( size_t i = 0; i < FIELD_COUNT; ++i ) {
-    if ( IS_PRIMARY[i] ) {
-      result[idx++] = NAMES[i];
-    }
-  }
-  return result;
-}
-
-template <util::CTString table_str, IsField... field_ts>
-  requires util::UniqueTypes<field_ts...>
-constexpr size_t Schema<table_str, field_ts...>::insertable_field_count() {
-  constexpr std::array<bool, FIELD_COUNT> IS_INSERTABLE = {(! field_ts::GENERATED)...};
-
-  size_t count = 0;
-  for ( const bool is_insertable : IS_INSERTABLE ) {
-    if ( is_insertable ) {
-      ++count;
-    }
-  }
-  return count;
-}
-
-template <util::CTString table_str, IsField... field_ts>
-  requires util::UniqueTypes<field_ts...>
-constexpr auto Schema<table_str, field_ts...>::insertable_column_names() -> std::array<std::string_view, INSERTABLE_FIELD_COUNT> {
-  constexpr std::array<bool, FIELD_COUNT>             IS_INSERTABLE = {(! field_ts::GENERATED)...};
-  constexpr std::array<std::string_view, FIELD_COUNT> NAMES = {field_ts::COLUMN_NAME.view()...};
-
-  std::array<std::string_view, INSERTABLE_FIELD_COUNT> result{};
-  size_t                                               idx = 0;
-  for ( size_t i = 0; i < FIELD_COUNT; ++i ) {
-    if ( IS_INSERTABLE[i] ) {
-      result[idx++] = NAMES[i];
-    }
-  }
-  return result;
-}
 
 // ============================================================================
 // Schema concept

@@ -8,18 +8,25 @@
 
 namespace schemacht::schema {
 
+namespace detail {
+
+/** @brief The key columns of a relation, both known to exist, have the same type, and the feature side's is a key. */
+template <typename feature_schema_t, typename join_schema_t, util::CTString feature_key_str, util::CTString join_key_str>
+concept RelationKeysMatch = std::same_as<typename feature_schema_t::template field_by_name<feature_key_str>::data_type,
+                                         typename join_schema_t::template field_by_name<join_key_str>::data_type> &&
+                            (feature_schema_t::template field_by_name<feature_key_str>::KEY_ROLE == KeyRole::Primary ||
+                             feature_schema_t::template field_by_name<feature_key_str>::KEY_ROLE == KeyRole::Unique);
+
+}  // namespace detail
+
 /**
- * @brief Whether `feature_key`/`join_key` can actually form a `Relation`.
+ * @brief Whether `feature_key`/`join_key` can form a `Relation`, as a SQL foreign key would require.
  *
- * - Both names must resolve to real fields.
- * - Those fields' `data_type`s must match.
- * - `feature_key` must be a key on the feature schema (`KeyRole::Primary`
- *   or `KeyRole::Unique`), not just some arbitrary column that happens to
- *   share a type -- mirroring what a real SQL foreign key requires.
+ * - Both names are columns of their schemas.
+ * - Those fields' `data_type`s match.
+ * - `feature_key` is a key on the feature schema (`KeyRole::Primary` or `KeyRole::Unique`).
  *
- * A named concept (rather than inlining this as `Relation`'s requires
- * clause) so tests can assert both the positive and negative cases
- * directly -- see `relation_test.cpp`.
+ * Any of these failing makes the concept false, not a compile error.
  *
  * @tparam feature_schema_t The referenced ("one") side's schema.
  * @tparam join_schema_t    The referencing ("many") side's schema.
@@ -27,11 +34,9 @@ namespace schemacht::schema {
  * @tparam join_key_str     Column name on `join_schema_t`.
  */
 template <typename feature_schema_t, typename join_schema_t, util::CTString feature_key_str, util::CTString join_key_str>
-concept CanFormRelation = IsSchema<feature_schema_t> && IsSchema<join_schema_t> &&
-                          std::same_as<typename feature_schema_t::template field_by_name<feature_key_str>::data_type,
-                                       typename join_schema_t::template field_by_name<join_key_str>::data_type> &&
-                          (feature_schema_t::template field_by_name<feature_key_str>::KEY_ROLE == KeyRole::Primary ||
-                           feature_schema_t::template field_by_name<feature_key_str>::KEY_ROLE == KeyRole::Unique);
+concept CanFormRelation = IsSchema<feature_schema_t> && IsSchema<join_schema_t> && feature_schema_t::template has_column<feature_key_str>() &&
+                          join_schema_t::template has_column<join_key_str>() &&
+                          detail::RelationKeysMatch<feature_schema_t, join_schema_t, feature_key_str, join_key_str>;
 
 /**
  * @brief Pairs two schemas joined by a key.

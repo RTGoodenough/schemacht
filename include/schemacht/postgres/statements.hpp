@@ -1,5 +1,6 @@
 #pragma once
 
+#include <algorithm>
 #include <concepts>
 #include <cstddef>
 #include <span>
@@ -12,30 +13,27 @@
 #include <vector>
 
 #include "schemacht/postgres/field_codec.hpp"
-#include "schemacht/postgres/sql_utils.hpp"
 #include "schemacht/query/compiled_query.hpp"
 #include "schemacht/query/raw_statement.hpp"
+#include "schemacht/query/sql.hpp"
+#include "schemacht/query/sql_type.hpp"
 #include "schemacht/schema/schema.hpp"
 
 /**
- * What every way of talking to Postgres has in common -- the blocking libpqxx
- * backends and the non-blocking libpq ones -- kept free of either library: the
- * text a bound argument or a written row turns into, and how the text of a
- * result field reaches a `query::Row_Sink`. A NULL is never text: a result field is `std::optional<std::string_view>`,
- * empty for NULL, and a written NULL is the SQL keyword rather than a parameter.
+ * Turning bound queries and rows into what is sent to Postgres: statement text plus each argument's text. Free of libpq.
  */
 namespace schemacht::postgres::detail {
 
 /** @brief Appends a bound query argument's text, in the form Postgres reads for that type. */
-class Text_Binder {
+class TextBinder {
  public:
-  explicit Text_Binder(std::vector<std::string>* texts) : _texts(texts) {}
+  explicit TextBinder(std::vector<std::string>* texts) : _texts(texts) {}
 
-  Text_Binder(const Text_Binder&) = default;
-  Text_Binder(Text_Binder&&) noexcept = default;
-  Text_Binder& operator=(const Text_Binder&) = default;
-  Text_Binder& operator=(Text_Binder&&) noexcept = default;
-  ~Text_Binder() = default;
+  TextBinder(const TextBinder&) = default;
+  TextBinder(TextBinder&&) noexcept = default;
+  TextBinder& operator=(const TextBinder&) = default;
+  TextBinder& operator=(TextBinder&&) noexcept = default;
+  ~TextBinder() = default;
 
   void operator()(std::monostate /*unset*/) const { throw std::logic_error("query argument was never set"); }
 
@@ -57,11 +55,11 @@ class Text_Binder {
 
 /** @return The text of each of `query`'s bound arguments, in placeholder order: element 0 is `$1`. */
 template <schema::IsSchema schema_t>
-[[nodiscard]] std::vector<std::string> param_texts(const query::Compiled_Query<schema_t>& query) {
+[[nodiscard]] std::vector<std::string> param_texts(const query::CompiledQuery<schema_t>& query) {
   std::vector<std::string> texts;
   texts.reserve(query.params().size());
   for ( const auto& param : query.params() ) {
-    std::visit(Text_Binder{&texts}, param);
+    std::visit(TextBinder{&texts}, param);
   }
   return texts;
 }
@@ -72,7 +70,91 @@ struct InsertStatement {
   std::vector<std::string> values;
 };
 
+/** @brief The most parameters one statement can bind: the protocol counts them in 16 bits. */
+inline constexpr std::size_t MAX_STATEMENT_PARAMETERS = 65535;
+
 namespace insert_detail {
+
+template <typename data_t>
+inline constexpr bool IS_ARRAY = false;
+
+template <typename element_t>
+inline constexpr bool IS_ARRAY<std::vector<element_t>> = ! std::same_as<element_t, std::byte>;  // a `std::vector<std::byte>` is a bytea value
+
+template <schema::IsSchema schema_t, std::size_t... idx>
+consteval bool any_insertable_array(std::index_sequence<idx...> /*indices*/) {
+  return ((! schema_t::template field_at<idx>::GENERATED && IS_ARRAY<typename schema_t::template field_at<idx>::value_type>) || ...);
+}
+
+template <schema::IsSchema schema_t, std::size_t... idx>
+consteval bool every_insertable_has_sql_type(std::index_sequence<idx...> /*indices*/) {
+  return ((schema_t::template field_at<idx>::GENERATED || ! query::sql::type_name<typename schema_t::template field_at<idx>::value_type>().empty()) &&
+          ...);
+}
+
+/**
+ * @brief Whether rows of `schema_t` are inserted with `unnest`: one array argument per column. A column that is itself an
+ * array can't be: `unnest` would flatten an array of arrays into its elements.
+ */
+template <schema::IsSchema schema_t>
+inline constexpr bool USES_UNNEST = ! any_insertable_array<schema_t>(std::make_index_sequence<schema_t::FIELD_COUNT>{});
+
+/** @brief The `unnest` INSERT for `schema_t`, as a static string. */
+template <schema::IsSchema schema_t>
+class UnnestSql {
+  static constexpr auto CHARS = [] {
+    constexpr auto TEXT = query::sql::insert_unnest_statement<schema_t>();
+    return query::sql::terminated<TEXT.size()>(TEXT);
+  }();
+
+ public:
+  static constexpr std::string_view VALUE{CHARS.data(), CHARS.size() - 1};
+};
+
+/** @brief `INSERT INTO <table> (<columns>) VALUES ` for `schema_t`, as a static string. */
+template <schema::IsSchema schema_t>
+class ValuesHeadSql {
+  static constexpr auto CHARS = [] {
+    constexpr auto TEXT = query::sql::insert_values_head<schema_t>();
+    return query::sql::terminated<TEXT.size()>(TEXT);
+  }();
+
+ public:
+  static constexpr std::string_view VALUE{CHARS.data(), CHARS.size() - 1};
+};
+
+/** @return The array literal of column `idx`'s value in every row (`NULL` for a NULL), for the `unnest` INSERT. */
+template <schema::IsSchema schema_t, std::size_t idx>
+[[nodiscard]] std::string column_array(std::span<const typename schema_t::row_type> rows) {
+  using field_t = schema_t::template field_at<idx>;
+  std::string literal = "{";
+  for ( std::size_t row = 0; row < rows.size(); ++row ) {
+    if ( row != 0 ) {
+      literal += ',';
+    }
+    if ( const auto* value = schema::value_if_present(std::get<idx>(rows[row])); value != nullptr ) {
+      postgres::detail::append_array_element(literal, format_field<typename field_t::value_type>(*value));
+    } else {
+      literal += "NULL";
+    }
+  }
+  literal += '}';
+  return literal;
+}
+
+template <schema::IsSchema schema_t, std::size_t... idx>
+[[nodiscard]] InsertStatement build_unnest(std::span<const typename schema_t::row_type> rows, std::index_sequence<idx...> /*indices*/) {
+  InsertStatement statement{.sql = std::string(UnnestSql<schema_t>::VALUE), .values = {}};
+  statement.values.reserve(schema_t::INSERTABLE_FIELD_COUNT);
+  (
+      [&] {
+        if constexpr ( ! schema_t::template field_at<idx>::GENERATED ) {
+          statement.values.push_back(column_array<schema_t, idx>(rows));
+        }
+      }(),
+      ...);
+  return statement;
+}
 
 template <schema::IsSchema schema_t, std::size_t idx>
 void append_one_value(const typename schema_t::row_type& row, InsertStatement& statement, bool& first) {
@@ -97,28 +179,48 @@ void append_row_values(const typename schema_t::row_type& row, InsertStatement& 
   (append_one_value<schema_t, idx>(row, statement, first), ...);
 }
 
-}  // namespace insert_detail
-
-/**
- * @brief Builds one multi-row `INSERT` for `rows`, skipping generated columns (which the database computes itself).
- * @pre `rows` isn't empty.
- */
+/** @return One multi-row `INSERT ... VALUES` for `rows`, which must fit in `MAX_STATEMENT_PARAMETERS`. */
 template <schema::IsSchema schema_t>
-[[nodiscard]] InsertStatement build_insert(std::span<const typename schema_t::row_type> rows) {
-  InsertStatement statement;
-  statement.sql = "INSERT INTO " + quote_identifier(std::string(schema_t::TABLE_NAME)) + " (" +
-                  quote_identifier_list(schema_t::insertable_column_names()) + ") VALUES ";
-  bool first_row = true;
-  for ( const auto& row : rows ) {
-    if ( ! first_row ) {
+[[nodiscard]] InsertStatement build_values(std::span<const typename schema_t::row_type> rows) {
+  InsertStatement statement{.sql = std::string(ValuesHeadSql<schema_t>::VALUE), .values = {}};
+  for ( std::size_t row = 0; row < rows.size(); ++row ) {
+    if ( row != 0 ) {
       statement.sql += ", ";
     }
-    first_row = false;
     statement.sql += '(';
-    insert_detail::append_row_values<schema_t>(row, statement, std::make_index_sequence<schema_t::FIELD_COUNT>{});
+    append_row_values<schema_t>(rows[row], statement, std::make_index_sequence<schema_t::FIELD_COUNT>{});
     statement.sql += ')';
   }
   return statement;
+}
+
+}  // namespace insert_detail
+
+/**
+ * @brief Builds the statements that insert `rows`, leaving out generated columns (the database computes those).
+ *
+ * Normally one statement, `INSERT ... SELECT * FROM unnest(...)`, with one array argument per column: any number of rows,
+ * inserted atomically. A schema with an array-typed column can't use `unnest`; its rows go in multi-row `VALUES`
+ * statements of at most `MAX_STATEMENT_PARAMETERS` arguments each, which are not atomic together.
+ *
+ * @pre `rows` isn't empty.
+ */
+template <schema::IsSchema schema_t>
+[[nodiscard]] std::vector<InsertStatement> build_insert(std::span<const typename schema_t::row_type> rows) {
+  static_assert(schema_t::INSERTABLE_FIELD_COUNT > 0, "insert: the schema has no column that is not GENERATED");
+  if constexpr ( insert_detail::USES_UNNEST<schema_t> ) {
+    static_assert(insert_detail::every_insertable_has_sql_type<schema_t>(std::make_index_sequence<schema_t::FIELD_COUNT>{}),
+                  "insert: every inserted column's type needs a SQL type name (it is sent as an array of that type): specialize "
+                  "query::sql::SqlType for it");
+    return {insert_detail::build_unnest<schema_t>(rows, std::make_index_sequence<schema_t::FIELD_COUNT>{})};
+  } else {
+    constexpr std::size_t    ROWS_PER_STATEMENT = MAX_STATEMENT_PARAMETERS / schema_t::INSERTABLE_FIELD_COUNT;
+    std::vector<InsertStatement> statements;
+    for ( std::size_t first = 0; first < rows.size(); first += ROWS_PER_STATEMENT ) {
+      statements.push_back(insert_detail::build_values<schema_t>(rows.subspan(first, std::min(ROWS_PER_STATEMENT, rows.size() - first))));
+    }
+    return statements;
+  }
 }
 
 // ---- what a backend sends: a query or a raw statement, bound ------------------------------------------------------
@@ -131,8 +233,8 @@ struct WireStatement {
 };
 
 /**
- * @return `statement` as it goes to the database: a `Compiled_Query` (with the names of the columns it returns, from its schema), or a
- * `Bound_Raw_Statement` (which is about no table). The text views point at static storage.
+ * @return `statement` as it goes to the database: a `CompiledQuery` (with the names of the columns it returns, from its schema), or a
+ * `BoundRawStatement` (which is about no table). The text views point at static storage.
  */
 template <typename statement_t>
 [[nodiscard]] WireStatement wire(const statement_t& statement) {
@@ -140,7 +242,7 @@ template <typename statement_t>
   wired.sql = statement.sql();
   if constexpr ( query::IsBoundRawStatement<statement_t> ) {
     wired.params.reserve(std::tuple_size_v<typename statement_t::arguments_type>);
-    std::apply([&wired](const auto&... arguments) { (Text_Binder{&wired.params}(arguments), ...); }, statement.arguments());
+    std::apply([&wired](const auto&... arguments) { (TextBinder{&wired.params}(arguments), ...); }, statement.arguments());
     wired.column_names.assign(statement.column_names().begin(), statement.column_names().end());
   } else {
     using schema_t = statement_t::schema_type;
@@ -182,9 +284,9 @@ void check_result_columns(const WireStatement& statement, std::size_t row_count,
 
 namespace schemacht::postgres {
 
-/** @brief What a `Database` runs: a query (`Prepared::bind`) of any schema, or a bound raw statement (`Raw_Statement::bind`), which is about no table. Either has a `result_type`. */
+/** @brief What a `Database` runs: a query (`Prepared::bind`) of any schema, or a bound raw statement (`RawStatement::bind`), which is about no table. Either has a `result_type`. */
 template <typename statement_t>
 concept RunnableStatement =
-    query::IsBoundRawStatement<statement_t> || std::derived_from<statement_t, query::Compiled_Query<typename statement_t::schema_type>>;
+    query::IsBoundRawStatement<statement_t> || std::derived_from<statement_t, query::CompiledQuery<typename statement_t::schema_type>>;
 
 }  // namespace schemacht::postgres

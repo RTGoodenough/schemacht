@@ -21,7 +21,7 @@ enum class LimitKind : std::uint8_t {
 
 struct Limit {
   LimitKind     kind = LimitKind::None;
-  std::uint64_t count = 0;  ///< `Constant` only.
+  std::int64_t  count = 0;  ///< `Constant` only.
   std::size_t   slot = 0;   ///< `Arg` only.
 
   [[nodiscard]] constexpr bool operator==(const Limit&) const = default;
@@ -99,17 +99,15 @@ struct Query {
 
   /**
    * @return This query, returning at most `count` rows.
-   * @throws std::out_of_range if `count` is negative -- inside a constant expression, a compile error.
+   * @throws std::out_of_range if `count` is negative or beyond `bigint` -- inside a constant expression, a compile error.
    */
   template <std::integral value_t>
   [[nodiscard]] constexpr Query limit(value_t count) const {
-    if constexpr ( std::signed_integral<value_t> ) {
-      if ( count < 0 ) {
-        throw std::out_of_range("query limit is negative");
-      }
+    if ( count < 0 || ! std::in_range<std::int64_t>(count) ) {
+      throw std::out_of_range("query limit is negative or too large");
     }
     Query result = *this;
-    result.row_limit = Limit{.kind = LimitKind::Constant, .count = static_cast<std::uint64_t>(count)};
+    result.row_limit = Limit{.kind = LimitKind::Constant, .count = static_cast<std::int64_t>(count)};
     return result;
   }
 
@@ -121,7 +119,7 @@ struct Query {
    */
   template <std::size_t... column_idxs>
     requires(sizeof...(column_idxs) > 0 && sizeof...(column_idxs) <= schema_t::FIELD_COUNT)
-  [[nodiscard]] constexpr Query project(const Column_Ref<schema_t, column_idxs>&... /*selected*/) const {
+  [[nodiscard]] constexpr Query project(const ColumnRef<schema_t, column_idxs>&... /*selected*/) const {
     Query result = *this;
     result.columns = std::array<std::size_t, schema_t::FIELD_COUNT>{column_idxs...};
     result.column_count = sizeof...(column_idxs);
@@ -135,9 +133,9 @@ struct Query {
     return result;
   }
 
-  /** @return This query, returning at most as many rows as the `std::uint64_t` argument `slot_idx`. */
+  /** @return This query, returning at most as many rows as the integer argument `slot_idx` (bound as a `std::int64_t`). */
   template <std::size_t slot_idx>
-  [[nodiscard]] constexpr Query limit(Arg_Ref<slot_idx> /*arg*/) const {
+  [[nodiscard]] constexpr Query limit(ArgRef<slot_idx> /*arg*/) const {
     Query result = *this;
     result.row_limit = Limit{.kind = LimitKind::Arg, .slot = slot_idx};
     return result;

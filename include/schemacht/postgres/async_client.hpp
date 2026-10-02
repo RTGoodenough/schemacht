@@ -20,16 +20,16 @@ struct pg_result;  // libpq's PGresult; kept out of this header
 namespace schemacht::postgres {
 
 /** @brief A statement Postgres rejected. */
-class Query_Error : public std::runtime_error {
+class QueryError : public std::runtime_error {
  public:
   // NOLINTNEXTLINE(bugprone-easily-swappable-parameters) -- a message and a code; the names and the one call site keep them apart
-  Query_Error(const std::string& message, std::string sqlstate) : std::runtime_error(message), _sqlstate(std::move(sqlstate)) {}
+  QueryError(const std::string& message, std::string sqlstate) : std::runtime_error(message), _sqlstate(std::move(sqlstate)) {}
 
-  Query_Error(const Query_Error&) = default;
-  Query_Error(Query_Error&&) noexcept = default;
-  Query_Error& operator=(const Query_Error&) = default;
-  Query_Error& operator=(Query_Error&&) noexcept = default;
-  ~Query_Error() override = default;
+  QueryError(const QueryError&) = default;
+  QueryError(QueryError&&) noexcept = default;
+  QueryError& operator=(const QueryError&) = default;
+  QueryError& operator=(QueryError&&) noexcept = default;
+  ~QueryError() override = default;
 
   /** @return The five-character SQLSTATE code (e.g. `42P01`, undefined table); empty if the failure wasn't the server's. */
   [[nodiscard]] const std::string& sqlstate() const noexcept { return _sqlstate; }
@@ -39,14 +39,14 @@ class Query_Error : public std::runtime_error {
 };
 
 /** @brief The rows a statement returned, as libpq holds them: one field at a time, as text or (if the statement asked for it, see `StreamOptions::binary`) in PostgreSQL's binary form. Move-only. */
-class Query_Result {
+class QueryResult {
  public:
-  Query_Result() = default;
-  Query_Result(const Query_Result&) = delete;
-  Query_Result(Query_Result&&) noexcept = default;
-  Query_Result& operator=(const Query_Result&) = delete;
-  Query_Result& operator=(Query_Result&&) noexcept = default;
-  ~Query_Result() = default;
+  QueryResult() = default;
+  QueryResult(const QueryResult&) = delete;
+  QueryResult(QueryResult&&) noexcept = default;
+  QueryResult& operator=(const QueryResult&) = delete;
+  QueryResult& operator=(QueryResult&&) noexcept = default;
+  ~QueryResult() = default;
 
   [[nodiscard]] std::size_t row_count() const noexcept;
   [[nodiscard]] std::size_t column_count() const noexcept;
@@ -81,18 +81,18 @@ class Query_Result {
   [[nodiscard]] std::uint32_t column_type(std::size_t column) const;
 
  private:
-  friend class Async_Client;
+  friend class AsyncClient;
 
   struct Deleter {
     void operator()(pg_result* raw) const noexcept;
   };
 
-  explicit Query_Result(pg_result* raw) : _raw(raw) {}
+  explicit QueryResult(pg_result* raw) : _raw(raw) {}
 
   std::unique_ptr<pg_result, Deleter> _raw;
 };
 
-/** @brief Rows in each chunk of a stream unless told otherwise: the fastest of 100, 1,000 and 10,000 (benchmarks/README.md). */
+/** @brief Rows in each chunk of a stream unless told otherwise; in measurements, faster than 100 or 10,000. */
 inline constexpr std::size_t DEFAULT_STREAM_CHUNK_ROWS = 1000;
 
 /**
@@ -103,13 +103,18 @@ inline constexpr std::size_t DEFAULT_STREAM_CHUNK_ROWS = 1000;
  *   thread.
  * - **A pool of connections,** each running one statement at a time. Statements beyond the pool's size queue up and
  *   start as connections free.
- * - **A pool of worker threads** runs the completions, so parsing a large result never stalls the reactor.
+ * - **A pool of worker threads** runs the completions, so parsing a large result never stalls the reactor. The workers
+ *   run nothing else: cancels and reconnects are driven by the reactor too.
+ *
+ * @warning A completion or chunk handler must not wait on the result of another statement of the same client (a
+ * `future::get()` on it, say): that statement's completion needs a worker, and with every worker waiting, none is left to
+ * run it. Chain the next step from the completion instead (`Database::execute_into`, `Database::stream_into`).
  *
  * Thread-safe: `run` may be called from any thread. Statements run in autocommit mode, one round trip each.
  *
- * `postgres::Database` is the typed front of it; `postgres::Connection` (libpqxx) is independent of it.
+ * `postgres::Database` is the typed interface built on it.
  */
-class Async_Client {
+class AsyncClient {
  public:
   struct Options {
     std::size_t     connections = 4;  ///< Connections opened up front; also the most statements in flight at once.
@@ -118,47 +123,47 @@ class Async_Client {
   };
 
   /** @brief Called on a worker thread once a statement finishes. On failure the result is empty and the exception set. */
-  using Completion = std::move_only_function<void(Query_Result, std::exception_ptr)>;
+  using Completion = std::move_only_function<void(QueryResult, std::exception_ptr)>;
 
   /** @brief How `stream` reads a statement. */
   struct StreamOptions {
     std::size_t chunk_rows = DEFAULT_STREAM_CHUNK_ROWS;  ///< Rows in each chunk (the last has what is left).
     std::size_t max_buffered_chunks = 4;  ///< Chunks read but not yet handled, before the client stops reading and the server has to wait.
     bool        binary =
-        false;  ///< Ask for the result in PostgreSQL's binary form: read it with `Query_Result::binary`, not `text` (which would return garbage).
+        false;  ///< Ask for the result in PostgreSQL's binary form: read it with `QueryResult::binary`, not `text` (which would return garbage).
   };
 
   /** @brief Called on a worker thread with each chunk of a stream, in turn. Returns whether to go on: `false` stops the stream. */
-  using Chunk_Handler = std::move_only_function<bool(Query_Result)>;
+  using ChunkHandler = std::move_only_function<bool(QueryResult)>;
 
   /** @brief Called once, on a worker thread, when a stream ends: with no error if it ran to its end or was stopped. */
-  using Stream_Completion = std::move_only_function<void(std::exception_ptr)>;
+  using StreamCompletion = std::move_only_function<void(std::exception_ptr)>;
 
   /**
    * @brief Opens `options.connections` connections and starts the reactor and workers.
    * @throws std::runtime_error if a connection can't be made or the session settings can't be applied.
    * @throws std::invalid_argument if `options` asks for no connections or no workers.
    */
-  explicit Async_Client(const std::string& conninfo, Options options);
-  explicit Async_Client(const std::string& conninfo) : Async_Client(conninfo, Options{}) {}
+  explicit AsyncClient(const std::string& conninfo, Options options);
+  explicit AsyncClient(const std::string& conninfo) : AsyncClient(conninfo, Options{}) {}
 
-  Async_Client(const Async_Client&) = delete;
-  Async_Client(Async_Client&&) = delete;
-  Async_Client& operator=(const Async_Client&) = delete;
-  Async_Client& operator=(Async_Client&&) = delete;
+  AsyncClient(const AsyncClient&) = delete;
+  AsyncClient(AsyncClient&&) = delete;
+  AsyncClient& operator=(const AsyncClient&) = delete;
+  AsyncClient& operator=(AsyncClient&&) = delete;
 
   /**
    * @brief Stops accepting statements and waits for the ones in flight. Statements still queued complete with an
    * error, so every `Completion` handed in is called exactly once.
    */
-  ~Async_Client();
+  ~AsyncClient();
 
   /**
    * @brief Starts a statement and returns at once.
    *
    * @param sql    The statement, with `$1`, `$2`, ... for arguments.
    * @param params The text of each argument, in order.
-   * @param done   Called exactly once, on a worker thread, with the rows or the error (`Query_Error` for one the server
+   * @param done   Called exactly once, on a worker thread, with the rows or the error (`QueryError` for one the server
    *               reported, `std::runtime_error` for a lost connection or a client that shut down).
    */
   void run(std::string sql, std::vector<std::string> params, Completion done);
@@ -182,11 +187,11 @@ class Async_Client {
    * @param sql     The statement, with `$1`, `$2`, ... for arguments.
    * @param params  The text of each argument, in order.
    * @param options How to read it.
-   * @param on_chunk Called with each chunk (a `Query_Result` of up to `chunk_rows` rows).
+   * @param on_chunk Called with each chunk (a `QueryResult` of up to `chunk_rows` rows).
    * @param done    Called exactly once, on a worker thread, when the stream has ended.
    * @throws std::invalid_argument if `options` asks for a chunk of no rows or no buffered chunks.
    */
-  void stream(std::string sql, std::vector<std::string> params, StreamOptions options, Chunk_Handler on_chunk, Stream_Completion done);
+  void stream(std::string sql, std::vector<std::string> params, StreamOptions options, ChunkHandler on_chunk, StreamCompletion done);
 
   /** @brief Runs `task` on the worker threads. */
   void post(std::move_only_function<void()> task);

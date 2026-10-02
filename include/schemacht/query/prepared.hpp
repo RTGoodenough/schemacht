@@ -18,6 +18,7 @@
 #include "schemacht/query/predicate.hpp"
 #include "schemacht/query/query.hpp"
 #include "schemacht/query/sql.hpp"
+#include "schemacht/util/type_utils.hpp"
 
 namespace schemacht::query {
 
@@ -110,7 +111,7 @@ std::tuple<typename schema_t::template field_at<columns.at(position)>...> projec
  * using NearbyPlaces = query::Prepared<NEARBY>;
  *
  * // one std::tuple<Name-field> per row: only that column is fetched
- * std::vector<NearbyPlaces::result_type> names = backend.execute(NearbyPlaces::bind(std::vector<std::uint64_t>{...}, std::uint64_t{10}));
+ * std::vector<NearbyPlaces::result_type> names = database.execute(NearbyPlaces::bind(std::vector<std::int64_t>{...}, 10)).get();
  * @endcode
  *
  * @tparam source A constant `Query`, or a `Predicate` (a query with no ordering or limit).
@@ -153,11 +154,19 @@ class Prepared {
   /**
    * @brief Supplies the arguments, in the order of their `arg<N>()`.
    *
-   * Each argument must be its column's `value_type` (its `data_type` without any `std::optional`; an argument is never NULL), or a `std::vector` of it for a list, an unsigned integer for a
-   * limit, or a number for an operation that takes one (a distance); anything else doesn't compile.
+   * Each argument must convert without narrowing to what its `arg<N>()` is used as:
+   * - compared with a column: the column's `value_type` (its `data_type` without any `std::optional`; an argument is never NULL)
+   * - `in(...)`: a `std::vector` of the column's `value_type`
+   * - `limit(...)`: a `std::int64_t`
+   * - an operation's number (a distance): a `double`
+   *
+   * So `"john%"` binds to a `std::string` column and `5` to a `std::int64_t` one, but `-1` does not bind to an unsigned
+   * column, `1.5` to a `float` one, or `1` to a `bool` one: those don't compile.
+   *
+   * @throws std::out_of_range if a limit argument is negative.
    */
   template <typename... arg_ts>
-  [[nodiscard]] static Typed_Query<schema_type, result_type> bind(arg_ts&&... args) {
+  [[nodiscard]] static TypedQuery<schema_type, result_type> bind(arg_ts&&... args) {
     static_assert(sizeof...(arg_ts) == ARG_COUNT, "wrong number of arguments for this query");
     return bind_in_order(std::index_sequence_for<arg_ts...>{}, std::forward<arg_ts>(args)...);
   }
@@ -166,28 +175,35 @@ class Prepared {
   template <std::size_t slot_idx, typename arg_t>
   [[nodiscard]] static param_type make_param(arg_t&& arg) {
     if constexpr ( SLOTS.info.at(slot_idx).is_limit ) {
-      static_assert(std::unsigned_integral<std::remove_cvref_t<arg_t>>, "a limit argument must be an unsigned integer");
-      return param_type{std::in_place_type<std::uint64_t>, static_cast<std::uint64_t>(arg)};
+      static_assert(std::integral<std::remove_cvref_t<arg_t>> && util::NonNarrowingTo<arg_t, std::int64_t>,
+                    "a limit argument must be an integer that converts to std::int64_t without narrowing");
+      const std::int64_t count{std::forward<arg_t>(arg)};
+      if ( count < 0 ) {
+        throw std::out_of_range("query limit argument is negative");
+      }
+      return param_type{std::in_place_type<std::int64_t>, count};
     } else if constexpr ( SLOTS.info.at(slot_idx).is_real ) {
-      static_assert(std::is_arithmetic_v<std::remove_cvref_t<arg_t>> && ! std::same_as<std::remove_cvref_t<arg_t>, bool>,
-                    "this argument is a number (such as a distance)");
-      return param_type{std::in_place_type<double>, static_cast<double>(arg)};
+      static_assert(! std::same_as<std::remove_cvref_t<arg_t>, bool> && util::NonNarrowingTo<arg_t, double>,
+                    "this argument is a number (such as a distance) that converts to double without narrowing: write 5.0, not 5");
+      return param_type{std::in_place_type<double>, double{std::forward<arg_t>(arg)}};
     } else {
       using data_t = schema_type::template field_at<SLOTS.info.at(slot_idx).column>::value_type;
       using expected_t = std::conditional_t<SLOTS.info.at(slot_idx).is_list, std::vector<data_t>, data_t>;
-      static_assert(std::constructible_from<expected_t, arg_t>, "query argument has the wrong type for its column");
-      return param_type{std::in_place_type<expected_t>, std::forward<arg_t>(arg)};
+      static_assert(util::NonNarrowingTo<arg_t, expected_t>,
+                    "query argument has the wrong type for its column, or would be narrowed (e.g. -1 for an unsigned column)");
+      // NOLINTNEXTLINE(cppcoreguidelines-pro-bounds-array-to-pointer-decay) -- a string literal argument becomes a std::string here
+      return param_type{std::in_place_type<expected_t>, expected_t{std::forward<arg_t>(arg)}};
     }
   }
 
   template <std::size_t... slot_idx, typename... arg_ts>
-  [[nodiscard]] static Typed_Query<schema_type, result_type> bind_in_order(std::index_sequence<slot_idx...> /*slots*/, arg_ts&&... args) {
+  [[nodiscard]] static TypedQuery<schema_type, result_type> bind_in_order(std::index_sequence<slot_idx...> /*slots*/, arg_ts&&... args) {
     std::vector<param_type> params;
     params.reserve(sizeof...(arg_ts));
     (params.push_back(make_param<slot_idx>(std::forward<arg_ts>(args))), ...);
 
     const std::span<const std::size_t> columns(COLUMNS.data(), QUERY.result_column_count());
-    return Typed_Query<schema_type, result_type>(Compiled_Query<schema_type>(SQL, columns, std::move(params)));
+    return TypedQuery<schema_type, result_type>(CompiledQuery<schema_type>(SQL, columns, std::move(params)));
   }
 };
 

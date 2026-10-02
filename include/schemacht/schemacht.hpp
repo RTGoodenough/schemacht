@@ -1,11 +1,10 @@
 #pragma once
 
 /**
- * The whole core: schemas, queries, the backends (Postgres) and `json::Json`.
+ * Everything: schemas, queries, the Postgres backend and `json::Json`.
  *
- * This is the one to include when compile time is not the concern. The pieces are schema.hpp, query.hpp, backend.hpp (no
- * database), postgres.hpp and json.hpp; column_type.hpp is for adding a column type. The modules are apart, because they need
- * a library of their own: spatial.hpp and gis.hpp (needs GDAL).
+ * The pieces, to include separately when compile time matters: schema.hpp, query.hpp, backend.hpp (no libpq),
+ * postgres.hpp and json.hpp. column_type.hpp is for adding a column type of your own.
  */
 
 #include "schemacht/backend.hpp"   // IWYU pragma: export

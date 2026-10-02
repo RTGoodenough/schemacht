@@ -1,9 +1,13 @@
 #pragma once
 
 /**
- * What adding a column type of your own takes (as json.hpp and spatial.hpp do): specialize `backend::Field_Codec<T>` (its text
- * form) and `query::sql::SQL_Type<T>` (its SQL type), and give the type `operator<=>`. The codec also needs `parse_binary` (and may
- * supply `binary_accepts`) for a query that returns the type through an asynchronous backend, which reads results in PostgreSQL's binary form.
+ * What adding a column type of your own takes (json/json.hpp is a complete example):
+ *
+ * - Specialize `postgres::FieldCodec<T>` with `parse` and `format`: the type's text form.
+ * - Add `parse_binary` to it (and optionally `binary_accepts`) so results can be read in PostgreSQL's binary form, the
+ *   default; without it, rows with the type are read as text.
+ * - Specialize `query::sql::SqlType<T>` with its SQL type name, so list arguments and `Database::insert` can cast to it.
+ * - Give the type `operator<=>` if queries should order by it.
  */
 
 #include "schemacht/postgres/field_codec.hpp"  // IWYU pragma: export

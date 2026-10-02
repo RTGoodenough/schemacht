@@ -26,21 +26,21 @@
  * at a time. The sink is built for the query's result row, so it knows the type of the `position`-th column and parses the
  * value itself: the backend needs no type at all.
  *
- * A sink sees rows one at a time, so it decides what happens to each: `Row_Collector` keeps them all, and `Row_Handler`
+ * A sink sees rows one at a time, so it decides what happens to each: `RowCollector` keeps them all, and `RowHandler`
  * hands each to a function and keeps none. A sink can also say it wants no more rows (`wants_more`), which is how a
  * consumer stops a query early.
  */
 namespace schemacht::query {
 
 /** @brief What a backend writes query results into. */
-class Row_Sink {
+class RowSink {
  public:
-  Row_Sink() = default;
-  Row_Sink(const Row_Sink&) = delete;
-  Row_Sink(Row_Sink&&) = delete;
-  Row_Sink& operator=(const Row_Sink&) = delete;
-  Row_Sink& operator=(Row_Sink&&) = delete;
-  virtual ~Row_Sink() = default;
+  RowSink() = default;
+  RowSink(const RowSink&) = delete;
+  RowSink(RowSink&&) = delete;
+  RowSink& operator=(const RowSink&) = delete;
+  RowSink& operator=(RowSink&&) = delete;
+  virtual ~RowSink() = default;
 
   /** @brief A hint of how many rows are coming. */
   virtual void reserve(std::size_t rows) = 0;
@@ -52,13 +52,13 @@ class Row_Sink {
   virtual void put_null(std::size_t position) = 0;
 
   /**
-   * @brief Receives the text of the `position`-th column of the row being built, for the sink to parse (`backend::Field_Codec::parse`).
+   * @brief Receives the text of the `position`-th column of the row being built, for the sink to parse (`postgres::FieldCodec::parse`).
    * @throws std::invalid_argument naming the column, if the text is not a value of its type.
    */
   virtual void put_text(std::size_t position, std::string_view text) = 0;
 
   /**
-   * @brief Receives the PostgreSQL binary form of the `position`-th column of the row being built (`backend::Field_Codec::parse_binary`).
+   * @brief Receives the PostgreSQL binary form of the `position`-th column of the row being built (`postgres::FieldCodec::parse_binary`).
    * @throws std::invalid_argument naming the column, if the bytes are not a value of its type.
    * @throws std::logic_error if the sink builds a row with a column that has no binary form (`BinaryReadableRow`): a caller that has
    * checked that never reaches this. `Database::execute` and `stream` check it at compile time.
@@ -86,13 +86,13 @@ namespace detail {
 
 template <typename result_t, std::size_t... pos>
 constexpr bool every_field_has_binary_form(std::index_sequence<pos...> /*positions*/) {
-  return (HasBinaryForm<typename std::tuple_element_t<pos, result_t>::value_type> && ...);
+  return (postgres::HasBinaryForm<typename std::tuple_element_t<pos, result_t>::value_type> && ...);
 }
 
 }  // namespace detail
 
 /**
- * @brief A row (`std::tuple` of `Field`s, as a query returns them) whose every column's type has a binary form (`backend::HasBinaryForm`): what a result read in
+ * @brief A row (`std::tuple` of `Field`s, as a query returns them) whose every column's type has a binary form (`postgres::HasBinaryForm`): what a result read in
  * PostgreSQL's binary form needs. A query's `result_type` is checked against it where the query is run (`Database::execute`), so a column
  * that cannot be read that way is a compile error at the call, and only for the columns the query returns.
  */
@@ -112,7 +112,7 @@ namespace detail {
  */
 template <typename result_t, typename derived_t>
 // NOLINTNEXTLINE(bugprone-crtp-constructor-accessibility) -- built by its derived sinks, which are the only users
-class Row_Filler : public Row_Sink {
+class RowFiller : public RowSink {
  public:
   /**
    * @brief Makes the `position`-th column of the current row NULL.
@@ -133,7 +133,7 @@ class Row_Filler : public Row_Sink {
     result_t& row = current();
     util::visit_index<std::tuple_size_v<result_t>>(position, [&]<std::size_t pos> {
       using field_t = std::tuple_element_t<pos, result_t>;
-      std::get<pos>(row).value = parse_column<field_t>(text);
+      std::get<pos>(row).value = postgres::parse_column<field_t>(text);
     });
   }
 
@@ -142,7 +142,7 @@ class Row_Filler : public Row_Sink {
       result_t& row = current();
       util::visit_index<std::tuple_size_v<result_t>>(position, [&]<std::size_t pos> {
         using field_t = std::tuple_element_t<pos, result_t>;
-        std::get<pos>(row).value = parse_binary_column<field_t>(bytes);
+        std::get<pos>(row).value = postgres::parse_binary_column<field_t>(bytes);
       });
     } else {
       throw_no_binary_form(position, bytes.size());
@@ -153,7 +153,7 @@ class Row_Filler : public Row_Sink {
     if constexpr ( BinaryReadableRow<result_t> ) {
       util::visit_index<std::tuple_size_v<result_t>>(position, [&]<std::size_t pos> {
         using field_t = std::tuple_element_t<pos, result_t>;
-        if ( ! binary_column_accepted<field_t>(type_oid) ) {
+        if ( ! postgres::binary_column_accepted<field_t>(type_oid) ) {
           throw std::runtime_error("column '" + std::string(field_t::COLUMN_NAME.view()) + "': the database has the type with OID " +
                                    std::to_string(type_oid) + ", which the schema's field cannot read (the field and the table disagree)");
         }
@@ -189,26 +189,26 @@ class Row_Filler : public Row_Sink {
 }  // namespace detail
 
 /**
- * @brief A `Row_Sink` that collects every row, of a caller-chosen type.
+ * @brief A `RowSink` that collects every row, of a caller-chosen type.
  *
  * @tparam result_t A `std::tuple` of `Field`s, one per returned column and in the query's column order -- the full
  *                  `row_type` for an unprojected query.
  */
 template <typename result_t>
-class Row_Collector : public detail::Row_Filler<result_t, Row_Collector<result_t>> {
+class RowCollector : public detail::RowFiller<result_t, RowCollector<result_t>> {
  public:
-  Row_Collector() = default;
-  Row_Collector(const Row_Collector&) = delete;  // a sink is filled where it was made: the producer holds a pointer to it
-  Row_Collector(Row_Collector&&) = delete;
-  Row_Collector& operator=(const Row_Collector&) = delete;
-  Row_Collector& operator=(Row_Collector&&) = delete;
-  ~Row_Collector() override = default;
+  RowCollector() = default;
+  RowCollector(const RowCollector&) = delete;  // a sink is filled where it was made: the producer holds a pointer to it
+  RowCollector(RowCollector&&) = delete;
+  RowCollector& operator=(const RowCollector&) = delete;
+  RowCollector& operator=(RowCollector&&) = delete;
+  ~RowCollector() override = default;
 
   void reserve(std::size_t rows) override { _rows.reserve(rows); }
   void begin_row() override { _rows.emplace_back(); }
   void end_row() override {}
 
-  /** @brief The row being built (the hook `Row_Filler` needs). @throws std::logic_error if none was begun. */
+  /** @brief The row being built (the hook `RowFiller` needs). @throws std::logic_error if none was begun. */
   result_t& current_row() {
     if ( _rows.empty() ) {
       throw std::logic_error("row sink: a value arrived before its row began");
@@ -224,34 +224,34 @@ class Row_Collector : public detail::Row_Filler<result_t, Row_Collector<result_t
 };
 
 /**
- * @brief Whether `handler_t` can receive the rows of a `Row_Handler<result_t, handler_t>` (or a `Database::stream`/`stream_into`
+ * @brief Whether `handler_t` can receive the rows of a `RowHandler<result_t, handler_t>` (or a `Database::stream`/`stream_into`
  * of the same result): invocable with a `result_t&&`, returning `void`, or a `bool` where `false` stops the stream.
  */
 template <typename handler_t, typename result_t>
-concept RowHandler = std::invocable<handler_t&, result_t&&> && (std::same_as<std::invoke_result_t<handler_t&, result_t&&>, void> ||
+concept RowCallback = std::invocable<handler_t&, result_t&&> && (std::same_as<std::invoke_result_t<handler_t&, result_t&&>, void> ||
                                                                 std::same_as<std::invoke_result_t<handler_t&, result_t&&>, bool>);
 
 /**
- * @brief A `Row_Sink` that hands each row, when it is complete, to a function, and keeps none: the sink of a stream.
+ * @brief A `RowSink` that hands each row, when it is complete, to a function, and keeps none: the sink of a stream.
  *
  * `handler_t` is called with the row (a `result_t` rvalue: take it by value or `result_t&&` to keep it, or `const result_t&`
  * to look) and returns `void`, or a `bool` where `false` means "stop": the
  * sink then wants no more rows (`wants_more`) and never calls the function again, even if rows are still pushed. If the
  * function throws, the exception goes to whoever pushed the row.
  *
- * @tparam result_t  A `std::tuple` of `Field`s, as for `Row_Collector`.
- * @tparam handler_t Invocable with a `result_t&&`, returning `void` or `bool` (see `RowHandler`).
+ * @tparam result_t  A `std::tuple` of `Field`s, as for `RowCollector`.
+ * @tparam handler_t Invocable with a `result_t&&`, returning `void` or `bool` (see `RowCallback`).
  */
-template <typename result_t, RowHandler<result_t> handler_t>
-class Row_Handler : public detail::Row_Filler<result_t, Row_Handler<result_t, handler_t>> {
+template <typename result_t, RowCallback<result_t> handler_t>
+class RowHandler : public detail::RowFiller<result_t, RowHandler<result_t, handler_t>> {
  public:
-  explicit Row_Handler(std::remove_cv_t<handler_t> handler) : _handler(std::move(handler)) {}
+  explicit RowHandler(std::remove_cv_t<handler_t> handler) : _handler(std::move(handler)) {}
 
-  Row_Handler(const Row_Handler&) = delete;  // a sink is filled where it was made: the producer holds a pointer to it
-  Row_Handler(Row_Handler&&) = delete;
-  Row_Handler& operator=(const Row_Handler&) = delete;
-  Row_Handler& operator=(Row_Handler&&) = delete;
-  ~Row_Handler() override = default;
+  RowHandler(const RowHandler&) = delete;  // a sink is filled where it was made: the producer holds a pointer to it
+  RowHandler(RowHandler&&) = delete;
+  RowHandler& operator=(const RowHandler&) = delete;
+  RowHandler& operator=(RowHandler&&) = delete;
+  ~RowHandler() override = default;
 
   void reserve(std::size_t /*rows*/) override {}
 
@@ -274,7 +274,7 @@ class Row_Handler : public detail::Row_Filler<result_t, Row_Handler<result_t, ha
 
   [[nodiscard]] bool wants_more() const override { return ! _stopped; }
 
-  /** @brief The row being built (the hook `Row_Filler` needs). @throws std::logic_error if none was begun. */
+  /** @brief The row being built (the hook `RowFiller` needs). @throws std::logic_error if none was begun. */
   result_t& current_row() {
     if ( ! _building ) {
       throw std::logic_error("row sink: a value arrived before its row began");

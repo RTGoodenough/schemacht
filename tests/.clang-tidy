@@ -1,0 +1,20 @@
+# The library's checks, minus those that fight test code: literal expected values, Catch2's macros, and test-only globals.
+InheritParentConfig: true
+Checks: >
+  -readability-magic-numbers,
+  -cppcoreguidelines-avoid-magic-numbers,
+  -cppcoreguidelines-avoid-do-while,
+  -cppcoreguidelines-avoid-non-const-global-variables,
+  -readability-function-cognitive-complexity,
+  -readability-function-size,
+  -misc-use-anonymous-namespace,
+  -concurrency-mt-unsafe,
+  -cert-err58-cpp,
+  -bugprone-chained-comparison,
+  -bugprone-exception-escape,
+  -google-build-using-namespace,
+  -bugprone-throwing-static-initialization,
+  -cppcoreguidelines-pro-bounds-avoid-unchecked-container-access,
+  -readability-identifier-length,
+  -readability-trailing-comma,
+  -modernize-use-emplace
