@@ -19,15 +19,9 @@
 #include "schemacht/postgres/concepts/field_codec.hpp"  // IWYU pragma: export
 #include "schemacht/schema/column_type.hpp"
 #include "schemacht/schema/field.hpp"
+#include "schemacht/util/hex.hpp"
 
 namespace schemacht::postgres {
-
-namespace detail {
-
-[[nodiscard]] std::vector<std::byte> parse_hex_bytes(std::string_view text);
-[[nodiscard]] std::string            format_hex_bytes(const std::vector<std::byte>& bytes);
-
-}  // namespace detail
 
 /**
  * @brief Walks the elements of a one-dimensional PostgreSQL array in text form: `{}`, `{1,2,3}`, `{"a b","c\"d"}`.
@@ -120,7 +114,7 @@ class FieldCodec {
         text.remove_prefix(2);  // what a PostgreSQL `bytea` prints: `\x` and then the hex
       }
 
-      return detail::parse_hex_bytes(text);
+      return util::parse_hex(text);
 
     } else {  // a number
       data_t            value{};
@@ -148,7 +142,7 @@ class FieldCodec {
       return value;
 
     } else if constexpr ( std::same_as<data_t, std::vector<std::byte>> ) {
-      return "\\x" + detail::format_hex_bytes(value);  // the `\x` says hex: without it, PostgreSQL would store the hex digits as text
+      return "\\x" + util::format_hex(value);  // the `\x` says hex: without it, PostgreSQL would store the hex digits as text
 
     } else {  // a number
       static constexpr std::size_t            NUMERIC_TEXT_CAPACITY = 64;

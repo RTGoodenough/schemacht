@@ -11,6 +11,7 @@
 #include "schemacht/postgres/async_client.hpp"
 #include "schemacht/postgres/concepts/transaction.hpp"  // IWYU pragma: export
 #include "schemacht/postgres/statement_runner.hpp"
+#include "schemacht/util/futures.hpp"
 
 namespace schemacht::postgres {
 
@@ -111,7 +112,7 @@ class Transaction : public StatementRunner {
     const auto        promise = std::make_shared<std::promise<void>>();
     std::future<void> future = promise->get_future();
 
-    commit_into([promise](const std::exception_ptr& error) { detail::settle(*promise, error); });
+    commit_into([promise](const std::exception_ptr& error) { util::settle(*promise, error); });
 
     return future;
   }
@@ -127,7 +128,7 @@ class Transaction : public StatementRunner {
     const auto        promise = std::make_shared<std::promise<void>>();
     std::future<void> future = promise->get_future();
 
-    rollback_into([promise](const std::exception_ptr& error) { detail::settle(*promise, error); });
+    rollback_into([promise](const std::exception_ptr& error) { util::settle(*promise, error); });
 
     return future;
   }

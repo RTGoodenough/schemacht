@@ -11,7 +11,10 @@
 #include <algorithm>
 #include <array>
 #include <cstddef>
+#include <ranges>
 #include <string_view>
+
+#include "schemacht/util/concepts/compile_time.hpp"  // IWYU pragma: export
 
 namespace schemacht::util {
 
@@ -53,6 +56,26 @@ template <CTString... parts>
   ((cursor = std::ranges::copy(parts.view(), cursor).out), ...);
 
   return CTString<TOTAL>(joined);
+}
+
+/**
+ * @return Whether no two of `values` are equal: for checking names or indices while compiling, such as a schema's column names
+ * (`static_assert(util::all_distinct(names), "...")`). Any forward range of comparable values: an array, a span, a slice.
+ * It compares every pair, so it is for the few values of a schema or a statement, not for large data.
+ */
+template <EqualityComparableRange range_t>
+[[nodiscard]] constexpr bool all_distinct(const range_t& values) {
+  std::size_t seen = 0;
+  for ( const auto& value : values ) {
+    ++seen;
+    for ( const auto& later : values | std::views::drop(seen) ) {
+      if ( value == later ) {
+        return false;
+      }
+    }
+  }
+
+  return true;
 }
 
 }  // namespace schemacht::util

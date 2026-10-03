@@ -3,47 +3,18 @@
 #include <algorithm>
 #include <array>
 #include <cstddef>
-#include <cstdint>
 #include <cstring>
 #include <optional>
 #include <stdexcept>
 #include <string>
 #include <string_view>
-#include <vector>
 
 namespace schemacht::postgres {
 
 namespace {
 
-constexpr unsigned int BITS_PER_HEX_DIGIT = 4;
-constexpr unsigned int HEX_NIBBLE_MASK = 0xFU;
-constexpr unsigned int DECIMAL_DIGIT_COUNT = 10;
-constexpr std::size_t  CHAR_VALUES = 256;
-constexpr std::size_t  MESSAGE_TEXT_LIMIT = 80;  // how much of an array's text an error message quotes
-
-/** @brief What a table entry holds for a character that is not a hex digit: no nibble is above `HEX_NIBBLE_MASK`. */
-constexpr std::uint8_t NOT_A_DIGIT = 0xFF;
-
-/** @return The value of every hex digit at its character's index, `NOT_A_DIGIT` elsewhere. */
-constexpr std::array<std::uint8_t, CHAR_VALUES> make_nibble_table() {
-  std::array<std::uint8_t, CHAR_VALUES> table{};
-  table.fill(NOT_A_DIGIT);
-
-  for ( unsigned int digit = 0; digit < DECIMAL_DIGIT_COUNT; ++digit ) {
-    table.at('0' + digit) = static_cast<std::uint8_t>(digit);
-  }
-
-  for ( unsigned int digit = 0; digit <= HEX_NIBBLE_MASK - DECIMAL_DIGIT_COUNT; ++digit ) {
-    table.at('a' + digit) = static_cast<std::uint8_t>(DECIMAL_DIGIT_COUNT + digit);
-    table.at('A' + digit) = static_cast<std::uint8_t>(DECIMAL_DIGIT_COUNT + digit);
-  }
-
-  return table;
-}
-
-// A table, not a chain of range checks: hex digits are effectively random, so a branch per digit is often mispredicted,
-// and a table lookup decodes large values several times faster.
-constexpr std::array<std::uint8_t, CHAR_VALUES> NIBBLES = make_nibble_table();
+constexpr std::size_t CHAR_VALUES = 256;
+constexpr std::size_t MESSAGE_TEXT_LIMIT = 80;  // how much of an array's text an error message quotes
 
 /** @brief The characters that end an unquoted array element, or cannot be inside one: `,` `"` `{` `}`. */
 constexpr std::array<bool, CHAR_VALUES> make_bare_element_ends() {
@@ -76,45 +47,6 @@ bool is_null_word(std::string_view token) {
 }
 
 }  // namespace
-
-namespace detail {
-
-std::vector<std::byte> parse_hex_bytes(std::string_view text) {
-  if ( text.size() % 2 != 0 ) {
-    throw std::invalid_argument("field_codec: hex byte string must have even length");
-  }
-
-  std::vector<std::byte> bytes(text.size() / 2);
-  unsigned int           seen = 0;  // every nibble read, or-ed: a non-digit (NOT_A_DIGIT) leaves a bit above the nibble
-  for ( std::size_t i = 0; i < bytes.size(); ++i ) {
-    const unsigned int high = NIBBLES.at(static_cast<unsigned char>(text.at(2 * i)));
-    const unsigned int low = NIBBLES.at(static_cast<unsigned char>(text.at((2 * i) + 1)));
-    seen |= high | low;
-    bytes.at(i) = static_cast<std::byte>((high << BITS_PER_HEX_DIGIT) | low);
-  }
-
-  if ( seen > HEX_NIBBLE_MASK ) {
-    throw std::invalid_argument("field_codec: invalid hex digit");
-  }
-
-  return bytes;
-}
-
-std::string format_hex_bytes(const std::vector<std::byte>& bytes) {
-  static constexpr std::string_view DIGITS = "0123456789abcdef";
-  std::string                       text;
-  text.reserve(bytes.size() * 2);
-
-  for ( const std::byte byte : bytes ) {
-    const auto value = static_cast<unsigned int>(byte);
-    text.push_back(DIGITS.at(value >> BITS_PER_HEX_DIGIT));
-    text.push_back(DIGITS.at(value & HEX_NIBBLE_MASK));
-  }
-
-  return text;
-}
-
-}  // namespace detail
 
 void ArrayReader::fail(std::string_view reason) const {
   std::string text(_text.substr(0, MESSAGE_TEXT_LIMIT));

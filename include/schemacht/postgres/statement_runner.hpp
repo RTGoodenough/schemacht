@@ -20,6 +20,7 @@
 #include "schemacht/postgres/statements.hpp"
 #include "schemacht/schema/schema.hpp"
 #include "schemacht/util/compile_time.hpp"
+#include "schemacht/util/futures.hpp"
 
 namespace schemacht::postgres {
 
@@ -31,15 +32,6 @@ template <typename value_t>
   std::promise<value_t> promise;
   promise.set_value(std::move(value));
   return promise.get_future();
-}
-
-/** @return Settles `promise` with `error`, or with nothing if there is none. */
-inline void settle(std::promise<void>& promise, const std::exception_ptr& error) {
-  if ( error ) {
-    promise.set_exception(error);
-  } else {
-    promise.set_value();
-  }
 }
 
 /**
@@ -217,15 +209,7 @@ class StatementRunner {
     std::future<std::vector<result_t>> future = promise->get_future();
 
     execute_into(
-        statement,
-        [promise](std::vector<result_t> rows, const std::exception_ptr& error) {
-          if ( error ) {
-            promise->set_exception(error);
-          } else {
-            promise->set_value(std::move(rows));
-          }
-        },
-        read
+        statement, [promise](std::vector<result_t> rows, const std::exception_ptr& error) { util::settle(*promise, error, std::move(rows)); }, read
     );
 
     return future;
@@ -276,7 +260,7 @@ class StatementRunner {
     const auto        promise = std::make_shared<std::promise<void>>();
     std::future<void> future = promise->get_future();
 
-    stream_into(statement, std::move(on_row), [promise](const std::exception_ptr& error) { detail::settle(*promise, error); }, read);
+    stream_into(statement, std::move(on_row), [promise](const std::exception_ptr& error) { util::settle(*promise, error); }, read);
 
     return future;
   }
@@ -308,13 +292,7 @@ class StatementRunner {
     const auto                 promise = std::make_shared<std::promise<std::uint64_t>>();
     std::future<std::uint64_t> future = promise->get_future();
 
-    execute_into(command, [promise](std::uint64_t affected, const std::exception_ptr& error) {
-      if ( error ) {
-        promise->set_exception(error);
-      } else {
-        promise->set_value(affected);
-      }
-    });
+    execute_into(command, [promise](std::uint64_t affected, const std::exception_ptr& error) { util::settle(*promise, error, affected); });
 
     return future;
   }
@@ -469,7 +447,7 @@ class StatementRunner {
         return future;
       }
 
-      run_inserts(detail::build_insert<schema_t, row_t>(rows), [promise](const std::exception_ptr& error) { detail::settle(*promise, error); });
+      run_inserts(detail::build_insert<schema_t, row_t>(rows), [promise](const std::exception_ptr& error) { util::settle(*promise, error); });
     } catch ( ... ) {
       promise->set_exception(std::current_exception());
     }
@@ -536,7 +514,7 @@ class StatementRunner {
     const auto        promise = std::make_shared<std::promise<void>>();
     std::future<void> future = promise->get_future();
 
-    command_into(std::string(sql), {}, [promise](std::uint64_t /*affected*/, const std::exception_ptr& error) { detail::settle(*promise, error); });
+    command_into(std::string(sql), {}, [promise](std::uint64_t /*affected*/, const std::exception_ptr& error) { util::settle(*promise, error); });
 
     return future;
   }

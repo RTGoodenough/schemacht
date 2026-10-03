@@ -11,6 +11,7 @@
 
 #include "schemacht/postgres/binary_form.hpp"
 #include "schemacht/schema/column_type.hpp"
+#include "schemacht/util/hex.hpp"
 
 /**
  * A UUID as a column type: PostgreSQL's `uuid`. Also an example of a column type made with `schemacht::ColumnType`.
@@ -34,37 +35,40 @@ class Uuid {
     }
 
     std::array<std::byte, SIZE> bytes{};
-    std::size_t                 next = 0;
-    for ( std::size_t i = 0; i < TEXT_SIZE; ) {
-      if ( std::ranges::contains(TEXT_HYPHENS, i) ) {
-        if ( text.at(i) != '-' ) {
+    std::size_t                 at_text = 0;
+    std::size_t                 at_byte = 0;
+    for ( const std::size_t group : GROUP_BYTES ) {
+      if ( at_byte != 0 ) {
+        if ( text.at(at_text) != '-' ) {
           refuse(text);
         }
-        ++i;
-        continue;
+
+        ++at_text;
       }
 
-      bytes.at(next++) = static_cast<std::byte>((hex_value(text, i) << 4U) | hex_value(text, i + 1));
-      i += 2;
+      try {
+        util::parse_hex_into(text.substr(at_text, 2 * group), std::span(bytes).subspan(at_byte, group));
+      } catch ( const std::invalid_argument& ) {
+        refuse(text);  // the message names the whole text, not one group of it
+      }
+
+      at_text += 2 * group;
+      at_byte += group;
     }
 
     return Uuid(bytes);
   }
 
   /** @return The UUID as PostgreSQL prints it: lowercase hex, in groups of 8-4-4-4-12. */
-  [[nodiscard]] std::string to_string() const {
-    constexpr std::string_view DIGITS = "0123456789abcdef";
-    std::string                text;
+  [[nodiscard]] constexpr std::string to_string() const {
+    std::string text = util::format_hex(_bytes);  // all 32 digits, then a hyphen after every group but the last
     text.reserve(TEXT_SIZE);
 
-    for ( std::size_t i = 0; i < SIZE; ++i ) {
-      if ( std::ranges::contains(BYTES_BEFORE_HYPHEN, i) ) {
-        text += '-';
-      }
-
-      const auto value = std::to_integer<unsigned>(_bytes.at(i));
-      text += DIGITS.at(value >> 4U);
-      text += DIGITS.at(value & LOW_NIBBLE);
+    std::size_t at_text = 0;
+    for ( const std::size_t group : std::span(GROUP_BYTES).first(GROUP_BYTES.size() - 1) ) {
+      at_text += 2 * group;
+      text.insert(at_text, 1, '-');
+      ++at_text;
     }
 
     return text;
@@ -77,33 +81,12 @@ class Uuid {
  private:
   static constexpr std::size_t TEXT_SIZE = 36;
 
-  // Where the hyphens of the 8-4-4-4-12 groups go: at these positions of the text, and before these bytes.
-  static constexpr std::array<std::size_t, 4> TEXT_HYPHENS{8, 13, 18, 23};
-  static constexpr std::array<std::size_t, 4> BYTES_BEFORE_HYPHEN{4, 6, 8, 10};
-
-  static constexpr unsigned LOW_NIBBLE = 0xFU;
-  static constexpr unsigned FIRST_LETTER_DIGIT = 10U;  // the value of hex digit `a`
+  // How many bytes each group of the 8-4-4-4-12 hex digits holds; a hyphen comes between them.
+  static constexpr std::array<std::size_t, 5> GROUP_BYTES{4, 2, 2, 2, 6};
 
   std::array<std::byte, SIZE> _bytes{};
 
   [[noreturn]] static void refuse(std::string_view text) { throw std::invalid_argument("'" + std::string(text) + "' is not a UUID"); }
-
-  [[nodiscard]] static constexpr unsigned hex_value(std::string_view text, std::size_t index) {
-    const char chr = text.at(index);
-    if ( chr >= '0' && chr <= '9' ) {
-      return static_cast<unsigned>(chr - '0');
-    }
-
-    if ( chr >= 'a' && chr <= 'f' ) {
-      return static_cast<unsigned>(chr - 'a') + FIRST_LETTER_DIGIT;
-    }
-
-    if ( chr >= 'A' && chr <= 'F' ) {
-      return static_cast<unsigned>(chr - 'A') + FIRST_LETTER_DIGIT;
-    }
-
-    refuse(text);
-  }
 
  public:
   constexpr Uuid() = default;

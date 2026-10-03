@@ -15,19 +15,6 @@ namespace schemacht::schema {
 
 namespace detail {
 
-/** @return Whether no two of `names` are equal. */
-template <std::size_t count>
-[[nodiscard]] consteval bool all_distinct(const std::array<std::string_view, count>& names) {
-  for ( std::size_t i = 0; i < count; ++i ) {
-    for ( std::size_t j = i + 1; j < count; ++j ) {
-      if ( names.at(i) == names.at(j) ) {
-        return false;
-      }
-    }
-  }
-  return true;
-}
-
 /** @return How many of `flags` are set. */
 template <std::size_t count>
 [[nodiscard]] consteval std::size_t count_set(const std::array<bool, count>& flags) {
@@ -125,7 +112,7 @@ class Schema {
       "a table name must be lowercase letters, digits and underscores, not start with a digit, and be at most 63 bytes"
   );
   static_assert(
-      detail::all_distinct(std::array<std::string_view, FIELD_COUNT>{field_ts::COLUMN_NAME.view()...}),
+      util::all_distinct(std::array<std::string_view, FIELD_COUNT>{field_ts::COLUMN_NAME.view()...}),
       "two fields of the schema have the same column name"
   );
 

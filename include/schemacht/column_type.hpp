@@ -84,22 +84,6 @@ struct WrappedColumn {
   }
 };
 
-namespace detail {
-
-template <std::size_t count>
-[[nodiscard]] consteval bool distinct_labels(const std::array<std::string_view, count>& labels) {
-  for ( std::size_t i = 0; i < count; ++i ) {
-    for ( std::size_t j = i + 1; j < count; ++j ) {
-      if ( labels.at(i) == labels.at(j) ) {
-        return false;
-      }
-    }
-  }
-  return true;
-}
-
-}  // namespace detail
-
 /**
  * @brief The `ColumnType` of a C++ enum stored as a PostgreSQL enum (`CREATE TYPE sql_type AS ENUM (labels...)`): each value
  * is its label, in text and in binary form alike (PostgreSQL sends an enum's binary form as its label).
@@ -120,7 +104,7 @@ struct EnumColumn {
   static constexpr std::string_view                                SQL_TYPE = sql_type.view();
   static constexpr std::array<std::string_view, sizeof...(labels)> LABELS{labels.view()...};
 
-  static_assert(detail::distinct_labels(LABELS), "an EnumColumn's labels must differ from each other");
+  static_assert(util::all_distinct(LABELS), "an EnumColumn's labels must differ from each other");
 
   /** @throws std::invalid_argument for a label that is not one of `labels` (one added to the type in the database, say). */
   static enum_t parse(std::string_view label) {

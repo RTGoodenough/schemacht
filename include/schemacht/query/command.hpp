@@ -3,12 +3,14 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <span>
 #include <stdexcept>
 
 #include "schemacht/query/concepts/command.hpp"  // IWYU pragma: export
 #include "schemacht/query/predicate.hpp"
 #include "schemacht/query/query.hpp"
 #include "schemacht/schema/schema.hpp"
+#include "schemacht/util/compile_time.hpp"
 
 /**
  * Statements that change rows instead of returning them: `UPDATE` and `DELETE`, written like queries and checked against
@@ -68,7 +70,7 @@ struct ReturnedColumns {
     requires(sizeof...(column_idxs) > 0 && sizeof...(column_idxs) <= schema_t::FIELD_COUNT)
   [[nodiscard]] static constexpr ReturnedColumns of() {
     const ReturnedColumns result{.columns = {column_idxs...}, .count = sizeof...(column_idxs)};
-    if ( detail::repeats_a_column(result.columns, result.count) ) {
+    if ( ! util::all_distinct(std::span(result.columns).first(result.count)) ) {
       throw std::logic_error("a column can be returned only once");
     }
 

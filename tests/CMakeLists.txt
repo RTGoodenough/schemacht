@@ -29,6 +29,7 @@ add_executable(
   unit/row_test.cpp
   unit/statements_test.cpp
   unit/thread_pool_test.cpp
+  unit/util_test.cpp
   integration/database_test.cpp
   integration/transaction_test.cpp
 )

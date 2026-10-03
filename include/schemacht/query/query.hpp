@@ -4,12 +4,14 @@
 #include <concepts>
 #include <cstddef>
 #include <cstdint>
+#include <span>
 #include <stdexcept>
 #include <type_traits>
 
 #include "schemacht/query/concepts/query.hpp"  // IWYU pragma: export
 #include "schemacht/query/predicate.hpp"
 #include "schemacht/schema/schema.hpp"
+#include "schemacht/util/compile_time.hpp"
 
 namespace schemacht::query {
 
@@ -37,24 +39,6 @@ template <schema::IsSchema schema_t>
   }
   return columns;
 }
-
-namespace detail {
-
-/** @return Whether a column appears twice among the first `count` of `columns`. */
-template <std::size_t capacity>
-[[nodiscard]] constexpr bool repeats_a_column(const std::array<std::size_t, capacity>& columns, std::size_t count) {
-  for ( std::size_t i = 0; i < count; ++i ) {
-    for ( std::size_t j = i + 1; j < count; ++j ) {
-      if ( columns.at(i) == columns.at(j) ) {
-        return true;
-      }
-    }
-  }
-
-  return false;
-}
-
-}  // namespace detail
 
 /**
  * @brief A whole `SELECT` over one schema: which rows, in what order, how many, and which columns of each.
@@ -147,7 +131,7 @@ struct Query {
     result.columns = std::array<std::size_t, schema_t::FIELD_COUNT>{column_idxs...};
     result.column_count = sizeof...(column_idxs);
 
-    if ( detail::repeats_a_column(result.columns, result.column_count) ) {
+    if ( ! util::all_distinct(std::span(result.columns).first(result.column_count)) ) {
       throw std::logic_error("a column can be projected only once");
     }
 

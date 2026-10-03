@@ -9,6 +9,7 @@
 #include "schemacht/postgres/async_client.hpp"
 #include "schemacht/postgres/statement_runner.hpp"
 #include "schemacht/postgres/transaction.hpp"
+#include "schemacht/util/futures.hpp"
 
 /**
  * A Postgres database: a pool of connections (an `AsyncClient`) that runs typed queries, raw statements and inserts for
@@ -112,14 +113,7 @@ class Database : private detail::ClientHolder, public StatementRunner {
     std::future<Transaction> future = promise->get_future();
 
     begin_into(
-        [promise](Transaction transaction, const std::exception_ptr& error) {
-          if ( error ) {
-            promise->set_exception(error);
-          } else {
-            promise->set_value(std::move(transaction));
-          }
-        },
-        options
+        [promise](Transaction transaction, const std::exception_ptr& error) { util::settle(*promise, error, std::move(transaction)); }, options
     );
 
     return future;

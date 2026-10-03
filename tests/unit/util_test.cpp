@@ -1,0 +1,89 @@
+// The public helpers in schemacht/util: hex, all_distinct and settle.
+
+#include <catch2/catch_test_macros.hpp>
+#include <catch2/matchers/catch_matchers.hpp>
+
+#include <array>
+#include <cstddef>
+#include <cstdint>
+#include <exception>
+#include <future>
+#include <ranges>
+#include <span>
+#include <stdexcept>
+#include <string>
+#include <string_view>
+#include <vector>
+
+#include "schemacht/util/compile_time.hpp"
+#include "schemacht/util/futures.hpp"
+#include "schemacht/util/hex.hpp"
+
+namespace util = schemacht::util;
+
+TEST_CASE("hex is read in either case and written in lowercase", "[util][hex]") {
+  const std::vector<std::byte> bytes{std::byte{0x00}, std::byte{0x0a}, std::byte{0xff}, std::byte{0x7e}};
+
+  CHECK(util::format_hex(bytes) == "000aff7e");
+  CHECK(util::parse_hex("000aff7e") == bytes);
+  CHECK(util::parse_hex("000AfF7E") == bytes);
+
+  CHECK(util::parse_hex("").empty());
+  CHECK(util::format_hex(std::span<const std::byte>{}).empty());
+
+  // A fixed array, or part of one, without a copy.
+  const std::array<std::byte, 3> fixed{std::byte{0x01}, std::byte{0x23}, std::byte{0x45}};
+  CHECK(util::format_hex(fixed) == "012345");
+  CHECK(util::format_hex(std::span(fixed).subspan(1)) == "2345");
+
+  // At compile time too.
+  STATIC_REQUIRE(util::format_hex(std::array{std::byte{0xbe}, std::byte{0xef}}) == "beef");
+  STATIC_REQUIRE(util::parse_hex("BeEf").size() == 2);
+}
+
+TEST_CASE("hex is refused for an odd length, a non-digit, or the wrong size", "[util][hex]") {
+  CHECK_THROWS_AS(util::parse_hex("abc"), std::invalid_argument);
+  CHECK_THROWS_AS(util::parse_hex("0g"), std::invalid_argument);
+  CHECK_THROWS_AS(util::parse_hex("0 "), std::invalid_argument);
+
+  std::array<std::byte, 2> out{};
+  util::parse_hex_into("cafe", out);
+  CHECK(out == std::array{std::byte{0xca}, std::byte{0xfe}});
+
+  CHECK_THROWS_WITH(util::parse_hex_into("caf", out), "hex: 3 digits for 2 bytes, which take 4");
+  CHECK_THROWS_AS(util::parse_hex_into("cafeba", out), std::invalid_argument);
+  CHECK_THROWS_WITH(util::parse_hex("00ff0z"), "hex: the character at index 5 is not a hex digit");
+}
+
+TEST_CASE("all_distinct finds a value given twice", "[util]") {
+  STATIC_REQUIRE(util::all_distinct(std::array<std::string_view, 3>{"a", "b", "c"}));
+  STATIC_REQUIRE_FALSE(util::all_distinct(std::array<std::string_view, 3>{"a", "b", "a"}));
+  STATIC_REQUIRE(util::all_distinct(std::array<int, 0>{}));
+
+  // Only the part in use: the repeat beyond it does not count.
+  static constexpr std::array<std::size_t, 4> COLUMNS{2, 0, 2, 2};
+  STATIC_REQUIRE(util::all_distinct(std::span(COLUMNS).first(2)));
+  STATIC_REQUIRE_FALSE(util::all_distinct(std::span(COLUMNS).first(3)));
+
+  // A view walked only when not const is refused by the concept, not deep inside the body.
+  using Filtered = decltype(COLUMNS | std::views::filter([](std::size_t column) { return column != 0; }));
+  STATIC_REQUIRE_FALSE(util::EqualityComparableRange<Filtered>);
+}
+
+TEST_CASE("settle completes a promise with the error, or with the value", "[util]") {
+  std::promise<void> done;
+  util::settle(done, nullptr);
+  CHECK_NOTHROW(done.get_future().get());
+
+  std::promise<void> failed;
+  util::settle(failed, std::make_exception_ptr(std::runtime_error("no")));
+  CHECK_THROWS_AS(failed.get_future().get(), std::runtime_error);
+
+  std::promise<std::int64_t> counted;
+  util::settle(counted, nullptr, 3);  // the value takes the promise's type
+  CHECK(counted.get_future().get() == 3);
+
+  std::promise<std::string> refused;
+  util::settle(refused, std::make_exception_ptr(std::runtime_error("no")), std::string("unused"));
+  CHECK_THROWS_AS(refused.get_future().get(), std::runtime_error);
+}
