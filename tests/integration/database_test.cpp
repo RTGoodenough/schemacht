@@ -1,7 +1,8 @@
 // Against a real PostgreSQL: run with SCHEMACHT_TEST_DB set to a libpq connection string, e.g.
 //   SCHEMACHT_TEST_DB="host=localhost dbname=test user=test" ctest --test-dir build -R integration
-// Without it, every test here is skipped. The tests create (and drop) tables whose names start with `schemacht_it_`; the
-// extension test also installs pg_trgm (and leaves it) and creates and drops the function `similar_above`.
+// Without it, every test here is skipped. The tests create (and drop) tables whose names start with `schemacht_it_`, and the
+// schema `schemacht_it_schema`; the extension test also installs pg_trgm (and leaves it) and creates and drops the function
+// `similar_above`.
 
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/matchers/catch_matchers.hpp>
@@ -733,4 +734,98 @@ TEST_CASE("integration: an operation whose argument has a type of its own: jsonb
   CHECK(database.execute(q::Prepared<WITH_KEY>::bind(JsonKey{"missing"})).get().empty());
 
   database.drop_table<Documents>().get();
+}
+
+namespace {
+
+using Named = schemacht::test::Numbered;  // an identity key, a name and a nickname
+using NamedColumns = q::On<Named>;
+
+constexpr auto BY_NAME = q::select<Named>().order_by(NamedColumns::col<"name">().asc());
+constexpr auto RENAME = q::update<Named>()
+                            .set(NamedColumns::col<"name">(), q::arg<0>())
+                            .where(NamedColumns::col<"name">() == q::arg<1>())
+                            .returning(NamedColumns::col<"name">());
+constexpr auto REMOVE_NAMED = q::delete_where(NamedColumns::col<"name">() == q::arg<0>());
+constexpr auto ALL_TAGGED = q::select<schemacht::test::Tagged>();
+
+std::vector<std::string> names(const std::vector<Named::row_type>& rows) {
+  std::vector<std::string> result;
+  result.reserve(rows.size());
+  for ( const Named::row_type& row : rows ) {
+    result.push_back(sch::get<"name">(row));
+  }
+  return result;
+}
+
+}  // namespace
+
+TEST_CASE("integration: one schema on tables named while the program runs", "[integration][table_name]") {
+  pg::Database     database(test_db());
+  pg::Table<Named> first(database, sch::TableName("schemacht_it_named_a"));
+  pg::Table<Named> second(database, sch::TableName("schemacht_it_named_b"));
+  for ( pg::Table<Named>* table : {&first, &second} ) {
+    table->drop().get();
+    table->create().get();
+  }
+
+  first.insert({Named::make_insert_row("cat", std::nullopt), Named::make_insert_row("ann", "a")}).get();
+  const auto written = second.insert_returning({Named::make_insert_row("bob", "b")}).get();
+  REQUIRE(written.size() == 1);
+
+  // Each table holds its own rows.
+  CHECK(names(first.execute(q::Prepared<BY_NAME>::bind()).get()) == std::vector<std::string>{"ann", "cat"});
+  CHECK(names(second.execute(q::Prepared<BY_NAME>::bind()).get()) == std::vector<std::string>{"bob"});
+  CHECK(names(second.select_by_key(std::vector{sch::get<"id">(written[0])}).get()) == std::vector<std::string>{"bob"});
+
+  // Updates and deletes, with and without RETURNING, change only their own table.
+  const auto renamed = first.execute(q::Prepared<RENAME>::bind("anne", "ann")).get();
+  REQUIRE(renamed.size() == 1);
+  CHECK(sch::get<"name">(renamed[0]) == "anne");
+  CHECK(first.execute(q::Prepared<REMOVE_NAMED>::bind("cat")).get() == 1);
+  CHECK(second.execute(q::Prepared<REMOVE_NAMED>::bind("cat")).get() == 0);
+
+  std::size_t streamed = 0;
+  first.stream(q::Prepared<BY_NAME>::bind(), [&streamed](const Named::row_type& /*row*/) { ++streamed; }).get();
+  CHECK(streamed == 1);
+
+  // On a transaction's connection: rolled back, as anything else in it would be.
+  {
+    pg::Transaction  transaction = database.begin().get();
+    pg::Table<Named> in_transaction(transaction, first.name());
+    in_transaction.insert({Named::make_insert_row("dan", std::nullopt)}).get();
+    CHECK(in_transaction.execute(q::Prepared<BY_NAME>::bind()).get().size() == 2);
+    transaction.rollback().get();
+  }
+  CHECK(names(first.execute(q::Prepared<BY_NAME>::bind()).get()) == std::vector<std::string>{"anne"});
+
+  first.drop().get();
+  second.drop().get();
+}
+
+TEST_CASE("integration: a table named while the program runs takes rows through VALUES too", "[integration][table_name]") {
+  using schemacht::test::Tagged;  // an array column, which `unnest` can't send
+
+  pg::Database      database(test_db());
+  pg::Table<Tagged> tagged(database, sch::TableName("schemacht_it_named_tagged"));
+  tagged.drop().get();
+  tagged.create().get();
+
+  tagged.insert({Tagged::make_row(1, std::vector<std::string>{"a", "b"}), Tagged::make_row(2, std::vector<std::string>{})}).get();
+  CHECK(tagged.execute(q::Prepared<ALL_TAGGED>::bind()).get().size() == 2);
+
+  tagged.drop().get();
+}
+
+TEST_CASE("integration: a table named while the program runs, in a schema of its own", "[integration][table_name]") {
+  pg::Database database(test_db());
+  exec(database, "DROP SCHEMA IF EXISTS schemacht_it_schema CASCADE");
+  exec(database, "CREATE SCHEMA schemacht_it_schema");
+
+  pg::Table<Named> table(database, sch::TableName("schemacht_it_schema", "numbered"));
+  table.create().get();
+  table.insert({Named::make_insert_row("eve", std::nullopt)}).get();
+  CHECK(names(table.execute(q::Prepared<BY_NAME>::bind()).get()) == std::vector<std::string>{"eve"});
+
+  exec(database, "DROP SCHEMA schemacht_it_schema CASCADE");
 }

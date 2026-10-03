@@ -6,6 +6,7 @@
 #include <concepts>
 #include <cstddef>
 #include <cstdint>
+#include <string>
 #include <string_view>
 #include <utility>
 
@@ -15,14 +16,15 @@
 #include "schemacht/query/sql_type.hpp"
 #include "schemacht/schema/field.hpp"
 #include "schemacht/schema/schema.hpp"
+#include "schemacht/schema/table_name.hpp"
 #include "schemacht/util/identifier.hpp"
 
 /**
  * Lowering a `Query` to a PostgreSQL statement, entirely at compile time. Every value that isn't a literal is a `$n`
  * placeholder, so the text is a constant.
  *
- * Everything here is `consteval`: it can only run while compiling, so a mistake is a compile error, never a runtime
- * exception. Names and operators are validated where they are declared (`schema::Field`, `schema::Schema`,
+ * Everything here but `on_table` is `consteval`: it can only run while compiling, so a mistake is a compile error, never a
+ * runtime exception. Names and operators are validated where they are declared (`schema::Field`, `schema::Schema`,
  * `query::detail::BoundOperation`); the checks below only guard that invariant.
  */
 namespace schemacht::query::sql {
@@ -33,8 +35,16 @@ namespace detail {
 inline void sql_identifier_not_validated() {}
 inline void sql_spelling_not_validated() {}
 inline void sql_statement_capacity_exceeded() {}
+inline void sql_statement_names_its_table_twice() {}  // one slot per statement until statements can name several tables
+inline void sql_statement_names_no_table() {}
 
 }  // namespace detail
+
+/** @brief Where a statement names its table: the quoted name's first character, and its length (see `on_table`). */
+struct TableSlot {
+  std::size_t at = 0;
+  std::size_t size = 0;
+};
 
 /** @brief A fixed-capacity string built while compiling. */
 template <std::size_t capacity>
@@ -88,6 +98,26 @@ class Text {
     push('"');
   }
 
+  /** @brief Appends the statement's table, as `append_identifier` does, and remembers where it is (`table_slot`). */
+  consteval void append_table(std::string_view name) {
+    if ( _table.size != 0 ) {
+      detail::sql_statement_names_its_table_twice();
+    }
+
+    _table.at = _size;
+    append_identifier(name);
+    _table.size = _size - _table.at;
+  }
+
+  /** @return Where `append_table` wrote the table: what `on_table` replaces to run the statement on another table. */
+  [[nodiscard]] consteval TableSlot table_slot() const {
+    if ( _table.size == 0 ) {
+      detail::sql_statement_names_no_table();
+    }
+
+    return _table;
+  }
+
   /** @brief Appends a SQL function name, already checked by `util::is_sql_function_name`. */
   consteval void append_function(std::string_view name) {
     if ( ! util::is_sql_function_name(name) ) {
@@ -126,7 +156,22 @@ class Text {
 
   std::array<char, capacity> _chars{};
   std::size_t                _size = 0;
+  TableSlot                  _table{};
 };
+
+/**
+ * @return `sql` naming `table` where it names its own, at `slot`: the same statement, on a table chosen while the program
+ * runs. The one function here that runs then; `table` was checked when it was made, so nothing is escaped.
+ */
+[[nodiscard]] inline std::string on_table(std::string_view sql, TableSlot slot, const schema::TableName& table) {
+  std::string text;
+  text.reserve(sql.size() - slot.size + table.quoted().size());
+  text.append(sql.substr(0, slot.at));
+  text.append(table.quoted());
+  text.append(sql.substr(slot.at + slot.size));
+
+  return text;
+}
 
 namespace detail {
 
@@ -415,7 +460,7 @@ consteval void append_select_from(Text<text_capacity>& text, const std::array<st
   append_column_list<schema_t>(text, columns, count);
 
   text.append(" FROM ");
-  text.append_identifier(schema_t::TABLE_NAME);
+  text.append_table(schema_t::TABLE_NAME);
 }
 
 /**
@@ -494,7 +539,7 @@ template <schema::IsSchema schema_t, std::size_t set_capacity, std::size_t predi
 [[nodiscard]] consteval Text<STATEMENT_CAPACITY> update_statement(const Update<schema_t, set_capacity, predicate_capacity>& update) {
   Text<STATEMENT_CAPACITY> text;
   text.append("UPDATE ");
-  text.append_identifier(schema_t::TABLE_NAME);
+  text.append_table(schema_t::TABLE_NAME);
 
   for ( std::size_t i = 0; i < update.set_count; ++i ) {
     const SetTerm& term = update.sets.at(i);
@@ -520,7 +565,7 @@ template <schema::IsSchema schema_t, std::size_t predicate_capacity>
 [[nodiscard]] consteval Text<STATEMENT_CAPACITY> delete_statement(const Delete<schema_t, predicate_capacity>& del) {
   Text<STATEMENT_CAPACITY> text;
   text.append("DELETE FROM ");
-  text.append_identifier(schema_t::TABLE_NAME);
+  text.append_table(schema_t::TABLE_NAME);
 
   append_where(text, del.predicate);
   append_returning(text, del.returned);
@@ -548,7 +593,7 @@ template <schema::IsSchema schema_t>
 
   Text<STATEMENT_CAPACITY> text;
   text.append("CREATE TABLE ");
-  text.append_identifier(schema_t::TABLE_NAME);
+  text.append_table(schema_t::TABLE_NAME);
   text.append(" (");
 
   for ( std::size_t column = 0; column < schema_t::FIELD_COUNT; ++column ) {
@@ -590,7 +635,7 @@ template <schema::IsSchema schema_t>
 [[nodiscard]] consteval Text<STATEMENT_CAPACITY> drop_table_statement() {
   Text<STATEMENT_CAPACITY> text;
   text.append("DROP TABLE IF EXISTS ");
-  text.append_identifier(schema_t::TABLE_NAME);
+  text.append_table(schema_t::TABLE_NAME);
 
   return text;
 }
@@ -599,7 +644,7 @@ template <schema::IsSchema schema_t>
 template <schema::IsSchema schema_t, std::size_t text_capacity>
 consteval void append_insert_into(Text<text_capacity>& text) {
   text.append("INSERT INTO ");
-  text.append_identifier(schema_t::TABLE_NAME);
+  text.append_table(schema_t::TABLE_NAME);
   text.append(" (");
   text.append_identifier_list(schema_t::insertable_column_names());
   text.push(')');

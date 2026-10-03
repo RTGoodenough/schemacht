@@ -9,6 +9,7 @@
 #include "schemacht/postgres/statements.hpp"
 #include "schemacht/schema/field.hpp"
 #include "schemacht/schema/schema.hpp"
+#include "schemacht/schema/table_name.hpp"
 #include "support/schemas.hpp"
 
 namespace pg = schemacht::postgres;
@@ -116,6 +117,28 @@ TEST_CASE("a table is created from its schema", "[ddl]") {
   using Keyless = sch::Schema<"keyless", t::Name>;
   CHECK(pg::detail::CreateTableSql<Keyless>::VALUE == R"(CREATE TABLE "keyless" ("name" text NOT NULL))");
   CHECK(pg::detail::DropTableSql<t::People>::VALUE == R"(DROP TABLE IF EXISTS "people")");
+}
+
+TEST_CASE("a table named while the program runs gets the same statements, naming it", "[ddl][insert][table_name]") {
+  const sch::TableName archive("gis", "people_2026");
+
+  CHECK(pg::detail::sql_on<pg::detail::DropTableSql<t::People>>(&archive) == R"(DROP TABLE IF EXISTS "gis"."people_2026")");
+  CHECK(pg::detail::sql_on<pg::detail::DropTableSql<t::People>>(nullptr) == R"(DROP TABLE IF EXISTS "people")");
+  CHECK(
+      pg::detail::sql_on<pg::detail::CreateTableSql<t::Numbered>>(&archive) ==
+      R"(CREATE TABLE "gis"."people_2026" ("id" integer NOT NULL GENERATED ALWAYS AS IDENTITY, "name" text NOT NULL, "nick" text, )"
+      R"(PRIMARY KEY ("id")))"
+  );
+
+  // Both kinds of insert: `unnest`, and multi-row `VALUES` for a schema with an array column.
+  const std::vector<t::People::row_type> people{{t::Id{1}, t::Name{"al"}, t::Nick{std::nullopt}, t::Score{1}, t::Active{true}}};
+  CHECK(pg::detail::build_insert<t::People, t::People::row_type>(people, &archive)[0].sql.starts_with(R"(INSERT INTO "gis"."people_2026" ("id", )"));
+
+  const std::vector<t::Tagged::row_type> tagged{{t::Id{1}, t::Tags{{"a"}}}};
+  CHECK(
+      pg::detail::build_insert<t::Tagged, t::Tagged::row_type>(tagged, &archive)[0].sql ==
+      R"(INSERT INTO "gis"."people_2026" ("id", "tags") VALUES ($1, $2))"
+  );
 }
 
 TEST_CASE("an insert gives back every column with RETURNING", "[insert]") {

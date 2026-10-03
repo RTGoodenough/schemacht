@@ -19,6 +19,7 @@
 #include "schemacht/postgres/row_reader.hpp"
 #include "schemacht/postgres/statements.hpp"
 #include "schemacht/schema/schema.hpp"
+#include "schemacht/schema/table_name.hpp"
 #include "schemacht/util/compile_time.hpp"
 #include "schemacht/util/futures.hpp"
 
@@ -159,11 +160,17 @@ template <TextRow row_t>
  */
 using ReadOptions = AsyncClient::StreamOptions;
 
+template <TextSchema schema_t>
+class Table;  // postgres/table.hpp
+
 /**
  * @brief What a `Database` and a `Transaction` both run: queries, raw statements, commands, inserts and table changes, on the
  * pool (a `Database`) or on the one connection a transaction holds (a `Transaction`).
  *
  * Every call returns a `std::future` at once (or takes a completion, `..._into`) and the work finishes in the background.
+ *
+ * The schema-shaped calls (`create_table`, `insert`, `select_by_key`, ...) use the schema's own table; a `Table` runs them
+ * on another, named while the program runs.
  *
  * @note Errors, including a statement that can't be started, arrive through the future, never as a throw from the call itself.
  *
@@ -396,6 +403,9 @@ class StatementRunner {
   [[nodiscard]] const ReadOptions& read_options() const noexcept { return _read; }
 
  private:
+  template <TextSchema schema_t>
+  friend class Table;
+
   AsyncClient*       _client;
   AsyncClient::Lease _lease;     // a transaction's connection; empty for a database, and once the transaction has ended
   bool               _on_lease;  // a transaction's: statements go to `_lease`, and fail without it
@@ -435,9 +445,9 @@ class StatementRunner {
     }
   }
 
-  /** @brief What every `insert` runs. */
+  /** @brief What every `insert` runs. @param table The table to insert into (`Table`'s), or null for the schema's own. */
   template <TextSchema schema_t, schema::InsertRowOf<schema_t> row_t>
-  [[nodiscard]] std::future<void> insert_rows(std::span<const row_t> rows) {
+  [[nodiscard]] std::future<void> insert_rows(std::span<const row_t> rows, const schema::TableName* table = nullptr) {
     const auto        promise = std::make_shared<std::promise<void>>();
     std::future<void> future = promise->get_future();
 
@@ -447,7 +457,7 @@ class StatementRunner {
         return future;
       }
 
-      run_inserts(detail::build_insert<schema_t, row_t>(rows), [promise](const std::exception_ptr& error) { util::settle(*promise, error); });
+      run_inserts(detail::build_insert<schema_t, row_t>(rows, table), [promise](const std::exception_ptr& error) { util::settle(*promise, error); });
     } catch ( ... ) {
       promise->set_exception(std::current_exception());
     }
@@ -458,7 +468,7 @@ class StatementRunner {
   /** @brief What every `insert_returning` runs: the inserts, each ending in `RETURNING`, read once the last has finished. */
   template <TextSchema schema_t, schema::InsertRowOf<schema_t> row_t>
   [[nodiscard]] std::future<std::vector<typename schema_t::row_type>> insert_rows_returning(
-      std::span<const row_t> rows, const std::optional<ReadOptions>& read
+      std::span<const row_t> rows, const std::optional<ReadOptions>& read, const schema::TableName* table = nullptr
   ) {
     using written_t = schema_t::row_type;
     const auto                          promise = std::make_shared<std::promise<std::vector<written_t>>>();
@@ -470,7 +480,7 @@ class StatementRunner {
         return future;
       }
 
-      std::vector<detail::InsertStatement> statements = detail::build_insert<schema_t, row_t>(rows);
+      std::vector<detail::InsertStatement> statements = detail::build_insert<schema_t, row_t>(rows, table);
       for ( detail::InsertStatement& statement : statements ) {
         statement.sql += detail::ReturningSql<schema_t>::VALUE;
       }

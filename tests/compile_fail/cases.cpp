@@ -7,6 +7,7 @@
 
 #include "schemacht/column_type.hpp"
 #include "schemacht/postgres/database.hpp"
+#include "schemacht/postgres/table.hpp"
 #include "schemacht/query.hpp"
 
 namespace sch = schemacht::schema;
@@ -236,6 +237,23 @@ struct Counts {
   using argument_type = int;
 };
 constexpr auto BAD = q::On<Things>::col<"name">().apply<Counts>(q::arg<0>());
+#endif
+
+#if defined(CASE_TABLE_RAW_STATEMENT)
+using EveryThing = q::RawStatement<"SELECT id FROM things", q::RawArguments<>, Id>;
+[[maybe_unused]] void run(pg::Database& database) {
+  pg::Table<Things> table(database, sch::TableName("archive"));
+  (void)table.execute(EveryThing::bind());  // a raw statement names its own table
+}
+#endif
+
+#if defined(CASE_TABLE_WRONG_SCHEMA)
+using Others = sch::Schema<"others", Id, Name>;
+constexpr auto        ALL_OTHERS = q::select<Others>();
+[[maybe_unused]] void run(pg::Database& database) {
+  pg::Table<Things> table(database, sch::TableName("archive"));
+  (void)table.execute(q::Prepared<ALL_OTHERS>::bind());  // a query over another schema
+}
 #endif
 
 int main() {}

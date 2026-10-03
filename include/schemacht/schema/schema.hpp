@@ -77,7 +77,8 @@ struct RowMaker<std::tuple<field_ts...>> {
 /**
  * @brief Compile-time description of a database table.
  *
- * @tparam table_str The table's name, as a compile-time string.
+ * @tparam table_str The table's name, as a compile-time string: the table every statement runs on, unless it is aimed at
+ *                   another named while the program runs (`TableName`, with `query::CompiledQuery::on` or `postgres::Table`).
  * @tparam field_ts  The table's columns, each a `Field<...>`, with distinct names.
  */
 template <util::CTString table_str, IsField... field_ts>

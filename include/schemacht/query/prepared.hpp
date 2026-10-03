@@ -264,14 +264,17 @@ class Prepared {
   static constexpr std::size_t ARG_COUNT = SLOTS.count;
 
  private:
-  static constexpr auto SQL_CHARS = [] {
+  static constexpr auto SQL_PARTS = [] {
     constexpr auto TEXT = detail::statement_text(QUERY);
-    return sql::terminated<TEXT.size()>(TEXT);
+    return std::pair{sql::terminated<TEXT.size()>(TEXT), TEXT.table_slot()};
   }();
 
  public:
-  /** @brief The statement, with `$n` placeholders for the arguments. */
-  static constexpr std::string_view SQL{SQL_CHARS.data(), SQL_CHARS.size() - 1};
+  /** @brief The statement, with `$n` placeholders for the arguments, on the schema's own table. */
+  static constexpr std::string_view SQL{SQL_PARTS.first.data(), SQL_PARTS.first.size() - 1};
+
+  /** @brief Where `SQL` names the table: what `CompiledQuery::on` replaces to run the statement on another. */
+  static constexpr sql::TableSlot TABLE_SLOT = SQL_PARTS.second;
 
   /**
    * @brief Supplies the arguments, in the order of their `arg<N>()`.
@@ -352,7 +355,7 @@ class Prepared {
     (params.push_back(make_param<slot_idx>(std::forward<arg_ts>(args))), ...);
 
     const std::span<const std::size_t> columns(COLUMNS.data(), detail::returned_column_count(QUERY));
-    return TypedQuery<schema_type, result_type>(CompiledQuery<schema_type>(SQL, columns, std::move(params)));
+    return TypedQuery<schema_type, result_type>(CompiledQuery<schema_type>(SQL, TABLE_SLOT, columns, std::move(params)));
   }
 };
 

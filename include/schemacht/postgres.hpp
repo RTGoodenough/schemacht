@@ -10,4 +10,5 @@
 #include "schemacht/postgres/database.hpp"          // IWYU pragma: export
 #include "schemacht/postgres/session_settings.hpp"  // IWYU pragma: export
 #include "schemacht/postgres/statement_runner.hpp"  // IWYU pragma: export
+#include "schemacht/postgres/table.hpp"             // IWYU pragma: export
 #include "schemacht/postgres/transaction.hpp"       // IWYU pragma: export

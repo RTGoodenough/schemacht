@@ -110,9 +110,14 @@ int main() {
   jsonb's `?`, say. See [examples/extensions.cpp](examples/extensions.cpp).
 - **Tables from schemas:** `create_table` and `drop_table`, for tests, examples and a first start. They cover the primary
   key, `UNIQUE` columns and an identity key.
+- **Tables named while the program runs:** a schema's name is its default table. `pg::Table<Schema>` runs the same
+  statements on another, named by a `schema::TableName` (checked once, when made, and optionally in a PostgreSQL schema:
+  `"gis"."roads"`),
+  for a name from configuration, a user, or another language's bindings.
 
 The examples show these together:
-- [examples/basic.cpp](examples/basic.cpp): a schema, an insert, queries, and a raw statement;
+- [examples/basic.cpp](examples/basic.cpp): a schema, an insert, queries, a raw statement, and a table named while the program
+  runs;
 - [examples/custom_types.cpp](examples/custom_types.cpp): column types of your own;
 - [examples/transfers.cpp](examples/transfers.cpp): identity keys, `insert_returning`, update and delete with
   `returning`, a unique column, and transactions;
@@ -130,8 +135,9 @@ ctest --test-dir build
 The tests and examples are built when schemacht is the top-level project (`SCHEMACHT_BUILD_TESTS`,
 `SCHEMACHT_BUILD_EXAMPLES`). The integration tests and the examples need a PostgreSQL database to run against. Point
 `SCHEMACHT_TEST_DB` at a throwaway one: they create and drop tables whose names start with `schemacht_it_` or
-`schemacht_example_`. One integration test and the extensions example also install pg_trgm if they can, and leave it
-installed; they create and drop a function, `similar_above`. Without `SCHEMACHT_TEST_DB`, they are skipped.
+`schemacht_example_`, and a schema `schemacht_it_schema`. One integration test and the extensions example also install
+pg_trgm if they can, and leave it installed; they create and drop a function, `similar_above`. Without
+`SCHEMACHT_TEST_DB`, they are skipped.
 
 ```sh
 SCHEMACHT_TEST_DB="host=localhost port=5432 dbname=schemacht_test user=test" ctest --test-dir build -j8

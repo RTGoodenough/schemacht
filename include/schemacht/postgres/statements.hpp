@@ -19,6 +19,7 @@
 #include "schemacht/query/sql.hpp"
 #include "schemacht/query/sql_type.hpp"
 #include "schemacht/schema/schema.hpp"
+#include "schemacht/schema/table_name.hpp"
 #include "schemacht/util/concepts/type_utils.hpp"
 
 /**
@@ -75,6 +76,12 @@ struct InsertStatement {
 /** @brief The most parameters one statement can bind: the protocol counts them in 16 bits. */
 inline constexpr std::size_t MAX_STATEMENT_PARAMETERS = 65535;
 
+/** @return `sql_t::VALUE`, naming `table` instead of the schema's own if `table` isn't null. */
+template <typename sql_t>
+[[nodiscard]] std::string sql_on(const schema::TableName* table) {
+  return table == nullptr ? std::string(sql_t::VALUE) : query::sql::on_table(sql_t::VALUE, sql_t::TABLE_SLOT, *table);
+}
+
 namespace insert_detail {
 
 template <schema::IsSchema schema_t, std::size_t... idx>
@@ -99,25 +106,27 @@ inline constexpr bool USES_UNNEST = ! any_insertable_array<schema_t>(std::make_i
 /** @brief The `unnest` INSERT for `schema_t`, as a static string. */
 template <schema::IsSchema schema_t>
 class UnnestSql {
-  static constexpr auto CHARS = [] {
+  static constexpr auto PARTS = [] {
     constexpr auto TEXT = query::sql::insert_unnest_statement<schema_t>();
-    return query::sql::terminated<TEXT.size()>(TEXT);
+    return std::pair{query::sql::terminated<TEXT.size()>(TEXT), TEXT.table_slot()};
   }();
 
  public:
-  static constexpr std::string_view VALUE{CHARS.data(), CHARS.size() - 1};
+  static constexpr std::string_view      VALUE{PARTS.first.data(), PARTS.first.size() - 1};
+  static constexpr query::sql::TableSlot TABLE_SLOT = PARTS.second;  ///< Where `VALUE` names the table (see `query::sql::on_table`).
 };
 
 /** @brief `INSERT INTO <table> (<columns>) VALUES ` for `schema_t`, as a static string. */
 template <schema::IsSchema schema_t>
 class ValuesHeadSql {
-  static constexpr auto CHARS = [] {
+  static constexpr auto PARTS = [] {
     constexpr auto TEXT = query::sql::insert_values_head<schema_t>();
-    return query::sql::terminated<TEXT.size()>(TEXT);
+    return std::pair{query::sql::terminated<TEXT.size()>(TEXT), TEXT.table_slot()};
   }();
 
  public:
-  static constexpr std::string_view VALUE{CHARS.data(), CHARS.size() - 1};
+  static constexpr std::string_view      VALUE{PARTS.first.data(), PARTS.first.size() - 1};
+  static constexpr query::sql::TableSlot TABLE_SLOT = PARTS.second;  ///< Where `VALUE` names the table (see `query::sql::on_table`).
 };
 
 /** @brief Where the `sent`-th inserted column is in a `row_t`: an `insert_row_type` holds only those columns, a `row_type` every one. */
@@ -155,8 +164,8 @@ template <schema::IsSchema schema_t, schema::InsertRowOf<schema_t> row_t, std::s
 }
 
 template <schema::IsSchema schema_t, schema::InsertRowOf<schema_t> row_t, std::size_t... sent>
-[[nodiscard]] InsertStatement build_unnest(std::span<const row_t> rows, std::index_sequence<sent...> /*columns*/) {
-  return InsertStatement{.sql = std::string(UnnestSql<schema_t>::VALUE), .values = {column_array<schema_t, row_t, sent>(rows)...}};
+[[nodiscard]] InsertStatement build_unnest(std::span<const row_t> rows, const schema::TableName* table, std::index_sequence<sent...> /*columns*/) {
+  return InsertStatement{.sql = sql_on<UnnestSql<schema_t>>(table), .values = {column_array<schema_t, row_t, sent>(rows)...}};
 }
 
 template <schema::IsSchema schema_t, schema::InsertRowOf<schema_t> row_t, std::size_t sent>
@@ -182,8 +191,8 @@ void append_row_values(const row_t& row, InsertStatement& statement, std::index_
 
 /** @return One multi-row `INSERT ... VALUES` for `rows`, which must fit in `MAX_STATEMENT_PARAMETERS`. */
 template <schema::IsSchema schema_t, schema::InsertRowOf<schema_t> row_t>
-[[nodiscard]] InsertStatement build_values(std::span<const row_t> rows) {
-  InsertStatement statement{.sql = std::string(ValuesHeadSql<schema_t>::VALUE), .values = {}};
+[[nodiscard]] InsertStatement build_values(std::span<const row_t> rows, const schema::TableName* table) {
+  InsertStatement statement{.sql = sql_on<ValuesHeadSql<schema_t>>(table), .values = {}};
 
   for ( std::size_t row = 0; row < rows.size(); ++row ) {
     if ( row != 0 ) {
@@ -203,13 +212,14 @@ template <schema::IsSchema schema_t, schema::InsertRowOf<schema_t> row_t>
 /** @brief `CREATE TABLE` for `schema_t` (see `query::sql::create_table_statement`), as a static string. */
 template <schema::IsSchema schema_t>
 class CreateTableSql {
-  static constexpr auto CHARS = [] {
+  static constexpr auto PARTS = [] {
     constexpr auto TEXT = query::sql::create_table_statement<schema_t>();
-    return query::sql::terminated<TEXT.size()>(TEXT);
+    return std::pair{query::sql::terminated<TEXT.size()>(TEXT), TEXT.table_slot()};
   }();
 
  public:
-  static constexpr std::string_view VALUE{CHARS.data(), CHARS.size() - 1};
+  static constexpr std::string_view      VALUE{PARTS.first.data(), PARTS.first.size() - 1};
+  static constexpr query::sql::TableSlot TABLE_SLOT = PARTS.second;  ///< Where `VALUE` names the table (see `query::sql::on_table`).
 };
 
 /** @brief ` RETURNING <every column>` for `schema_t`, as a static string: what `insert_returning` adds to each INSERT. */
@@ -227,13 +237,14 @@ class ReturningSql {
 /** @brief `DROP TABLE IF EXISTS` for `schema_t`, as a static string. */
 template <schema::IsSchema schema_t>
 class DropTableSql {
-  static constexpr auto CHARS = [] {
+  static constexpr auto PARTS = [] {
     constexpr auto TEXT = query::sql::drop_table_statement<schema_t>();
-    return query::sql::terminated<TEXT.size()>(TEXT);
+    return std::pair{query::sql::terminated<TEXT.size()>(TEXT), TEXT.table_slot()};
   }();
 
  public:
-  static constexpr std::string_view VALUE{CHARS.data(), CHARS.size() - 1};
+  static constexpr std::string_view      VALUE{PARTS.first.data(), PARTS.first.size() - 1};
+  static constexpr query::sql::TableSlot TABLE_SLOT = PARTS.second;  ///< Where `VALUE` names the table (see `query::sql::on_table`).
 };
 
 /**
@@ -244,10 +255,11 @@ class DropTableSql {
  * inserted atomically. A schema with an array-typed column can't use `unnest`; its rows go in multi-row `VALUES`
  * statements of at most `MAX_STATEMENT_PARAMETERS` arguments each, which `StatementRunner::insert` runs in a transaction.
  *
+ * @param table The table to insert into, if not the schema's own.
  * @pre `rows` isn't empty.
  */
 template <TextSchema schema_t, schema::InsertRowOf<schema_t> row_t>
-[[nodiscard]] std::vector<InsertStatement> build_insert(std::span<const row_t> rows) {
+[[nodiscard]] std::vector<InsertStatement> build_insert(std::span<const row_t> rows, const schema::TableName* table = nullptr) {
   static_assert(schema_t::INSERTABLE_FIELD_COUNT > 0, "insert: the schema has no column that is not GENERATED");
 
   if constexpr ( insert_detail::USES_UNNEST<schema_t> ) {
@@ -257,13 +269,15 @@ template <TextSchema schema_t, schema::InsertRowOf<schema_t> row_t>
         "one (ColumnType::SQL_TYPE, or a query::sql::SqlType specialization)"
     );
 
-    return {insert_detail::build_unnest<schema_t, row_t>(rows, std::make_index_sequence<schema_t::INSERTABLE_FIELD_COUNT>{})};
+    return {insert_detail::build_unnest<schema_t, row_t>(rows, table, std::make_index_sequence<schema_t::INSERTABLE_FIELD_COUNT>{})};
 
   } else {
     constexpr std::size_t        ROWS_PER_STATEMENT = MAX_STATEMENT_PARAMETERS / schema_t::INSERTABLE_FIELD_COUNT;
     std::vector<InsertStatement> statements;
     for ( std::size_t first = 0; first < rows.size(); first += ROWS_PER_STATEMENT ) {
-      statements.push_back(insert_detail::build_values<schema_t, row_t>(rows.subspan(first, std::min(ROWS_PER_STATEMENT, rows.size() - first))));
+      statements.push_back(
+          insert_detail::build_values<schema_t, row_t>(rows.subspan(first, std::min(ROWS_PER_STATEMENT, rows.size() - first)), table)
+      );
     }
 
     return statements;
@@ -285,7 +299,8 @@ struct WireStatement {
 
 /**
  * @return `statement` as it goes to the database: a `CompiledQuery` (with the names of the columns it returns, from its schema), or a
- * `BoundRawStatement` (which is about no table). The text views point at static storage.
+ * `BoundRawStatement` (which is about no table). The text views point at static storage, or into `statement` for a query aimed at
+ * another table: `statement` must outlive the result.
  */
 template <SendableStatement statement_t>
 [[nodiscard]] WireStatement wire(const statement_t& statement) {

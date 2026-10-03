@@ -3,10 +3,13 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include <concepts>
+#include <string_view>
 #include <tuple>
 
 #include "schemacht/json.hpp"
 #include "schemacht/query.hpp"
+#include "schemacht/query/sql.hpp"
+#include "schemacht/schema/table_name.hpp"
 #include "support/schemas.hpp"
 
 namespace q = schemacht::query;
@@ -138,6 +141,25 @@ TEST_CASE("argument slots take their type from where they are used", "[sql]") {
   STATIC_REQUIRE(q::Prepared<LIMIT_ARG>::SLOTS.info.at(0).is_limit);
 
   STATIC_REQUIRE(std::same_as<q::Prepared<BY_ID>::result_type, t::People::row_type>);
+}
+
+TEST_CASE("a statement knows where it names its table, and runs on another named while the program runs", "[sql][table_name]") {
+  // The slot covers the quoted name exactly, wherever the statement puts it.
+  constexpr auto TABLE_AT = [](std::string_view sql, q::sql::TableSlot slot) { return sql.substr(slot.at, slot.size); };
+  STATIC_REQUIRE(TABLE_AT(q::Prepared<ORDERED>::SQL, q::Prepared<ORDERED>::TABLE_SLOT) == R"("people")");
+  STATIC_REQUIRE(TABLE_AT(q::Prepared<RAISE_RETURNING>::SQL, q::Prepared<RAISE_RETURNING>::TABLE_SLOT) == R"("people")");
+  STATIC_REQUIRE(TABLE_AT(q::Prepared<REMOVE_INACTIVE>::SQL, q::Prepared<REMOVE_INACTIVE>::TABLE_SLOT) == R"("people")");
+
+  const auto bound = q::Prepared<RAISE_RETURNING>::bind(1.5, 7);
+  CHECK(bound.sql() == q::Prepared<RAISE_RETURNING>::SQL);  // the schema's own table, unless aimed at another
+
+  const auto archived = bound.on(schemacht::schema::TableName("archive"));
+  CHECK(archived.sql() == R"(UPDATE "archive" SET "score" = $1, "active" = TRUE WHERE "id" = $2 RETURNING "score", "id")");
+  CHECK(archived.params().size() == 2);
+  CHECK(
+      q::Prepared<ORDERED>::bind().on(schemacht::schema::TableName("gis", "people_2026")).sql() ==
+      R"(SELECT "name", "id" FROM "gis"."people_2026" WHERE "active" = TRUE ORDER BY "score" DESC, "id" LIMIT 10)"
+  );
 }
 
 TEST_CASE("updates and deletes", "[sql][command]") {

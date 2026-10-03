@@ -12,7 +12,9 @@
 
 #include "schemacht/query/command.hpp"
 #include "schemacht/query/query.hpp"
+#include "schemacht/query/sql.hpp"
 #include "schemacht/schema/schema.hpp"
+#include "schemacht/schema/table_name.hpp"
 
 namespace schemacht::query {
 
@@ -82,8 +84,8 @@ using Param = detail::ParamOf<schema_t, std::make_index_sequence<schema_t::FIELD
  * Everything a backend needs to run it: `sql()` with `params()` bound as `$1`, `$2`, ..., and the `columns()` it returns.
  *
  * The type depends only on the schema, not on the query, so a backend's code that sends a statement is
- * compiled once per schema, not once per query. Only `Prepared<...>::bind(...)` makes one: `sql()` and `columns()` view
- * its static storage.
+ * compiled once per schema, not once per query. Only `Prepared<...>::bind(...)` makes one: `columns()` views its static
+ * storage, and so does `sql()` unless the query is aimed at another table (`on`).
  */
 template <schema::IsSchema schema_t>
 class CompiledQuery {
@@ -92,8 +94,8 @@ class CompiledQuery {
   using row_type = schema_t::row_type;
   using param_type = Param<schema_t>;
 
-  /** @return The statement, with `$n` placeholders for `params()`. */
-  [[nodiscard]] std::string_view sql() const noexcept { return _sql; }
+  /** @return The statement, with `$n` placeholders for `params()`. Valid while this query is. */
+  [[nodiscard]] std::string_view sql() const noexcept { return _sql_on_table.empty() ? _sql : std::string_view(_sql_on_table); }
 
   /** @return The bound arguments, in placeholder order: `params().at(0)` is `$1`. */
   [[nodiscard]] std::span<const param_type> params() const noexcept { return _params; }
@@ -104,22 +106,43 @@ class CompiledQuery {
    */
   [[nodiscard]] std::span<const std::size_t> columns() const noexcept { return _columns; }
 
+  /**
+   * @return This query on `table` instead of its schema's own: the same statement and arguments, naming `table`. What
+   * `postgres::Table` runs; a backend's own handle on a table can use it too.
+   */
+  [[nodiscard]] CompiledQuery on(const schema::TableName& table) const& {
+    CompiledQuery aimed = *this;
+    aimed._sql_on_table = sql::on_table(_sql, _table_slot, table);
+
+    return aimed;
+  }
+
+  /** @brief As above, moving the arguments rather than copying them. */
+  [[nodiscard]] CompiledQuery on(const schema::TableName& table) && {
+    _sql_on_table = sql::on_table(_sql, _table_slot, table);
+
+    return std::move(*this);
+  }
+
  private:
   template <auto source>
     requires IsQuerySource<std::remove_cvref_t<decltype(source)>> || IsCommandSource<std::remove_cvref_t<decltype(source)>>
   friend class Prepared;
 
   std::string_view             _sql;
+  sql::TableSlot               _table_slot;
+  std::string                  _sql_on_table;  // `_sql` on another table (`on`); empty for the schema's own
   std::span<const std::size_t> _columns;
   std::vector<param_type>      _params;
 
   /**
-   * @param sql     The statement, in static storage.
-   * @param columns The columns the statement returns, as indices into the schema's fields, in result order; in static storage.
-   * @param params  The arguments, in placeholder order: `params[0]` is `$1`.
+   * @param sql        The statement, in static storage.
+   * @param table_slot Where `sql` names the schema's table.
+   * @param columns    The columns the statement returns, as indices into the schema's fields, in result order; in static storage.
+   * @param params     The arguments, in placeholder order: `params[0]` is `$1`.
    */
-  CompiledQuery(std::string_view sql, std::span<const std::size_t> columns, std::vector<param_type> params)
-      : _sql(sql), _columns(columns), _params(std::move(params)) {}
+  CompiledQuery(std::string_view sql, sql::TableSlot table_slot, std::span<const std::size_t> columns, std::vector<param_type> params)
+      : _sql(sql), _table_slot(table_slot), _columns(columns), _params(std::move(params)) {}
 
  public:
   CompiledQuery(const CompiledQuery&) = default;
@@ -143,6 +166,12 @@ template <schema::IsSchema schema_t, typename result_t>
 class TypedQuery : public CompiledQuery<schema_t> {
  public:
   using result_type = result_t;
+
+  /** @return This query on `table` instead of its schema's own (see `CompiledQuery::on`). */
+  [[nodiscard]] TypedQuery on(const schema::TableName& table) const& { return TypedQuery(CompiledQuery<schema_t>::on(table)); }
+
+  /** @brief As above, moving the arguments rather than copying them. */
+  [[nodiscard]] TypedQuery on(const schema::TableName& table) && { return TypedQuery(std::move(*this).CompiledQuery<schema_t>::on(table)); }
 
  private:
   template <auto source>
