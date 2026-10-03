@@ -12,17 +12,6 @@
  * Exact decimal amounts as PostgreSQL's `numeric`, for a column type of your own that holds one as a whole number of its
  * smallest unit: cents are a scale of 2, so `19.99` is 1999. The `Money` of examples/custom_types.cpp is written with these.
  *
- * @code
- * template <>
- * struct schemacht::ColumnType<Money> {
- *   static constexpr std::string_view SQL_TYPE = "numeric(12,2)";
- *   static Money       parse(std::string_view text) { return {postgres::parse_scaled_numeric<2>(text)}; }
- *   static std::string format(const Money& amount) { return postgres::format_scaled_numeric<2>(amount.cents); }
- *   static Money       parse_binary(std::span<const std::byte> bytes) { return {postgres::parse_binary_scaled_numeric<2>(bytes)}; }
- *   static bool        binary_accepts(std::uint32_t type_oid) { return type_oid == postgres::OID_NUMERIC; }
- * };
- * @endcode
- *
  * A value is refused, with `std::invalid_argument`, rather than rounded: one with a nonzero digit past `scale` decimal places
  * (a `total / 3`, say), `NaN` or an infinity, or one too large for `std::int64_t` units.
  */

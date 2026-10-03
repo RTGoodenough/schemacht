@@ -48,13 +48,6 @@ template <schema::IsSchema schema_t>
  * takes. (A bare `Predicate` is also accepted, as a query with no ordering
  * and no limit.)
  *
- * @code
- * constexpr auto NEWEST = query::select(Places::col<"open">() == true)
- *                             .order_by(Places::col<"rank">().desc(), Places::col<"id">().asc())
- *                             .limit(10)
- *                             .project(Places::col<"name">(), Places::col<"id">());
- * @endcode
- *
  * Without `project`, a query returns every column, as the schema declares them.
  *
  * @tparam schema_t           The schema queried.

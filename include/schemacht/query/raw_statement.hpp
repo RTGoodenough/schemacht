@@ -260,17 +260,7 @@ class BoundRawStatement {
 /**
  * @brief The escape hatch: a SQL statement written out in full, for what the query builder cannot say.
  *
- * The statement and its types are all in one type, so a use is checked like any other query:
- *
- * @code
- * using TopSpenders = query::RawStatement<
- *     "SELECT customer_id AS customer, sum(total) AS spent FROM orders "
- *     "WHERE placed_at >= now() - make_interval(days => $1) GROUP BY customer_id ORDER BY spent DESC LIMIT $2",
- *     query::RawArguments<std::int32_t, std::int64_t>,
- *     schema::Field<std::int64_t, "customer">, schema::Field<std::optional<double>, "spent">>;
- *
- * std::vector<TopSpenders::row_type> top = database.execute(TopSpenders::bind(30, 10)).get();
- * @endcode
+ * The statement and its types are all in one type, so a use is checked like any other query. examples/basic.cpp has one.
  *
  * - **No injection by construction.** The text is a compile-time constant, and values reach it only as `$n` arguments,
  *   sent apart from the text. Nothing is spliced in.

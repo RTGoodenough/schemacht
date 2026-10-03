@@ -20,13 +20,7 @@ class Contains {
 };
 
 /**
- * @brief Rows whose JSON column contains the document bound to `arg<N>()`:
- *
- * @code
- * using Streets = query::On<StreetsSchema>;   // with a Field<json::Json, "properties">
- * constexpr auto FOOTPATHS = query::select(json::contains(Streets::col<"properties">(), query::arg<0>()));
- * database.execute(query::Prepared<FOOTPATHS>::bind(json::Json(R"({"highway":"footway","surface":"paved"})")));
- * @endcode
+ * @brief Rows whose JSON column contains the document bound to `arg<N>()`. examples/extensions.cpp uses it.
  *
  * Written as the operator, because that is what a GIN index (`CREATE INDEX ... USING GIN (properties)`) answers; the
  * function behind it, `jsonb_contains`, is a sequential scan. "Contains" is `jsonb`'s: an object contains another with

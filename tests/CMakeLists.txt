@@ -40,7 +40,7 @@ catch_discover_tests(schemacht_tests)
 # ==============================================================================
 # The examples, run against the test database (skipped, as the integration tests are, without SCHEMACHT_TEST_DB)
 # ==============================================================================
-foreach(example basic custom_types transfers)
+foreach(example basic custom_types transfers extensions)
   if(TARGET schemacht_example_${example})
     add_test(NAME example.${example} COMMAND ${CMAKE_COMMAND} -DEXAMPLE=$<TARGET_FILE:schemacht_example_${example}> -P
                                              ${CMAKE_CURRENT_SOURCE_DIR}/run_example.cmake)
@@ -94,6 +94,9 @@ schemacht_compile_fail(CREATE_TABLE_GENERATED "only as an identity key")
 schemacht_compile_fail(CREATE_TABLE_WITHOUT_SQL_TYPE "a column's type has no SQL name")
 schemacht_compile_fail(COLUMN_TYPE_WITHOUT_FORMAT "HasTextForm")
 schemacht_compile_fail(IN_ON_ARRAY_COLUMN "can't test a column that is itself an array")
+schemacht_compile_fail(OPERATION_ARGUMENT_TYPE "the type its operation declares")
+schemacht_compile_fail(OPERATION_ARGUMENT_DISAGREES "disagree")
+schemacht_compile_fail(OPERATION_ARGUMENT_NOT_COLUMN_TYPE "must be a column type of your own")
 
 # With no case defined, cases.cpp must compile: the failures above are the cases', not the file's.
 add_test(NAME compile_fail.baseline COMMAND ${CMAKE_CXX_COMPILER} -std=c++23 -fsyntax-only -I${PROJECT_SOURCE_DIR}/include

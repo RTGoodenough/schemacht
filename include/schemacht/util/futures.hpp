@@ -9,13 +9,6 @@
 /**
  * Completing a `std::promise` from a completion that gets an error or a result: what turns a callback (`execute_into`,
  * `begin_into`, ...) into the future a caller waits on.
- *
- * @code
- * auto promise = std::make_shared<std::promise<std::uint64_t>>();
- * database.execute_into(command, [promise](std::uint64_t changed, const std::exception_ptr& error) {
- *   util::settle(*promise, error, changed);
- * });
- * @endcode
  */
 namespace schemacht::util {
 
@@ -28,7 +21,10 @@ inline void settle(std::promise<void>& promise, const std::exception_ptr& error)
   }
 }
 
-/** @brief Completes `promise` with `error`, or with `value` if there is none. `value_t` is the promise's: `3` settles a `std::promise<std::int64_t>`. */
+/**
+ * @brief Completes `promise` with `error`, or with `value` if there is none. `value_t` is the promise's, so `3` settles a
+ * `std::promise<std::int64_t>`.
+ */
 template <std::move_constructible value_t>
 void settle(std::promise<value_t>& promise, const std::exception_ptr& error, std::type_identity_t<value_t> value) {
   if ( error ) {

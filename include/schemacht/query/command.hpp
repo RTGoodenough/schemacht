@@ -15,23 +15,7 @@
 /**
  * Statements that change rows instead of returning them: `UPDATE` and `DELETE`, written like queries and checked against
  * the schema the same way. `Prepared` lowers them to SQL; a backend's `execute` returns how many rows they changed, or, with
- * `returning(...)`, the rows themselves.
- *
- * @code
- * using Orders = query::On<OrdersSchema>;
- * constexpr auto MARK_PAID = query::update<OrdersSchema>()
- *                                .set(Orders::col<"paid">(), true)
- *                                .set(Orders::col<"total">(), query::arg<0>())
- *                                .where(Orders::col<"id">() == query::arg<1>());
- * std::uint64_t changed = database.execute(query::Prepared<MARK_PAID>::bind(Money{1999}, 42)).get();
- *
- * constexpr auto PURGE = query::delete_where(Orders::col<"paid">() == false);
- *
- * constexpr auto PAY = query::update<OrdersSchema>()
- *                          .set(Orders::col<"paid">(), true)
- *                          .where(Orders::col<"id">() == query::arg<0>())
- *                          .returning(Orders::col<"total">());  // execute gives a std::tuple<Total> per changed row
- * @endcode
+ * `returning(...)`, the rows themselves. examples/transfers.cpp has both, with and without `returning`.
  *
  * An update or delete of every row has to be asked for (`all_rows()`, `delete_all`): one that forgets its `where` doesn't compile.
  */

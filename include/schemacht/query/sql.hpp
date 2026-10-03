@@ -313,9 +313,14 @@ class Emitter {
     }
   }
 
-  /** @brief `function("column", $n::type[, $m::double precision])`, or `"column" operator $n::type` (the argument written inside the operation's `ARGUMENT_PREFIX` and `ARGUMENT_SUFFIX`, if it has them). */
+  /**
+   * @brief `function("column", $n::type[, $m::double precision])`, or `"column" operator $n::type`: `type` is the column's, or
+   * the operation's `argument_type`'s, and the argument is written inside the operation's `ARGUMENT_PREFIX` and
+   * `ARGUMENT_SUFFIX`, if it has them.
+   */
   consteval void call(const Node& current) {
-    const std::string_view type = column_type_name<schema_t>(current.column);
+    const ArgumentForm*    own = current.operation->argument;
+    const std::string_view type = own != nullptr ? own->sql_type : column_type_name<schema_t>(current.column);
 
     if ( current.operation->infix ) {
       _text->append_identifier(schema_t::column_names().at(current.column));
@@ -437,7 +442,9 @@ template <schema::IsSchema schema_t, std::size_t predicate_capacity, std::size_t
       text.append_operator(term.ranking->op);
       text.append(" $");
       text.append_unsigned(term.slot + 1);
-      if ( const std::string_view type = detail::column_type_name<schema_t>(term.column); ! type.empty() ) {
+      const ArgumentForm*    own = term.ranking->argument;
+      const std::string_view type = own != nullptr ? own->sql_type : detail::column_type_name<schema_t>(term.column);
+      if ( ! type.empty() ) {
         text.append("::");
         text.append(type);
       }

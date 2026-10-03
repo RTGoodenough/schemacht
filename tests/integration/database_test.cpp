@@ -697,3 +697,40 @@ TEST_CASE("integration: an extension's operations: pg_trgm's", "[integration][ex
   database.drop_table<Words>().get();
   exec(database, "DROP FUNCTION IF EXISTS similar_above(text, text, double precision)");
 }
+
+namespace {
+
+using Document = sch::Field<schemacht::json::Json, "doc">;
+using Documents = sch::Schema<"schemacht_it_documents", Id, Document>;
+using DocumentColumns = q::On<Documents>;
+
+// The documents with a key: jsonb's `?`, whose argument is text, not the column's jsonb.
+constexpr auto WITH_KEY = q::select(DocumentColumns::col<"doc">().apply<schemacht::test::HasKey>(q::arg<0>()))
+                              .order_by(DocumentColumns::col<"id">().asc())
+                              .project(DocumentColumns::col<"id">());
+
+}  // namespace
+
+TEST_CASE("integration: an operation whose argument has a type of its own: jsonb's ?", "[integration][extension]") {
+  using schemacht::json::Json;
+  using schemacht::test::JsonKey;
+
+  pg::Database database(test_db());
+  database.drop_table<Documents>().get();
+  database.create_table<Documents>().get();
+  database
+      .insert<Documents>(
+          {Documents::make_row(1, Json(R"({"tags": ["a"]})")), Documents::make_row(2, Json(R"({"name": "b"})")),
+           Documents::make_row(3, Json(R"({"tags": [], "name": "c"})"))}
+      )
+      .get();
+
+  const auto tagged = database.execute(q::Prepared<WITH_KEY>::bind(JsonKey{"tags"})).get();
+  REQUIRE(tagged.size() == 2);
+  CHECK(sch::get<"id">(tagged[0]) == 1);
+  CHECK(sch::get<"id">(tagged[1]) == 3);
+
+  CHECK(database.execute(q::Prepared<WITH_KEY>::bind(JsonKey{"missing"})).get().empty());
+
+  database.drop_table<Documents>().get();
+}

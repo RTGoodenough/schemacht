@@ -31,6 +31,9 @@ constexpr auto LIMIT_ARG = q::select<t::People>().limit(q::arg<0>());
 constexpr auto SIMILAR = People::col<"name">().apply<t::trgm::Similar>(q::arg<0>());
 constexpr auto MOST_SIMILAR = q::select(SIMILAR).order_by(People::col<"name">().ranked_by<t::trgm::Distance>(q::arg<0>())).limit(3);
 constexpr auto SIMILAR_ABOVE = People::col<"name">().apply<t::trgm::SimilarAbove>(q::arg<0>(), q::arg<1>());
+constexpr auto COVERING_NEAREST = q::select(q::On<t::Regions>::col<"area">().apply<t::geo::Covers>(q::arg<0>()))
+                                      .order_by(q::On<t::Regions>::col<"area">().ranked_by<t::geo::Nearest>(q::arg<1>()));
+constexpr auto HAS_KEY = q::On<t::Counted>::col<"doc">().apply<t::HasKey>(q::arg<0>());
 constexpr auto CONTAINS = schemacht::json::contains(q::On<t::Counted>::col<"doc">(), q::arg<0>());
 constexpr auto COUNT_IN = q::On<t::Counted>::col<"count">().in(q::arg<0>());
 constexpr auto ALL_TILES = q::select<t::Tiles>();
@@ -75,6 +78,22 @@ TEST_CASE("an extension's operations: the pg_trgm example", "[sql][extension]") 
       R"(SELECT "id", "name", "nick", "score", "active" FROM "people" WHERE "name" % $1::text ORDER BY "name" <-> $1::text LIMIT 3)"
   );
   STATIC_REQUIRE(q::Prepared<MOST_SIMILAR>::ARG_COUNT == 1);
+}
+
+TEST_CASE("an operation or ranking whose argument has a type of its own", "[sql][extension]") {
+  // Cast to the argument's type, not the column's.
+  STATIC_REQUIRE(
+      q::Prepared<COVERING_NEAREST>::SQL == R"(SELECT "id", "area" FROM "regions" WHERE "area" @> $1::point ORDER BY "area" <-> $2::point)"
+  );
+  STATIC_REQUIRE(q::Prepared<HAS_KEY>::SQL == R"(SELECT "id", "count", "doc" FROM "counted" WHERE "doc" ? $1::text)");
+
+  STATIC_REQUIRE(q::Prepared<COVERING_NEAREST>::ARG_COUNT == 2);
+
+  // `bind` takes the argument's type, and sends its text form.
+  const auto bound = q::Prepared<COVERING_NEAREST>::bind(t::Point{"(0.5,0.5)"}, t::Point{"(2,2)"});
+  REQUIRE(bound.params().size() == 2);
+  CHECK(std::get<q::ArgumentText>(bound.params()[0]).text == "(0.5,0.5)");
+  CHECK(std::get<q::ArgumentText>(bound.params()[1]).text == "(2,2)");
 }
 
 TEST_CASE("AND and OR are parenthesized only where needed", "[sql]") {

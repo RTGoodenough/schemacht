@@ -10,6 +10,7 @@
 #include <utility>
 
 #include "schemacht/query/concepts/predicate.hpp"  // IWYU pragma: export
+#include "schemacht/schema/column_type.hpp"
 #include "schemacht/schema/schema.hpp"
 #include "schemacht/util/compile_time.hpp"
 #include "schemacht/util/concepts/type_utils.hpp"
@@ -72,39 +73,27 @@ struct Operand {
 };
 
 /**
+ * @brief The type an operation's or a ranking's argument has when it is not the column's (`using argument_type = T;`):
+ * the SQL type it is cast to. There is one per type, so its address also tells which C++ type `bind` takes.
+ */
+struct ArgumentForm {
+  std::string_view sql_type;
+};
+
+/**
  * @brief A test on a column and an argument that an extension supplies, beyond the built-in comparisons: a SQL operator or
  * function the database has (from an extension such as pg_trgm or PostGIS, or of the application's own). Made by
  * `ColumnRef::apply` from a type that names it; not written by hand.
  *
- * The worked example: pg_trgm's similarity of texts. `Similar` is a test written as an operator, `Distance` a ranking (see
- * `Ranking`), and `SimilarAbove` a test that also takes a number, which has to be a function (here one of the application's
- * own: pg_trgm keeps its threshold in a setting instead).
+ * The type passed to `apply` declares, as static members:
+ * - `OPERATOR`, written `"column" OPERATOR $n`, or `FUNCTION`, written `FUNCTION("column", $n)`: one of the two;
+ * - optionally `TAKES_NUMBER = true`, for a function that also takes a number (a threshold, a radius), a `double`;
+ * - optionally `ARGUMENT_PREFIX` and `ARGUMENT_SUFFIX`, SQL written around the argument;
+ * - optionally `using argument_type = T;`, when the argument is not of the column's type: a polygon tested against a line
+ *   column, or a text key against a `jsonb` one. `T` must be a column type of your own (a `ColumnType` specialization): the
+ *   argument is cast to its SQL type, and `bind` takes exactly a `T`.
  *
- * @code
- * namespace trgm {
- * struct Similar {  // "column" % $1::text: similar enough, by the pg_trgm.similarity_threshold setting
- *   static constexpr std::string_view OPERATOR = "%";
- * };
- * struct Distance {  // "column" <-> $1::text: 1 - similarity, so the most similar sort first
- *   static constexpr std::string_view OPERATOR = "<->";
- * };
- * struct SimilarAbove {  // similar_above("column", $1::text, $2::double precision), after
- *                        // CREATE FUNCTION similar_above(text, text, double precision) RETURNS boolean
- *                        //     AS 'SELECT similarity($1, $2) > $3' LANGUAGE sql
- *   static constexpr std::string_view FUNCTION = "similar_above";
- *   static constexpr bool             TAKES_NUMBER = true;
- * };
- * }  // namespace trgm
- *
- * using Words = query::On<WordsSchema>;
- * constexpr auto LIKE_THIS = query::select(Words::col<"word">().apply<trgm::Similar>(query::arg<0>()))
- *                                .order_by(Words::col<"word">().ranked_by<trgm::Distance>(query::arg<0>()))
- *                                .limit(5);
- * constexpr auto CLOSE_TO = Words::col<"word">().apply<trgm::SimilarAbove>(query::arg<0>(), query::arg<1>());
- *
- * database.execute(query::Prepared<LIKE_THIS>::bind("word")).get();       // the 5 most like "word"
- * database.execute(query::Prepared<CLOSE_TO>::bind("word", 0.5)).get();  // similarity above 0.5
- * @endcode
+ * examples/extensions.cpp declares pg_trgm's similarity this way, and jsonb's `?`, whose argument is a key.
  */
 struct Operation {
   /// The SQL function, written `name("column", $n)`, or, if `infix`, the SQL operator, written `"column" name $n`.
@@ -115,17 +104,19 @@ struct Operation {
   bool             takes_real = false;  ///< Whether the test has a second, numeric argument: `name("column", $n, $m)`. Functions only.
   /// Fixed SQL written around the argument (`$n::type`), to convert it first. E.g. `lower(` and `)` give
   /// `"column" ~~ lower($1::text)`. The value itself is always a parameter.
-  std::string_view argument_prefix;
-  std::string_view argument_suffix;
+  std::string_view    argument_prefix;
+  std::string_view    argument_suffix;
+  const ArgumentForm* argument = nullptr;  ///< The argument's own type (`argument_type`), if it is not the column's.
 };
 
 /**
  * @brief A way of ranking rows by their column and an argument, smallest first: the SQL operator that gives the number they
- * are sorted by (`"column" <-> $n`), which an index can answer for "the closest N". Made by `ColumnRef::ranked_by`; see
- * `Operation` for an example.
+ * are sorted by (`"column" <-> $n`), which an index can answer for "the closest N". Made by `ColumnRef::ranked_by` from a
+ * type that declares `OPERATOR`, and optionally `argument_type` (as `Operation`'s).
  */
 struct Ranking {
-  std::string_view op;  ///< The SQL operator, written between the column and the argument.
+  std::string_view    op;                  ///< The SQL operator, written between the column and the argument.
+  const ArgumentForm* argument = nullptr;  ///< The argument's own type (`argument_type`), if it is not the column's.
 };
 
 /**
@@ -165,7 +156,10 @@ struct Predicate {
   std::size_t                root = 0;   ///< Index of the top node.
 };
 
-/** @brief The SQL an operation writes around its argument: `ARGUMENT_PREFIX` before it and `ARGUMENT_SUFFIX` after it, both empty if it does not say. */
+/**
+ * @brief The SQL an operation writes around its argument: `ARGUMENT_PREFIX` before it and `ARGUMENT_SUFFIX` after it, both
+ * empty if it does not say.
+ */
 template <typename operation_t>
 [[nodiscard]] constexpr std::string_view argument_prefix() {
   if constexpr ( requires {
@@ -189,6 +183,37 @@ template <typename operation_t>
 }
 
 namespace detail {
+
+/** @brief The one `ArgumentForm` of `value_t`, a column type of your own. */
+template <UserColumnType value_t>
+inline constexpr ArgumentForm ARGUMENT_FORM_OF{.sql_type = ColumnType<value_t>::SQL_TYPE};
+
+/** @return The `ArgumentForm` of `operation_t`'s `argument_type`, or null if it takes the column's type. */
+template <typename operation_t>
+[[nodiscard]] constexpr const ArgumentForm* argument_form() {
+  if constexpr ( DeclaresArgumentType<operation_t> ) {
+    using argument_t = operation_t::argument_type;
+    static_assert(
+        UserColumnType<argument_t>, "an operation's argument_type must be a column type of your own (a schemacht::ColumnType specialization)"
+    );
+
+    if constexpr ( UserColumnType<argument_t> ) {  // else null, after the assertion fails, so no second error follows
+      return &ARGUMENT_FORM_OF<argument_t>;
+    }
+  }
+
+  return nullptr;
+}
+
+/** @return Whether `value_t` is the type whose `ArgumentForm` is `form`: what `bind` takes for an argument of that form. */
+template <typename value_t>
+[[nodiscard]] consteval bool has_argument_form(const ArgumentForm* form) {
+  if constexpr ( UserColumnType<value_t> ) {
+    return form == &ARGUMENT_FORM_OF<value_t>;
+  } else {
+    return false;
+  }
+}
 
 /** @return The SQL name of `operation_t`: its operator if it has one, else its function. */
 template <typename operation_t>
@@ -219,6 +244,7 @@ class BoundOperation {
       .takes_real = TakesNumber<operation_t>,
       .argument_prefix = argument_prefix<operation_t>(),
       .argument_suffix = argument_suffix<operation_t>(),
+      .argument = argument_form<operation_t>(),
   };
 };
 
@@ -231,7 +257,7 @@ class BoundRanking {
       "a ranking's OPERATOR must be a single SQL operator: only the characters <>-|#&~=@+*/%^!?, no -- or comment start"
   );
 
-  static constexpr Ranking VALUE{.op = ranking_t::OPERATOR};
+  static constexpr Ranking VALUE{.op = ranking_t::OPERATOR, .argument = argument_form<ranking_t>()};
 };
 
 }  // namespace detail
@@ -502,9 +528,9 @@ class ColumnRef {
   }
 
   /**
-   * @brief Tests the column against the argument `slot_idx` (a `data_type`) with an operation type that names a SQL
-   * `OPERATOR` or `FUNCTION`, e.g. `col.apply<json::Contains>(arg<0>())` or `col.apply<trgm::Similar>(arg<0>())` (see
-   * `Operation`). Usually wrapped in a named function, like `json::contains` or `query::like`.
+   * @brief Tests the column against the argument `slot_idx` (a `data_type`, or the operation's `argument_type`) with an
+   * operation type that names a SQL `OPERATOR` or `FUNCTION` (see `Operation`). Usually wrapped in a named function, like
+   * `json::contains` or `query::like`.
    *
    * The query layer treats it as an opaque test. Being written as a plain function call or operator, it must not depend
    * on anything but the column and its arguments.
@@ -524,7 +550,7 @@ class ColumnRef {
 
   /**
    * @brief As above, for a function that also takes a number (it declares `TAKES_NUMBER = true`), such as a threshold or a
-   * radius: `col.apply<trgm::SimilarAbove>(arg<0>(), arg<1>())`, where argument 1 is a `double` (see `Operation`).
+   * radius: the argument `real_slot_idx`, a `double` (see `Operation`).
    */
   template <typename operation_t, std::size_t slot_idx, std::size_t real_slot_idx>
     requires OperationWithReal<operation_t>
@@ -541,9 +567,8 @@ class ColumnRef {
   }
 
   /**
-   * @brief Orders rows by an extension's ranking of this column against the argument `slot_idx` (a `data_type`), smallest
-   * first: `query.order_by(col.ranked_by<trgm::Distance>(arg<0>()))`, where `trgm::Distance::OPERATOR` is `<->` (see
-   * `Operation`). With a `limit`, it is "the closest N".
+   * @brief Orders rows by an extension's ranking of this column against the argument `slot_idx` (a `data_type`, or the
+   * ranking's `argument_type`), smallest first (see `Ranking`). With a `limit`, it is "the closest N".
    */
   template <typename ranking_t, std::size_t slot_idx>
     requires RankingOn<ranking_t>
@@ -603,14 +628,7 @@ class ColumnRef {
   }
 };
 
-/**
- * @brief Entry point for writing queries against one schema.
- *
- * @code
- * using Places = query::On<PlacesSchema>;
- * constexpr auto NEARBY = Places::col<"zone">().in(query::arg<0>()) && Places::col<"id">() > 10U;
- * @endcode
- */
+/** @brief Entry point for writing queries against one schema: `On<Schema>::col<"name">()` names a column (see `ColumnRef`). */
 template <schema::IsSchema schema_t>
 struct On {
   /** @return A reference to the column named `name`; an unknown name doesn't compile. */

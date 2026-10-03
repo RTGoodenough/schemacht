@@ -9,6 +9,7 @@
 #include <string_view>
 #include <vector>
 
+#include "schemacht/column_type.hpp"
 #include "schemacht/json.hpp"
 #include "schemacht/schema.hpp"
 
@@ -40,7 +41,7 @@ using WithGenerated = sch::Schema<"with_generated", Id, Doubled, Name>;
 using NumberedId = sch::Field<std::int32_t, "id", sch::KeyRole::Primary, true>;
 using Numbered = sch::Schema<"numbered", NumberedId, Name, Nick>;
 
-/** @brief pg_trgm's similarity of texts, as an extension's operations are declared: the worked example of `query::Operation`. */
+/** @brief pg_trgm's similarity of texts, declared as examples/extensions.cpp declares it. */
 namespace trgm {
 
 /** @brief A test written as an operator: `"column" % $1::text`, similar enough by the `pg_trgm.similarity_threshold` setting. */
@@ -72,7 +73,58 @@ struct Tile {
 using Raster = sch::Field<Tile, "rast">;
 using Tiles = sch::Schema<"tiles", Id, Raster>;
 
+/** @brief PostgreSQL's geometric `box` and `point`, kept as their text: a column of one type tested with an argument of another. */
+struct Box {
+  std::string text;  // "(1,1),(0,0)"
+};
+struct Point {
+  std::string text;  // "(0.5,0.5)"
+};
+
+using Area = sch::Field<Box, "area">;
+using Regions = sch::Schema<"regions", Id, Area>;
+
+namespace geo {
+
+/** @brief `"area" @> $1::point`: the box covers the point. Its argument is a `Point`, not the column's `Box`. */
+struct Covers {
+  static constexpr std::string_view OPERATOR = "@>";
+  using argument_type = Point;
+};
+
+/** @brief `"area" <-> $1::point`: the distance from the box to the point, so the nearest sort first. */
+struct Nearest {
+  static constexpr std::string_view OPERATOR = "<->";
+  using argument_type = Point;
+};
+
+}  // namespace geo
+
+/** @brief A jsonb key, sent as text: the argument of `HasKey`. */
+struct JsonKey {
+  std::string value;
+};
+
+/** @brief jsonb's "has this key" (`"doc" ? $1::text`): an operation built into PostgreSQL whose argument is not the column's type. */
+struct HasKey {
+  static constexpr std::string_view OPERATOR = "?";
+  using argument_type = JsonKey;
+};
+
 }  // namespace schemacht::test
+
+template <>
+struct schemacht::ColumnType<schemacht::test::Box> : schemacht::WrappedColumn<&schemacht::test::Box::text> {
+  static constexpr std::string_view SQL_TYPE = "box";
+};
+
+template <>
+struct schemacht::ColumnType<schemacht::test::Point> : schemacht::WrappedColumn<&schemacht::test::Point::text> {
+  static constexpr std::string_view SQL_TYPE = "point";
+};
+
+template <>
+struct schemacht::ColumnType<schemacht::test::JsonKey> : schemacht::WrappedColumn<&schemacht::test::JsonKey::value> {};
 
 template <>
 class schemacht::query::sql::SelectExpression<schemacht::test::Tile> {

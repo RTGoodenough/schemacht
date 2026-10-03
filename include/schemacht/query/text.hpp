@@ -38,12 +38,7 @@ class Like {
 };
 
 /**
- * @brief Rows whose text column matches the `LIKE` pattern bound to `arg<N>()`:
- *
- * @code
- * constexpr auto NAMED = query::select(query::like(Streets::col<"name">(), query::arg<0>()));
- * database.execute(query::Prepared<NAMED>::bind(query::escape_like("Main") + "%"));   // starts with "Main"
- * @endcode
+ * @brief Rows whose text column matches the `LIKE` pattern bound to `arg<N>()`. examples/basic.cpp uses it.
  *
  * `%` matches any run of characters, `_` any one character, and a backslash makes the next character literal.
  * Written as the operator, so a `btree (name text_pattern_ops)` index answers a pattern with a fixed start (`Main%`), and a

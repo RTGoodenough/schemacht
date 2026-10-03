@@ -3,6 +3,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <span>
+#include <string>
 #include <string_view>
 #include <type_traits>
 #include <utility>
@@ -18,6 +19,14 @@ namespace schemacht::query {
 template <auto source>
   requires IsQuerySource<std::remove_cvref_t<decltype(source)>> || IsCommandSource<std::remove_cvref_t<decltype(source)>>
 class Prepared;
+
+/**
+ * @brief An argument of a type the schema does not hold (an operation's `argument_type`), already in its text form, which is
+ * sent as it is.
+ */
+struct ArgumentText {
+  std::string text;
+};
 
 namespace detail {
 
@@ -47,10 +56,11 @@ struct ParamOf;
 
 template <schema::IsSchema schema_t, std::size_t... idx>
 struct ParamOf<schema_t, std::index_sequence<idx...>> {
-  // A `LIMIT` argument is a row count, and the number an operation takes (a threshold, a radius) is a real, whatever the schema holds.
+  // A `LIMIT` argument is a row count, and the number an operation takes (a threshold, a radius) is a real, whatever the
+  // schema holds; an operation's argument of a type of its own comes as text.
   using with_limit =
       AddUnique<typename AddAll<std::variant<std::monostate>, typename schema_t::template field_at<idx>::value_type...>::type, std::int64_t>::type;
-  using type = AddUnique<with_limit, double>::type;
+  using type = AddUnique<typename AddUnique<with_limit, double>::type, ArgumentText>::type;
 };
 
 }  // namespace detail
@@ -60,8 +70,8 @@ struct ParamOf<schema_t, std::index_sequence<idx...>> {
  *
  * The alternatives are exactly what a query over `schema_t` can be given: each
  * column's `value_type` (its `data_type` without any `std::optional`), and a `std::vector` of it for list arguments. That is
- * a closed set fixed by the schema (plus `std::int64_t` for a `LIMIT` and `double` for an operation's number), not
- * an open-ended dynamic type.
+ * a closed set fixed by the schema (plus `std::int64_t` for a `LIMIT`, `double` for an operation's number, and `ArgumentText`
+ * for an operation's argument of a type of its own), not an open-ended dynamic type.
  */
 template <schema::IsSchema schema_t>
 using Param = detail::ParamOf<schema_t, std::make_index_sequence<schema_t::FIELD_COUNT>>::type;

@@ -50,13 +50,6 @@ inline constexpr std::uint32_t OID_JSONB = 3802;
  * @brief Reads a value's binary form from the front: each call takes the next big-endian field, as a composite type's binary
  * form is laid out (a `numeric`: four 16-bit words, then its digits).
  *
- * @code
- * postgres::BinaryReader reader(bytes);
- * const std::int16_t count = reader.int16();
- * ...
- * reader.expect_end();
- * @endcode
- *
  * Every read throws `std::invalid_argument` if the bytes end before it, so a short value is refused, never read past.
  */
 class BinaryReader {

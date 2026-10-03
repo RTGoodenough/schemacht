@@ -197,4 +197,34 @@ struct schemacht::ColumnType<Half> {
 [[maybe_unused]] const std::string text = pg::format_field(Half{});
 #endif
 
+#if defined(CASE_OPERATION_ARGUMENT_TYPE) || defined(CASE_OPERATION_ARGUMENT_DISAGREES) || defined(CASE_OPERATION_ARGUMENT_NOT_COLUMN_TYPE)
+struct Key {
+  std::string value;
+};
+template <>
+struct schemacht::ColumnType<Key> : schemacht::WrappedColumn<&Key::value> {};
+struct HasKey {
+  static constexpr std::string_view OPERATOR = "?";
+  using argument_type = Key;
+};
+#endif
+
+#if defined(CASE_OPERATION_ARGUMENT_TYPE)
+constexpr auto        NAMED = q::On<Things>::col<"name">().apply<HasKey>(q::arg<0>());
+[[maybe_unused]] auto bound = q::Prepared<NAMED>::bind(std::string("name"));  // the column's type, not the operation's
+#endif
+
+#if defined(CASE_OPERATION_ARGUMENT_DISAGREES)
+constexpr auto BOTH = q::On<Things>::col<"name">().apply<HasKey>(q::arg<0>()) || q::On<Things>::col<"name">() == q::arg<0>();
+[[maybe_unused]] constexpr std::string_view SQL = q::Prepared<BOTH>::SQL;
+#endif
+
+#if defined(CASE_OPERATION_ARGUMENT_NOT_COLUMN_TYPE)
+struct Counts {
+  static constexpr std::string_view OPERATOR = "@>";
+  using argument_type = int;
+};
+constexpr auto BAD = q::On<Things>::col<"name">().apply<Counts>(q::arg<0>());
+#endif
+
 int main() {}

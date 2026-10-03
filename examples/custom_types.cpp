@@ -2,17 +2,16 @@
 //
 // A type of your own becomes a column type by specializing `schemacht::ColumnType` once, next to the type
 // (schemacht/column_type.hpp). It gives the SQL type's name and the text form; a binary form is optional, and lets results be
-// read in PostgreSQL's binary form, which is less to send and parse. Three kinds:
+// read in PostgreSQL's binary form, which is less to send and parse. The kinds here:
 //
 // - OrderId: a strong type over a built-in one (a `bigint`). `WrappedColumn` writes the whole specialization, binary form included.
 // - Mood: a C++ enum stored as a PostgreSQL enum. `EnumColumn` writes it from the labels, binary form included.
+// - Priority: a C++ enum stored as its number (a `smallint`), with no PostgreSQL type of its own: `EnumIntegerColumn`.
+// - A receipt's file, a `std::filesystem::path`: stored as `text` through two functions, `ConvertedColumn`, in text and in
+//   binary form (`text`'s).
 // - Money: exact cents stored as `numeric(12,2)`, written by hand with the library's helpers for `numeric` (postgres/numeric.hpp)
 //   and the type's OID (postgres/binary_form.hpp), in text and in binary form. `ScaledNumericColumn` writes the same in one
 //   line; it is spelled out here to show what a `ColumnType` holds.
-//
-// The other helpers in schemacht/column_type.hpp: `EnumIntegerColumn` stores an enum as its number rather than a label, and
-// `ConvertedColumn` stores any type as another the database knows, through two functions (a path as `text`, a duration as
-// `bigint` milliseconds).
 //
 // A type without `parse_binary` works too: a row holding one is then read as text, whatever the query asks for.
 //
@@ -22,11 +21,13 @@
 // Run with a libpq connection string: schemacht_example_custom_types "host=localhost dbname=app user=app"
 // It creates the type schemacht_example_mood and the table schemacht_example_orders, and drops them when it is done.
 
+#include <array>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
 #include <exception>
+#include <filesystem>
 #include <format>
 #include <iostream>
 #include <optional>
@@ -57,6 +58,13 @@ enum class Mood : std::uint8_t {
   Happy,
 };
 
+/** @brief How soon the order ships: stored as its number, with no PostgreSQL enum type. */
+enum class Priority : std::uint8_t {
+  Low,
+  Normal,
+  High,
+};
+
 /** @brief An amount of money in exact cents: `numeric(12,2)` in the database, never a floating point number. */
 struct Money {
   std::int64_t cents = 0;
@@ -79,6 +87,17 @@ struct schemacht::ColumnType<shop::OrderId> : schemacht::WrappedColumn<&shop::Or
  */
 template <>
 struct schemacht::ColumnType<shop::Mood> : schemacht::EnumColumn<shop::Mood, "schemacht_example_mood", "sad", "ok", "happy"> {};
+
+/** @brief A `Priority` is stored as its number, a `smallint`: `Low` is 0 and `High` 2. */
+template <>
+struct schemacht::ColumnType<shop::Priority> : schemacht::EnumIntegerColumn<shop::Priority> {};
+
+/** @brief A file path is stored as the `text` of it, through the two functions. */
+template <>
+struct schemacht::ColumnType<std::filesystem::path>
+    : schemacht::ConvertedColumn<
+          std::filesystem::path, std::string, [](const std::filesystem::path& path) { return path.string(); },
+          [](const std::string& text) { return std::filesystem::path(text); }> {};
 
 /**
  * @brief `Money` is a `numeric(12,2)`: in text as PostgreSQL prints one (`19.99`, `-0.05`), and in binary form as its base-10000
@@ -106,6 +125,10 @@ namespace shop {
 
 std::ostream& operator<<(std::ostream& out, const OrderId& id) { return out << '#' << id.value; }
 std::ostream& operator<<(std::ostream& out, const Mood& mood) { return out << schemacht::postgres::format_field(mood); }
+std::ostream& operator<<(std::ostream& out, const Priority& priority) {
+  constexpr std::array<std::string_view, 3> NAMES{"low", "normal", "high"};
+  return out << NAMES.at(static_cast<std::size_t>(priority));
+}
 std::ostream& operator<<(std::ostream& out, const Money& amount) {
   return out << (amount.cents < 0 ? "-$" : "$") << schemacht::postgres::format_field(Money{amount.cents < 0 ? -amount.cents : amount.cents});
 }
@@ -123,9 +146,11 @@ using Reference = sch::Field<schemacht::Uuid, "reference">;
 using PlacedAt = sch::Field<std::chrono::system_clock::time_point, "placed_at">;
 using Total = sch::Field<shop::Money, "total">;
 using CustomerMood = sch::Field<shop::Mood, "mood">;
+using ShipPriority = sch::Field<shop::Priority, "priority">;
+using Receipt = sch::Field<std::filesystem::path, "receipt">;
 using Note = sch::Field<std::optional<std::string>, "note">;
 
-using Orders = sch::Schema<"schemacht_example_orders", Id, Reference, PlacedAt, Total, CustomerMood, Note>;
+using Orders = sch::Schema<"schemacht_example_orders", Id, Reference, PlacedAt, Total, CustomerMood, ShipPriority, Receipt, Note>;
 using OrderColumns = q::On<Orders>;
 
 // The orders with any of some moods, the largest first. The moods go as one array argument, `$1::schemacht_example_mood[]`.
@@ -173,21 +198,25 @@ int main(int argc, char** argv) {
     using namespace std::chrono_literals;
     using schemacht::Uuid;
     using shop::Mood;
+    using shop::Priority;
     const auto morning = std::chrono::sys_days{2026y / 10 / 1} + 9h;
     database
         .insert<Orders>({
             Orders::make_row(
-                shop::OrderId{1}, Uuid::from_string("0e9cd3a8-3f43-4f4e-9b5c-6b6f8f6f0a1d"), morning, shop::Money{1999}, Mood::Happy, "gift wrap"
+                shop::OrderId{1}, Uuid::from_string("0e9cd3a8-3f43-4f4e-9b5c-6b6f8f6f0a1d"), morning, shop::Money{1999}, Mood::Happy, Priority::High,
+                std::filesystem::path("receipts/1.pdf"), "gift wrap"
             ),
             Orders::make_row(
-                shop::OrderId{2}, Uuid::from_string("51c1c4a2-77d4-4b0e-8a39-2c4b1f0de9f3"), morning + 2h, shop::Money{-500}, Mood::Sad, "refund"
+                shop::OrderId{2}, Uuid::from_string("51c1c4a2-77d4-4b0e-8a39-2c4b1f0de9f3"), morning + 2h, shop::Money{-500}, Mood::Sad,
+                Priority::Normal, std::filesystem::path("receipts/2.pdf"), "refund"
             ),
             Orders::make_row(
                 shop::OrderId{3}, Uuid::from_string("9a0b7f6e-1d2c-4e3f-8a9b-0c1d2e3f4a5b"), morning + 26h, shop::Money{120050}, Mood::Ok,
-                std::nullopt
+                Priority::Low, std::filesystem::path("receipts/3.pdf"), std::nullopt
             ),
             Orders::make_row(
-                shop::OrderId{4}, Uuid::from_string("c3d4e5f6-a7b8-4c9d-8e0f-1a2b3c4d5e6f"), morning + 50h, shop::Money{5}, Mood::Happy, std::nullopt
+                shop::OrderId{4}, Uuid::from_string("c3d4e5f6-a7b8-4c9d-8e0f-1a2b3c4d5e6f"), morning + 50h, shop::Money{5}, Mood::Happy,
+                Priority::Normal, std::filesystem::path("receipts/4.pdf"), std::nullopt
             ),
         })
         .get();
@@ -196,7 +225,8 @@ int main(int argc, char** argv) {
     std::cout << "Happy or ok orders, the largest first:\n";
     for ( const Orders::row_type& order : database.execute(q::Prepared<BY_MOOD>::bind(std::vector{Mood::Happy, Mood::Ok})).get() ) {
       std::cout << "  " << sch::get<"id">(order) << "  " << sch::get<"total">(order) << "  " << sch::get<"mood">(order) << "  "
-                << sch::get<"note">(order).value_or("-") << "  " << sch::get<"reference">(order).to_string() << '\n';
+                << sch::get<"priority">(order) << "  " << sch::get<"receipt">(order).string() << "  " << sch::get<"note">(order).value_or("-") << "  "
+                << sch::get<"reference">(order).to_string() << '\n';
     }
 
     std::cout << "Orders over $10.00:\n";

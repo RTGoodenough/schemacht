@@ -13,20 +13,9 @@
  * | `ScaledNumericColumn` | an exact amount held as a count of units, as a `numeric`  | cents as a `numeric(12,2)`                   |
  * | `ConvertedColumn`     | any type, as another, through two functions               | a path as `text`, a duration as `bigint` ms  |
  *
- * @code
- * struct OrderId { std::int64_t value; auto operator<=>(const OrderId&) const = default; };
- * template <> struct schemacht::ColumnType<OrderId> : schemacht::WrappedColumn<&OrderId::value> {};
- *
- * enum class Mood : std::uint8_t { Sad, Ok, Happy };
- * template <> struct schemacht::ColumnType<Mood> : schemacht::EnumColumn<Mood, "mood", "sad", "ok", "happy"> {};
- *
- * struct Money { std::int64_t cents; auto operator<=>(const Money&) const = default; };
- * template <> struct schemacht::ColumnType<Money> : schemacht::ScaledNumericColumn<&Money::cents, 2, "numeric(12,2)"> {};
- * @endcode
- *
  * For anything else, write the specialization: postgres/binary_form.hpp and postgres/numeric.hpp have what a `parse_binary`
  * is written with. Give the type `operator<=>` if queries should compare with it (`<`, `>`) or order by it.
- * examples/custom_types.cpp walks through a few, and json/json.hpp and uuid.hpp are two the library ships.
+ * examples/custom_types.cpp uses them, and json/json.hpp and uuid.hpp are two the library ships.
  */
 
 #include <algorithm>
@@ -55,10 +44,6 @@ namespace schemacht {
 /**
  * @brief The `ColumnType` of a type that wraps one value of a type the database already knows: stored as that type, in text and
  * in binary form alike (when the inner type has one).
- *
- * @code
- * template <> struct schemacht::ColumnType<OrderId> : schemacht::WrappedColumn<&OrderId::value> {};  // a bigint
- * @endcode
  */
 template <auto member>
   requires WrappableMember<member>
@@ -87,11 +72,6 @@ struct WrappedColumn {
 /**
  * @brief The `ColumnType` of a C++ enum stored as a PostgreSQL enum (`CREATE TYPE sql_type AS ENUM (labels...)`): each value
  * is its label, in text and in binary form alike (PostgreSQL sends an enum's binary form as its label).
- *
- * @code
- * enum class Mood : std::uint8_t { Sad, Ok, Happy };
- * template <> struct schemacht::ColumnType<Mood> : schemacht::EnumColumn<Mood, "mood", "sad", "ok", "happy"> {};
- * @endcode
  *
  * @tparam sql_type The PostgreSQL enum type's name.
  * @tparam labels   One label per value, in the order of the C++ enum's values, which must count up from 0.
@@ -134,11 +114,6 @@ struct EnumColumn {
  * (`std::uint8_t` is a `smallint`, as any unsigned type is the next wider signed one). For a table without a PostgreSQL enum
  * type; `EnumColumn` stores labels instead, which read better in the database and survive reordering the C++ enum.
  *
- * @code
- * enum class Priority : std::uint8_t { Low, Normal, High };
- * template <> struct schemacht::ColumnType<Priority> : schemacht::EnumIntegerColumn<Priority> {};
- * @endcode
- *
  * A number read back is not checked against the enum's values: C++ has no list of them to check with.
  */
 template <Enumeration enum_t>
@@ -158,11 +133,6 @@ struct EnumIntegerColumn {
 /**
  * @brief The `ColumnType` of an exact amount held as a count of 10^-`scale` units, stored as a `numeric`: in text as
  * PostgreSQL prints one, and in binary form as its base-10000 digits (postgres/numeric.hpp).
- *
- * @code
- * struct Money { std::int64_t cents; auto operator<=>(const Money&) const = default; };
- * template <> struct schemacht::ColumnType<Money> : schemacht::ScaledNumericColumn<&Money::cents, 2, "numeric(12,2)"> {};
- * @endcode
  *
  * A value is refused rather than rounded: `NaN`, an infinity, or a nonzero digit past `scale` places (a `total / 3`).
  *
@@ -185,14 +155,6 @@ struct ScaledNumericColumn {
 /**
  * @brief The `ColumnType` of a type stored as another the database knows, through two functions (or captureless lambdas): the
  * stored type's SQL type, text form, and binary form when it has one.
- *
- * @code
- * template <>
- * struct schemacht::ColumnType<std::filesystem::path>
- *     : schemacht::ConvertedColumn<std::filesystem::path, std::string,
- *                                  [](const std::filesystem::path& path) { return path.string(); },
- *                                  [](const std::string& text) { return std::filesystem::path(text); }> {};
- * @endcode
  *
  * `from_stored` may throw (`std::invalid_argument`, say) for a stored value that is not one of `value_t`'s.
  */

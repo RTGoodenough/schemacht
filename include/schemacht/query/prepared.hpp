@@ -24,13 +24,17 @@ namespace schemacht::query {
 
 namespace detail {
 
-/** @brief What one `arg<N>()` is: compared with a column (a value, or a list of values), or the count of a `LIMIT`. */
+/**
+ * @brief What one `arg<N>()` is: compared with a column (a value, or a list of values), an operation's argument of a type of
+ * its own, or the count of a `LIMIT`.
+ */
 struct SlotInfo {
-  std::size_t column = 0;
-  bool        is_list = false;
-  bool        is_limit = false;
-  bool        is_real = false;  ///< The number an operation takes (a threshold, a radius), a `double`.
-  bool        seen = false;
+  std::size_t         column = 0;
+  bool                is_list = false;
+  bool                is_limit = false;
+  bool                is_real = false;     ///< The number an operation takes (a threshold, a radius), a `double`.
+  const ArgumentForm* argument = nullptr;  ///< An operation's or ranking's `argument_type`, if it is not the column's.
+  bool                seen = false;
 };
 
 template <std::size_t capacity>
@@ -47,9 +51,9 @@ constexpr void note_slot(Slots<capacity>& slots, std::size_t slot, const SlotInf
   }
 
   SlotInfo& known = slots.info.at(slot);
-  if ( known.seen &&
-       (known.column != use.column || known.is_list != use.is_list || known.is_limit != use.is_limit || known.is_real != use.is_real) ) {
-    throw std::logic_error("query argument is used with columns or list-ness that disagree");
+  if ( known.seen && (known.column != use.column || known.is_list != use.is_list || known.is_limit != use.is_limit || known.is_real != use.is_real ||
+                      known.argument != use.argument) ) {
+    throw std::logic_error("query argument is used in ways that disagree: with different columns, as a list and not, or as different types");
   }
 
   known = use;
@@ -65,7 +69,8 @@ constexpr void note_predicate_slots(Slots<capacity>& slots, const Predicate<sche
   for ( std::size_t i = 0; i < predicate.count; ++i ) {
     const Node& node = predicate.nodes.at(i);
     if ( (node.kind == NodeKind::Compare || node.kind == NodeKind::InList || node.kind == NodeKind::Call) && node.operand.kind == OperandKind::Arg ) {
-      note_slot(slots, node.operand.slot, SlotInfo{.column = node.column, .is_list = node.kind == NodeKind::InList});
+      const ArgumentForm* argument = node.kind == NodeKind::Call ? node.operation->argument : nullptr;
+      note_slot(slots, node.operand.slot, SlotInfo{.column = node.column, .is_list = node.kind == NodeKind::InList, .argument = argument});
     }
 
     if ( node.kind == NodeKind::Call && node.operation->takes_real ) {
@@ -100,7 +105,7 @@ template <schema::IsSchema schema_t, std::size_t predicate_capacity, std::size_t
 
   for ( std::size_t i = 0; i < query.order_count; ++i ) {
     if ( const OrderTerm& term = query.order.at(i); term.ranking != nullptr ) {
-      note_slot(slots, term.slot, SlotInfo{.column = term.column});
+      note_slot(slots, term.slot, SlotInfo{.column = term.column, .argument = term.ranking->argument});
     }
   }
 
@@ -215,19 +220,8 @@ std::tuple<typename schema_t::template field_at<columns.at(position)>...> projec
 }  // namespace detail
 
 /**
- * @brief A query, update or delete lowered to SQL at compile time; call `bind` to supply its arguments.
- *
- * @code
- * using Places = query::On<PlacesSchema>;
- * constexpr auto NEARBY = query::select(Places::col<"zone">().in(query::arg<0>()) && Places::col<"id">() > 10U)
- *                             .order_by(Places::col<"name">().asc())
- *                             .limit(query::arg<1>())
- *                             .project(Places::col<"name">());
- * using NearbyPlaces = query::Prepared<NEARBY>;
- *
- * // one std::tuple<Name-field> per row: only that column is fetched
- * std::vector<NearbyPlaces::result_type> names = database.execute(NearbyPlaces::bind(std::vector<std::int64_t>{...}, 10)).get();
- * @endcode
+ * @brief A query, update or delete lowered to SQL at compile time; call `bind` to supply its arguments. examples/basic.cpp
+ * prepares and runs a few.
  *
  * Without `returning(...)`, an update or delete (see command.hpp) returns no rows: its `result_type` is `std::tuple<>`, and a
  * backend's `execute` gives the count of rows it changed instead.
@@ -283,6 +277,7 @@ class Prepared {
    * - `in(...)`: a `std::vector` of the column's `value_type`
    * - `limit(...)`: a `std::int64_t`
    * - an operation's number (a threshold, a radius): a `double`
+   * - an operation's or ranking's argument of a type of its own (`argument_type`): exactly that type
    *
    * So `"john%"` binds to a `std::string` column and `5` to a `std::int64_t` one, but `-1` does not bind to an unsigned
    * column, `1.5` to a `float` one, or `1` to a `bool` one: those don't compile.
@@ -319,6 +314,19 @@ class Prepared {
       );
 
       return param_type{std::in_place_type<double>, double{std::forward<arg_t>(arg)}};
+
+    } else if constexpr ( SLOTS.info.at(slot_idx).argument != nullptr ) {
+      using value_t = std::remove_cvref_t<arg_t>;
+      static_assert(
+          detail::has_argument_form<value_t>(SLOTS.info.at(slot_idx).argument),
+          "this argument is of the type its operation declares (argument_type), not the column's: pass exactly that type"
+      );
+
+      if constexpr ( UserColumnType<value_t> ) {  // formatted now: the statement's parameters hold only the schema's types
+        return param_type{std::in_place_type<ArgumentText>, ArgumentText{ColumnType<value_t>::format(arg)}};
+      } else {
+        return param_type{};  // after the assertion fails, so no second error follows
+      }
 
     } else {
       using data_t = schema_type::template field_at<SLOTS.info.at(slot_idx).column>::value_type;

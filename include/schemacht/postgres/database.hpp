@@ -100,13 +100,7 @@ class Database : private detail::ClientHolder, public StatementRunner {
 
   /**
    * @return A future for a new transaction (`BEGIN`, with `options`), or holding the error. It must not outlive this database.
-   *
-   * @code
-   * pg::Transaction transfer = database.begin().get();
-   * transfer.execute(q::Prepared<WITHDRAW>::bind(from, amount)).get();
-   * transfer.execute(q::Prepared<DEPOSIT>::bind(to, amount)).get();
-   * transfer.commit().get();  // or nothing of it happened
-   * @endcode
+   * examples/transfers.cpp makes transfers in transactions.
    */
   [[nodiscard]] std::future<Transaction> begin(const TransactionOptions& options = {}) {
     const auto               promise = std::make_shared<std::promise<Transaction>>();

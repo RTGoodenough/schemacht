@@ -6,3 +6,6 @@ target_link_libraries(schemacht_example_custom_types PRIVATE schemacht::schemach
 
 add_executable(schemacht_example_transfers transfers.cpp)
 target_link_libraries(schemacht_example_transfers PRIVATE schemacht::schemacht)
+
+add_executable(schemacht_example_extensions extensions.cpp)
+target_link_libraries(schemacht_example_extensions PRIVATE schemacht::schemacht)

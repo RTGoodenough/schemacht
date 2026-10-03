@@ -39,6 +39,9 @@ class TextBinder {
     _texts->push_back(format_field<data_t>(value));
   }
 
+  /** @brief An operation's argument of a type of its own: formatted when it was bound. */
+  void operator()(const query::ArgumentText& value) const { _texts->push_back(value.text); }
+
  private:
   std::vector<std::string>* _texts;
 

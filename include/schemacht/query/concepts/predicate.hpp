@@ -50,6 +50,13 @@ concept RankingOn = requires {
   { ranking_t::OPERATOR } -> std::convertible_to<std::string_view>;
 };
 
+/**
+ * @brief Whether `operation_t` (an operation or a ranking) takes an argument of a type of its own, not the column's: it says
+ * so with `using argument_type = T;`, where `T` is a column type of your own (see `Operation`).
+ */
+template <typename operation_t>
+concept DeclaresArgumentType = requires { typename operation_t::argument_type; };
+
 namespace detail {
 
 template <typename data_t>

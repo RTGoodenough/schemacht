@@ -130,15 +130,7 @@ class SqlType {
  *
  * For a type that is read in another form than the column's own. For example, PostGIS's `raster` has no binary output,
  * so a raster type would be selected as `ST_AsBinary("rast") AS "rast"`. Only the returned columns are affected: `WHERE`
- * and `ORDER BY` still name the column itself. A column type opts in by specializing this:
- *
- * @code
- * template <>
- * class query::sql::SelectExpression<RasterTile> {
- *  public:
- *   static constexpr std::string_view FUNCTION = "ST_AsBinary";
- * };
- * @endcode
+ * and `ORDER BY` still name the column itself. A column type opts in by specializing this with its own `FUNCTION`.
  */
 template <typename data_t>
 class SelectExpression {

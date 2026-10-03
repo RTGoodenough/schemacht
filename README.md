@@ -105,16 +105,18 @@ int main() {
     [include/schemacht/column_type.hpp](include/schemacht/column_type.hpp) and
     [examples/custom_types.cpp](examples/custom_types.cpp).
 - **An extension's operators and functions** (pg_trgm, PostGIS, ...): `col.apply<Op>(arg)` for a test, and
-  `col.ranked_by<Op>(arg)` to sort by one. See the worked example on `Operation` in
-  [include/schemacht/query/predicate.hpp](include/schemacht/query/predicate.hpp).
+  `col.ranked_by<Op>(arg)` to sort by one. An operation's argument can be of a type other than the column's, with
+  `using argument_type = T;`: a text key for jsonb's `?`, say. See [examples/extensions.cpp](examples/extensions.cpp).
 - **Tables from schemas:** `create_table` and `drop_table`, for tests, examples and a first start. They cover the primary
   key, `UNIQUE` columns and an identity key.
 
 The examples show these together:
-- [examples/basic.cpp](examples/basic.cpp): a schema, an insert and a query;
+- [examples/basic.cpp](examples/basic.cpp): a schema, an insert, queries, and a raw statement;
 - [examples/custom_types.cpp](examples/custom_types.cpp): column types of your own;
 - [examples/transfers.cpp](examples/transfers.cpp): identity keys, `insert_returning`, update and delete with
-  `returning`, a unique column, and transactions.
+  `returning`, a unique column, and transactions;
+- [examples/extensions.cpp](examples/extensions.cpp): pg_trgm's operators and a function of the application's own, jsonb's
+  operators, and an operation whose argument is not of the column's type.
 
 ## Building and testing
 
@@ -127,8 +129,8 @@ ctest --test-dir build
 The tests and examples are built when schemacht is the top-level project (`SCHEMACHT_BUILD_TESTS`,
 `SCHEMACHT_BUILD_EXAMPLES`). The integration tests and the examples need a PostgreSQL database to run against. Point
 `SCHEMACHT_TEST_DB` at a throwaway one: they create and drop tables whose names start with `schemacht_it_` or
-`schemacht_example_`. One integration test also installs pg_trgm if it can, and leaves it installed; it creates and drops a
-function, `similar_above`. Without `SCHEMACHT_TEST_DB`, they are skipped.
+`schemacht_example_`. One integration test and the extensions example also install pg_trgm if they can, and leave it
+installed; they create and drop a function, `similar_above`. Without `SCHEMACHT_TEST_DB`, they are skipped.
 
 ```sh
 SCHEMACHT_TEST_DB="host=localhost port=5432 dbname=schemacht_test user=test" ctest --test-dir build -j8
