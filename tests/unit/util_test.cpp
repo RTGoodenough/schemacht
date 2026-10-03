@@ -1,4 +1,4 @@
-// The public helpers in schemacht/util: hex, all_distinct and settle.
+// The public helpers in schemacht/util: hex, all_distinct, and completions (settle, future_from, OnceCallback).
 
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/matchers/catch_matchers.hpp>
@@ -89,4 +89,30 @@ TEST_CASE("settle completes a promise with the error, or with the value", "[util
   std::promise<std::string> refused;
   util::settle(refused, std::make_exception_ptr(std::runtime_error("no")), std::string("unused"));
   CHECK_THROWS_AS(refused.get_future().get(), std::runtime_error);
+}
+
+TEST_CASE("future_from makes a future of a call that takes a completion", "[util]") {
+  std::future<std::int64_t> counted = util::future_from<std::int64_t>([](const util::Settler<std::int64_t>& done) { done(3, nullptr); });
+  CHECK(counted.get() == 3);
+
+  std::future<void> failed =
+      util::future_from<void>([](const util::Settler<void>& done) { done(std::make_exception_ptr(std::runtime_error("no"))); });
+  CHECK_THROWS_AS(failed.get(), std::runtime_error);
+}
+
+TEST_CASE("a OnceCallback runs on the first call, from any copy, and never again", "[util]") {
+  int                      calls = 0;
+  std::exception_ptr       seen;
+  const util::OnceCallback once([&calls, &seen](const std::exception_ptr& error) {
+    ++calls;
+    seen = error;
+  });
+  const util::OnceCallback copy = once;  // NOLINT(performance-unnecessary-copy-initialization) -- a second holder of it
+
+  copy(std::make_exception_ptr(std::runtime_error("first")));
+  once(nullptr);
+  copy(nullptr);
+
+  CHECK(calls == 1);
+  CHECK_THROWS_WITH(std::rethrow_exception(seen), "first");
 }

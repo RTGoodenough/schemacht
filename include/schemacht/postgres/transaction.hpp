@@ -3,7 +3,6 @@
 #include <cstdint>
 #include <exception>
 #include <future>
-#include <memory>
 #include <string>
 #include <type_traits>
 #include <utility>
@@ -69,7 +68,8 @@ namespace detail {
  *   `25P02`) until it ends, and `commit` then reports that it rolled back (a `QueryError` with `25P02`).
  * - **An error before a statement is sent** (an argument its codec refuses, say) is that call's error alone: PostgreSQL never
  *   sees the statement, so the transaction stays open and a later `commit` commits the rest. Roll back if the rest should
- *   not stand without it.
+ *   not stand without it. (One exception: an insert of several statements that runs out of memory part way through queuing
+ *   them reports `std::bad_alloc`, but the ones already queued still run. Roll back then.)
  * - **It holds a connection** from `begin` until it ends, so a pool with as many transactions open as it has connections runs
  *   nothing else until one ends, and a `begin` waits.
  * - **A stream stopped early** is not cancelled on the server, which would fail the transaction: its other rows are read and dropped.
@@ -99,38 +99,29 @@ class Transaction : public StatementRunner {
    * transaction has ended either way, and its connection goes back to the pool.
    *
    * The error is the `COMMIT`'s (a `QueryError`; under `Serializable`, `40001` means: run the transaction again), a `QueryError`
-   * with `25P02` if a statement in it had failed and PostgreSQL rolled it back instead, or `std::logic_error` if it had already
-   * ended.
+   * with `25P02` if a statement in it had failed and PostgreSQL rolled it back instead, `std::logic_error` if it had already
+   * ended, or `std::bad_alloc` if there was no memory to send the `COMMIT`: then nothing is committed, and the transaction has
+   * ended all the same (its connection is re-established before the pool uses it again): a second `commit` gets `std::logic_error`.
    */
   template <detail::StreamCallback done_t>
-  void commit_into(done_t done) {
+  void commit_into(done_t done) noexcept {
     end(true, std::move(done));
   }
 
   /** @return A future that completes once the transaction is committed, or holds why it was not (see `commit_into`). */
   [[nodiscard]] std::future<void> commit() {
-    const auto        promise = std::make_shared<std::promise<void>>();
-    std::future<void> future = promise->get_future();
-
-    commit_into([promise](const std::exception_ptr& error) { util::settle(*promise, error); });
-
-    return future;
+    return util::future_from<void>([this](auto done) { commit_into(std::move(done)); });
   }
 
   /** @brief Rolls back the transaction and calls `done` once, on a worker thread, with the error (null on success). */
   template <detail::StreamCallback done_t>
-  void rollback_into(done_t done) {
+  void rollback_into(done_t done) noexcept {
     end(false, std::move(done));
   }
 
   /** @return A future that completes once the transaction is rolled back, or holds the error (`std::logic_error` if it had already ended). */
   [[nodiscard]] std::future<void> rollback() {
-    const auto        promise = std::make_shared<std::promise<void>>();
-    std::future<void> future = promise->get_future();
-
-    rollback_into([promise](const std::exception_ptr& error) { util::settle(*promise, error); });
-
-    return future;
+    return util::future_from<void>([this](auto done) { rollback_into(std::move(done)); });
   }
 
  private:
@@ -141,20 +132,24 @@ class Transaction : public StatementRunner {
 
   /** @brief Ends the transaction, committing it or rolling it back, and calls `done` with the outcome. */
   template <detail::StreamCallback done_t>
-  void end(bool committing, done_t done) {
+  void end(bool committing, done_t&& done) noexcept {
     // Let go of at the end of this call: the connection goes back once this is done. An empty lease (the transaction had
     // already ended) gets std::logic_error.
     const AsyncClient::Lease lease = take_lease();
-    client().run(
-        lease, committing ? "COMMIT" : "ROLLBACK", {},
-        [done = std::move(done), committing](const QueryResult& result, const std::exception_ptr& error) mutable {
-          if ( ! error && committing && result.command_tag() == "ROLLBACK" ) {
-            done(std::make_exception_ptr(detail::rolled_back()));
-          } else {
-            done(error);
-          }
+    guarded(std::forward<done_t>(done), detail::FailWithError{}, [&](const auto& once) {
+      client().run(lease, committing ? "COMMIT" : "ROLLBACK", {}, [once, committing](const QueryResult& result, const std::exception_ptr& error) {
+        if ( error || ! committing || result.command_tag() != "ROLLBACK" ) {
+          once(error);
+          return;
         }
-    );
+
+        try {
+          once(std::make_exception_ptr(detail::rolled_back()));
+        } catch ( ... ) {  // no memory for that error: this one says as much (and does nothing if `done` itself threw)
+          once(std::current_exception());
+        }
+      });
+    });
   }
 
   /**

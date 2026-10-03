@@ -41,6 +41,15 @@ using WithGenerated = sch::Schema<"with_generated", Id, Doubled, Name>;
 using NumberedId = sch::Field<std::int32_t, "id", sch::KeyRole::Primary, true>;
 using Numbered = sch::Schema<"numbered", NumberedId, Name, Nick>;
 
+/** @brief A schema whose primary key is two columns. */
+using PairA = sch::Field<std::int32_t, "a", sch::KeyRole::Primary>;
+using PairB = sch::Field<std::int32_t, "b", sch::KeyRole::Primary>;
+using PairValue = sch::Field<std::int32_t, "v">;
+using Pairs = sch::Schema<"pairs", PairA, PairB, PairValue>;
+
+/** @brief A schema with no primary key. */
+using Keyless = sch::Schema<"keyless", Name, Score>;
+
 /** @brief pg_trgm's similarity of texts, declared as examples/extensions.cpp declares it. */
 namespace trgm {
 

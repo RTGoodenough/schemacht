@@ -6,9 +6,13 @@
 // - A transaction: a transfer takes from one account, gives to another and records itself, all of it or none. One that
 //   would overdraw is rolled back.
 // - RETURNING on an update and a delete: `execute` gives the rows as changed, instead of a count.
+// - Steps chained by completions: the day's closing balances are read (`execute_into`) and, from that completion, written to
+//   a table of their own (`insert_into`); the caller waits once, at the end. No worker waits on a future in between, which
+//   could leave none free to finish it.
 //
 // Run with a libpq connection string: schemacht_example_transfers "host=localhost dbname=app user=app"
-// It creates the tables schemacht_example_accounts and schemacht_example_transfers, and drops them when it is done.
+// It creates the tables schemacht_example_accounts, schemacht_example_transfers and schemacht_example_closing_balances, and
+// drops them when it is done.
 
 #include <algorithm>
 #include <cstddef>
@@ -16,6 +20,7 @@
 #include <cstdlib>
 #include <exception>
 #include <format>
+#include <future>
 #include <iostream>
 #include <span>
 #include <string>
@@ -25,6 +30,7 @@
 
 #include "schemacht/schemacht.hpp"
 #include "schemacht/util/compile_time.hpp"
+#include "schemacht/util/futures.hpp"
 
 namespace sch = schemacht::schema;
 namespace q = schemacht::query;
@@ -42,6 +48,11 @@ using From = sch::Field<std::int64_t, "from_account">;
 using To = sch::Field<std::int64_t, "to_account">;
 using Amount = sch::Field<std::int64_t, "amount">;
 using Transfers = sch::Schema<"schemacht_example_transfers", TransferId, From, To, Amount>;
+
+// Each account's balance when the day closed.
+using ClosedAccount = sch::Field<std::int64_t, "account", sch::KeyRole::Primary>;
+using ClosedBalance = sch::Field<std::int64_t, "balance">;  // in cents
+using ClosingBalances = sch::Schema<"schemacht_example_closing_balances", ClosedAccount, ClosedBalance>;
 
 // Sets an account's balance, and gives back its owner and new balance: one row per account changed.
 constexpr auto SET_BALANCE = q::update<Accounts>()
@@ -93,7 +104,43 @@ void transfer(pg::Database& database, std::int64_t from, std::int64_t to, std::i
   std::cout << "  committed as transfer #" << sch::get<"id">(recorded.at(0)) << '\n';
 }
 
+/**
+ * @brief Records every account's balance at the end of the day: reads the accounts, and from that completion inserts the
+ * snapshot. @return How many balances were recorded.
+ */
+std::size_t record_closing_balances(pg::Database& database) {
+  std::promise<std::size_t> recorded;
+  std::future<std::size_t>  done = recorded.get_future();
+
+  database.execute_into(
+      q::Prepared<ALL_ACCOUNTS>::bind(), [&database, &recorded](const std::vector<Accounts::row_type>& accounts, const std::exception_ptr& error) {
+        if ( error ) {
+          recorded.set_exception(error);
+          return;
+        }
+
+        try {
+          std::vector<ClosingBalances::row_type> snapshot;
+          snapshot.reserve(accounts.size());
+          for ( const Accounts::row_type& account : accounts ) {
+            snapshot.push_back(ClosingBalances::make_row(sch::get<"id">(account), sch::get<"balance">(account)));
+          }
+
+          // From a worker, so no `.get()` here: the insert takes a completion too.
+          database.insert_into<ClosingBalances>(snapshot, [&recorded, count = snapshot.size()](const std::exception_ptr& insert_error) {
+            schemacht::util::settle(recorded, insert_error, count);
+          });
+        } catch ( ... ) {  // a worker drops what a completion throws: without this, the wait below would never end
+          recorded.set_exception(std::current_exception());
+        }
+      }
+  );
+
+  return done.get();  // the one wait, on the caller's thread
+}
+
 void drop_everything(pg::Database& database) {
+  database.drop_table<ClosingBalances>().get();
   database.drop_table<Transfers>().get();
   database.drop_table<Accounts>().get();
 }
@@ -110,6 +157,7 @@ int main(int argc, char** argv) {
     drop_everything(database);
     database.create_table<Accounts>().get();  // "id" bigint NOT NULL GENERATED ALWAYS AS IDENTITY, ..., UNIQUE ("owner")
     database.create_table<Transfers>().get();
+    database.create_table<ClosingBalances>().get();
 
     // Rows without their ids; the database numbers them. The rows may come back in any order: find each by its owner.
     const auto opened = database.insert_returning<Accounts>({Accounts::make_insert_row("ann", 10000), Accounts::make_insert_row("bob", 2500)}).get();
@@ -131,6 +179,8 @@ int main(int argc, char** argv) {
 
     const auto closed = database.execute(q::Prepared<CLOSE>::bind("bob")).get();
     std::cout << "Closed bob's account #" << sch::get<"id">(closed.at(0)) << ", paying out " << dollars(sch::get<"balance">(closed.at(0))) << ".\n";
+
+    std::cout << "Recorded the day's closing balances, one per account left: " << record_closing_balances(database) << ".\n";
 
     std::cout << "Accounts left:\n";
     for ( const Accounts::row_type& account : database.execute(q::Prepared<ALL_ACCOUNTS>::bind()).get() ) {

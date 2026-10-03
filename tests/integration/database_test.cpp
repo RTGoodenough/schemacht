@@ -34,6 +34,7 @@
 #include "schemacht/column_type.hpp"
 #include "schemacht/schemacht.hpp"
 #include "schemacht/util/compile_time.hpp"
+#include "schemacht/util/futures.hpp"
 #include "support/integration.hpp"
 #include "support/schemas.hpp"
 
@@ -828,4 +829,264 @@ TEST_CASE("integration: a table named while the program runs, in a schema of its
   CHECK(names(table.execute(q::Prepared<BY_NAME>::bind()).get()) == std::vector<std::string>{"eve"});
 
   exec(database, "DROP SCHEMA schemacht_it_schema CASCADE");
+}
+
+namespace {
+
+using schemacht::test::Keyless;
+using schemacht::test::Pairs;
+
+constexpr auto ALL_PAIRS = q::select<Pairs>().order_by(q::On<Pairs>::col<"a">().asc(), q::On<Pairs>::col<"b">().asc());
+constexpr auto ALL_KEYLESS = q::select<Keyless>().order_by(q::On<Keyless>::col<"name">().asc());
+
+/**
+ * @brief Waits for an `insert_into`'s completion: `done()` is the completion, `wait()` rethrows its error, and `thread()` is
+ * the thread it ran on, once it has.
+ */
+class Completion {
+ public:
+  [[nodiscard]] auto done() {
+    return [this](const std::exception_ptr& error) {
+      _thread = std::this_thread::get_id();
+      schemacht::util::settle(_promise, error);
+    };
+  }
+
+  void wait() { _promise.get_future().get(); }
+
+  [[nodiscard]] std::thread::id thread() const { return _thread; }
+
+ private:
+  std::promise<void> _promise;
+  std::thread::id    _thread;
+};
+
+/** @brief A value whose stored form is always refused: an insert of it fails before anything is sent. */
+struct Unstorable {
+  auto operator<=>(const Unstorable&) const = default;
+};
+
+}  // namespace
+
+template <>
+struct schemacht::ColumnType<Unstorable>
+    : schemacht::ConvertedColumn<
+          Unstorable, std::string, [](const Unstorable& /*value*/) -> std::string { throw std::invalid_argument("this value has no stored form"); },
+          [](const std::string& /*text*/) { return Unstorable{}; }> {};
+
+namespace {
+
+/** @brief A completion that can't be moved (its move throws): passed on to `completion`, through the copy the failed move leaves. */
+class Unmovable {
+ public:
+  explicit Unmovable(Completion& completion) : _completion(&completion) {}
+  Unmovable(const Unmovable& /*other*/) = default;
+  // NOLINTNEXTLINE(bugprone-unsafe-to-allow-exceptions,cppcoreguidelines-noexcept-move-operations,performance-noexcept-move-constructor)
+  Unmovable(Unmovable&& /*other*/) noexcept(false) { throw std::runtime_error("this completion can't be moved"); }
+  Unmovable& operator=(const Unmovable& /*other*/) = delete;
+  Unmovable& operator=(Unmovable&& /*other*/) = delete;
+  ~Unmovable() = default;
+
+  void operator()(const std::exception_ptr& error) const { _completion->done()(error); }
+
+ private:
+  Completion* _completion = nullptr;
+};
+
+/** @brief A row handler that can't be moved (its move throws). */
+struct UnmovableHandler {
+  UnmovableHandler() = default;
+  UnmovableHandler(const UnmovableHandler& /*other*/) = default;
+  // NOLINTNEXTLINE(bugprone-unsafe-to-allow-exceptions,cppcoreguidelines-noexcept-move-operations,performance-noexcept-move-constructor)
+  UnmovableHandler(UnmovableHandler&& /*other*/) noexcept(false) { throw std::runtime_error("this row handler can't be moved"); }
+  UnmovableHandler& operator=(const UnmovableHandler& /*other*/) = delete;
+  UnmovableHandler& operator=(UnmovableHandler&& /*other*/) = delete;
+  ~UnmovableHandler() = default;
+
+  void operator()(const Keyless::row_type& /*row*/) const {}
+};
+
+/** @brief A completion that can be called only as an lvalue. */
+struct LvalueOnly {
+  Completion* completion;
+
+  // NOLINTNEXTLINE(readability-make-member-function-const) -- `&` alone, so that it can't be called as an rvalue
+  void operator()(const std::exception_ptr& error) & { completion->done()(error); }
+};
+
+using Refusals = sch::Schema<"refusals", schemacht::test::Name, sch::Field<Unstorable, "value">>;
+using Listed = sch::Schema<"schemacht_it_listed", schemacht::test::Name, schemacht::test::Score>;
+
+constexpr auto RESCORE = q::update<Keyless>().set(q::On<Keyless>::col<"score">(), q::arg<0>()).all_rows();
+
+}  // namespace
+
+TEST_CASE("integration: tables named while the program runs, with a two-column key or none", "[integration][table_name]") {
+  pg::Database database(test_db());
+
+  pg::Table<Pairs> pairs(database, sch::TableName("schemacht_it_named_pairs"));
+  pairs.drop().get();
+  pairs.create().get();
+  pairs.insert({Pairs::make_row(1, 1, 10), Pairs::make_row(1, 2, 20)}).get();
+
+  Completion inserted;
+  pairs.insert_into(std::vector{Pairs::make_row(2, 1, 30)}, inserted.done());
+  inserted.wait();
+  CHECK(pairs.execute(q::Prepared<ALL_PAIRS>::bind()).get().size() == 3);
+
+  // The key is both columns: the same pair again is refused, through the completion.
+  Completion refused;
+  pairs.insert_into(std::vector{Pairs::make_row(1, 2, 99)}, refused.done());
+  try {
+    refused.wait();
+    FAIL("the insert should have been refused");
+  } catch ( const pg::QueryError& error ) {
+    CHECK(error.sqlstate() == "23505");  // unique_violation
+  }
+
+  pg::Table<Keyless> keyless(database, sch::TableName("schemacht_it_named_keyless"));
+  keyless.drop().get();
+  keyless.create().get();
+  keyless.insert({Keyless::make_row("b", 2.0), Keyless::make_row("a", 1.0), Keyless::make_row("a", 1.0)}).get();  // repeats allowed
+  CHECK(keyless.execute(q::Prepared<ALL_KEYLESS>::bind()).get().size() == 3);
+
+  pairs.drop().get();
+  keyless.drop().get();
+}
+
+TEST_CASE("integration: an insert chained onto a query's completion, without a future in between", "[integration][table_name]") {
+  pg::Database     database(test_db());
+  pg::Table<Named> source(database, sch::TableName("schemacht_it_chain_source"));
+  pg::Table<Named> copy(database, sch::TableName("schemacht_it_chain_copy"));
+  for ( pg::Table<Named>* table : {&source, &copy} ) {
+    table->drop().get();
+    table->create().get();
+  }
+  source.insert({Named::make_insert_row("ann", std::nullopt), Named::make_insert_row("bob", "b")}).get();
+
+  // Read on a worker, then insert from that completion, then finish: nothing blocks a worker on a future.
+  Completion copied;
+  source.execute_into(q::Prepared<BY_NAME>::bind(), [&copy, &copied](const std::vector<Named::row_type>& rows, const std::exception_ptr& error) {
+    if ( error ) {
+      copied.done()(error);
+      return;
+    }
+
+    copy.insert_into(rows, copied.done());  // whole rows: their generated ids are not sent, so `copy` numbers its own
+  });
+  copied.wait();
+  CHECK(names(copy.execute(q::Prepared<BY_NAME>::bind()).get()) == std::vector<std::string>{"ann", "bob"});
+
+  // Nothing to insert still completes, on a worker.
+  Completion nothing;
+  copy.insert_into(std::vector<Named::row_type>{}, nothing.done());
+  nothing.wait();
+
+  // In a transaction, the rows go when it rolls back.
+  {
+    pg::Transaction  transaction = database.begin().get();
+    pg::Table<Named> in_transaction(transaction, copy.name());
+    Completion       added;
+    in_transaction.insert_into(std::vector{Named::make_insert_row("cat", std::nullopt)}, added.done());
+    added.wait();
+    transaction.rollback().get();
+  }
+  CHECK(copy.execute(q::Prepared<BY_NAME>::bind()).get().size() == 2);
+
+  // A stream with a completion, on the table.
+  std::size_t streamed = 0;
+  Completion  streamed_all;
+  source.stream_into(q::Prepared<BY_NAME>::bind(), [&streamed](const Named::row_type& /*row*/) { ++streamed; }, streamed_all.done());
+  streamed_all.wait();
+  CHECK(streamed == 2);
+
+  source.drop().get();
+  copy.drop().get();
+}
+
+TEST_CASE("integration: a call with a completion calls it once, on a worker, whatever fails", "[integration][table_name]") {
+  pg::Database       database(test_db());
+  pg::Table<Keyless> keyless(database, sch::TableName("schemacht_it_completions"));
+  keyless.drop().get();
+  keyless.create().get();
+  const std::vector<Keyless::row_type> rows{Keyless::make_row("a", 1.0), Keyless::make_row("b", 2.0)};
+
+  // On the database, into the schema's own table: as a vector and as a span.
+  database.drop_table<Listed>().get();
+  database.create_table<Listed>().get();
+  const std::vector<Listed::row_type> listed{Listed::make_row("a", 1.0), Listed::make_row("b", 2.0)};
+
+  Completion from_vector;
+  database.insert_into<Listed>(listed, from_vector.done());
+  from_vector.wait();
+  CHECK(from_vector.thread() != std::this_thread::get_id());
+
+  Completion from_span;
+  database.insert_into<Listed>(std::span<const Listed::row_type>(listed).first(1), from_span.done());
+  from_span.wait();
+  CHECK(database.execute(q::Prepared<q::select<Listed>()>::bind()).get().size() == 3);
+  database.drop_table<Listed>().get();
+
+  // On a table, as a span.
+  Completion into_table;
+  keyless.insert_into(std::span<const Keyless::row_type>(rows), into_table.done());
+  into_table.wait();
+  CHECK(into_table.thread() != std::this_thread::get_id());
+
+  // No rows: the future is complete already, as `insert_returning`'s is, so nothing waits for a worker.
+  CHECK(keyless.insert(std::vector<Keyless::row_type>{}).wait_for(0s) == std::future_status::ready);
+
+  // An update with a completion, on the table: the count of rows it changed.
+  std::promise<std::uint64_t> rescored;
+  keyless.execute_into(q::Prepared<RESCORE>::bind(5.0), [&rescored](std::uint64_t count, const std::exception_ptr& error) {
+    schemacht::util::settle(rescored, error, count);
+  });
+  CHECK(rescored.get_future().get() == 2);
+
+  // A value its codec refuses: no throw from the call, the error through the completion, on a worker, and nothing written.
+  pg::Table<Refusals> refusals(database, sch::TableName("schemacht_it_refusals"));
+  refusals.drop().get();
+  refusals.create().get();
+
+  Completion refused;
+  refusals.insert_into(std::vector{Refusals::make_row("a", Unstorable{})}, refused.done());
+  CHECK_THROWS_WITH(refused.wait(), "this value has no stored form");
+  CHECK(refused.thread() != std::this_thread::get_id());
+
+  CHECK_THROWS_WITH(refusals.insert({Refusals::make_row("a", Unstorable{})}).get(), "this value has no stored form");
+
+  // An argument its codec refuses, in a stream and in a command: the same.
+  using RefusedQuery = q::RawStatement<"SELECT $1::text AS n", q::RawArguments<Unwritable>, sch::Field<std::string, "n">>;
+  Completion streamed;
+  database.stream_into(RefusedQuery::bind(Unwritable{}), [](const RefusedQuery::row_type& /*row*/) {}, streamed.done());
+  CHECK_THROWS_WITH(streamed.wait(), "this argument has no text form");
+  CHECK(streamed.thread() != std::this_thread::get_id());
+
+  using RefusedCommand = q::RawStatement<"UPDATE schemacht_it_completions SET score = 0 WHERE $1::text = ''", q::RawArguments<Unwritable>>;
+  std::promise<std::uint64_t> commanded;
+  database.execute_into(RefusedCommand::bind(Unwritable{}), [&commanded](std::uint64_t count, const std::exception_ptr& error) {
+    schemacht::util::settle(commanded, error, count);
+  });
+  CHECK_THROWS_WITH(commanded.get_future().get(), "this argument has no text form");
+
+  // A row handler that can't be moved: the stream's error, from `stream_into` and from `stream` alike.
+  Completion unmoved_handler;
+  keyless.stream_into(q::Prepared<ALL_KEYLESS>::bind(), UnmovableHandler{}, unmoved_handler.done());
+  CHECK_THROWS_WITH(unmoved_handler.wait(), "this row handler can't be moved");
+  CHECK_THROWS_WITH(keyless.stream(q::Prepared<ALL_KEYLESS>::bind(), UnmovableHandler{}).get(), "this row handler can't be moved");
+
+  // A completion that can't be moved gets its own error, through what the failed move left: on this thread, before the call
+  // returns, as there is nothing to hand to a worker.
+  Completion unmoved;
+  keyless.insert_into(rows, Unmovable(unmoved));
+  CHECK_THROWS_WITH(unmoved.wait(), "this completion can't be moved");
+  CHECK(unmoved.thread() == std::this_thread::get_id());
+
+  // A completion callable only as an lvalue.
+  Completion lvalue_only;
+  keyless.insert_into(rows, LvalueOnly{&lvalue_only});
+  lvalue_only.wait();
+
+  keyless.drop().get();
+  refusals.drop().get();
 }

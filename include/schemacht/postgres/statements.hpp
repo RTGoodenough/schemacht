@@ -13,6 +13,7 @@
 #include <vector>
 
 #include "schemacht/postgres/concepts/statements.hpp"  // IWYU pragma: export
+#include "schemacht/postgres/concepts/table.hpp"
 #include "schemacht/postgres/field_codec.hpp"
 #include "schemacht/query/compiled_query.hpp"
 #include "schemacht/query/raw_statement.hpp"
@@ -292,15 +293,14 @@ namespace schemacht::postgres::detail {
 
 /** @brief A statement as it goes to the database: its text, the text of each argument, and the columns it must return (by name, in order). */
 struct WireStatement {
-  std::string_view              sql;
+  std::string                   sql;
   std::vector<std::string>      params;
   std::vector<std::string_view> column_names;
 };
 
 /**
  * @return `statement` as it goes to the database: a `CompiledQuery` (with the names of the columns it returns, from its schema), or a
- * `BoundRawStatement` (which is about no table). The text views point at static storage, or into `statement` for a query aimed at
- * another table: `statement` must outlive the result.
+ * `BoundRawStatement` (which is about no table). The column names point at static storage.
  */
 template <SendableStatement statement_t>
 [[nodiscard]] WireStatement wire(const statement_t& statement) {
@@ -325,6 +325,18 @@ template <SendableStatement statement_t>
   }
 
   return wired;
+}
+
+/** @return As `wire`, for `statement` run on `table` instead of its schema's own table (`on`), if there is one: a `Table`'s. */
+template <SendableStatement statement_t>
+[[nodiscard]] WireStatement wire_on(const statement_t& statement, const schema::TableName* table) {
+  if constexpr ( RunsOnTable<statement_t> ) {
+    if ( table != nullptr ) {
+      return wire(statement.on(*table));
+    }
+  }
+
+  return wire(statement);
 }
 
 /**

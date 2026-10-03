@@ -17,9 +17,11 @@ include(Catch)
 # The integration tests skip themselves unless SCHEMACHT_TEST_DB holds a libpq connection string.
 add_executable(
   schemacht_tests
+  compile/completions_test.cpp
   compile/raw_statement_test.cpp
   compile/schema_test.cpp
   compile/sql_test.cpp
+  compile/table_test.cpp
   unit/binary_form_test.cpp
   unit/chrono_uuid_test.cpp
   unit/column_type_test.cpp
@@ -37,6 +39,12 @@ add_executable(
 target_include_directories(schemacht_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(schemacht_tests PRIVATE schemacht::schemacht Catch2::Catch2WithMain)
 catch_discover_tests(schemacht_tests)
+
+# Failing allocations on purpose: its own executable, as it replaces the global operator new. Skipped without SCHEMACHT_TEST_DB.
+add_executable(schemacht_fault_tests fault/allocation_test.cpp)
+target_include_directories(schemacht_fault_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+target_link_libraries(schemacht_fault_tests PRIVATE schemacht::schemacht Catch2::Catch2WithMain)
+catch_discover_tests(schemacht_fault_tests)
 
 # ==============================================================================
 # The examples, run against the test database (skipped, as the integration tests are, without SCHEMACHT_TEST_DB)

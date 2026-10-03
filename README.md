@@ -90,7 +90,9 @@ int main() {
   - comparisons, `in(...)`, `IS NULL`, `AND`/`OR`/`NOT`, `LIKE`;
   - `order_by`, `limit`, and `project` to fetch only some columns;
   - `stream` to handle a large result a chunk at a time, with backpressure;
-  - `execute_into` and `stream_into` to chain on a callback instead of a future.
+  - `execute_into`, `stream_into` and `insert_into` to chain on a callback instead of a future;
+  - errors arrive through the future, or through the callback, which runs exactly once; a call that takes a callback never
+    throws, and one that returns a future throws only `std::bad_alloc`, when there is no memory for the future itself.
 - **Changes:**
   - `update(...)` and `delete_where(...)` give the count of rows changed, or the rows themselves with `.returning(...)`;
   - `insert` writes any number of rows atomically: all of them or none.

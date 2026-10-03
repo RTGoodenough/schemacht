@@ -26,10 +26,12 @@
  * Every call returns a `std::future` at once and the work finishes in the background (call `get()` to wait). Outside a
  * transaction, each call is one statement in autocommit mode.
  *
- * @note Errors, including a statement that can't be started, arrive through the future, never as a throw from the call itself.
+ * @note No error escapes a call: see `StatementRunner`. A call that takes a completion (`..._into`) is `noexcept`; one that
+ * returns a future can throw only `std::bad_alloc`, when there is no memory for the future itself.
  *
  * @warning Row handlers and completions run on the pool's worker threads. They must not block on another of this database's
- * futures (`get()`), which could leave no worker free to complete it; chain with `execute_into` / `stream_into` / `begin_into` instead.
+ * futures (`get()`), which could leave no worker free to complete it; chain with `execute_into` / `stream_into` / `insert_into` /
+ * `begin_into` instead.
  */
 namespace schemacht::postgres {
 
@@ -79,22 +81,30 @@ class Database : private detail::ClientHolder, public StatementRunner {
    * The transaction takes a connection of the pool's until it ends, so it waits for one if none is free.
    */
   template <detail::TransactionCallback done_t>
-  void begin_into(done_t done, const TransactionOptions& options = {}) {
-    held_client().lease([client = &held_client(), read = read_options(), sql = detail::begin_statement(options),
-                         done = std::move(done)](AsyncClient::Lease lease, const std::exception_ptr& error) mutable {
-      if ( error ) {
-        done(Transaction(*client, {}, read), error);
-        return;
-      }
+  void begin_into(done_t done, const TransactionOptions& options = {}) noexcept {
+    AsyncClient* const client = &held_client();
+    const auto         fail = [client, read = read_options()](auto& done, const std::exception_ptr& error) {
+      done(Transaction(*client, {}, read), error);  // ended: it refuses every statement
+    };
 
-      // The lease goes with the BEGIN's completion: to the transaction, or (if the BEGIN failed) back to the pool.
-      const auto held = std::make_shared<AsyncClient::Lease>(std::move(lease));
-      client->run(
-          *held, std::move(sql), {},
-          [client, held, read, done = std::move(done)](const QueryResult& /*began*/, const std::exception_ptr& began) mutable {
-            done(Transaction(*client, began ? AsyncClient::Lease() : std::move(*held), read), began);
-          }
-      );
+    guarded(std::move(done), fail, [&](const auto& once) {
+      client->lease([client, read = read_options(), fail, sql = detail::begin_statement(options),
+                     once](AsyncClient::Lease lease, const std::exception_ptr& error) mutable {
+        if ( error ) {
+          fail(once, error);
+          return;
+        }
+
+        try {
+          // The lease goes with the BEGIN's completion: to the transaction, or (if the BEGIN failed) back to the pool.
+          const auto held = std::make_shared<AsyncClient::Lease>(std::move(lease));
+          client->run(*held, std::move(sql), {}, [client, held, read, once](const QueryResult& /*began*/, const std::exception_ptr& began) {
+            once(Transaction(*client, began ? AsyncClient::Lease() : std::move(*held), read), began);
+          });
+        } catch ( ... ) {  // no memory to send the BEGIN: the lease goes back unused
+          fail(once, std::current_exception());
+        }
+      });
     });
   }
 
@@ -103,14 +113,7 @@ class Database : private detail::ClientHolder, public StatementRunner {
    * examples/transfers.cpp makes transfers in transactions.
    */
   [[nodiscard]] std::future<Transaction> begin(const TransactionOptions& options = {}) {
-    const auto               promise = std::make_shared<std::promise<Transaction>>();
-    std::future<Transaction> future = promise->get_future();
-
-    begin_into(
-        [promise](Transaction transaction, const std::exception_ptr& error) { util::settle(*promise, error, std::move(transaction)); }, options
-    );
-
-    return future;
+    return util::future_from<Transaction>([&](auto done) { begin_into(std::move(done), options); });
   }
 
   Database(const Database&) = delete;  // it owns the pool: one per database
