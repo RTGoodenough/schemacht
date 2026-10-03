@@ -1,8 +1,9 @@
 #pragma once
 
-#include <algorithm>
 #include <concepts>
 #include <cstddef>
+#include <exception>
+#include <ranges>
 #include <span>
 #include <stdexcept>
 #include <string>
@@ -13,15 +14,14 @@
 #include <vector>
 
 #include "schemacht/postgres/concepts/statements.hpp"  // IWYU pragma: export
-#include "schemacht/postgres/concepts/table.hpp"
 #include "schemacht/postgres/field_codec.hpp"
 #include "schemacht/query/compiled_query.hpp"
 #include "schemacht/query/raw_statement.hpp"
 #include "schemacht/query/sql.hpp"
 #include "schemacht/query/sql_type.hpp"
 #include "schemacht/schema/schema.hpp"
+#include "schemacht/schema/table.hpp"
 #include "schemacht/schema/table_name.hpp"
-#include "schemacht/util/concepts/type_utils.hpp"
 
 /**
  * Turning bound queries and rows into what is sent to Postgres: statement text plus each argument's text. Free of libpq.
@@ -68,27 +68,7 @@ template <schema::IsSchema schema_t>
   return texts;
 }
 
-/** @brief An `INSERT` and the text of each value it binds, in placeholder order. */
-struct InsertStatement {
-  std::string              sql;
-  std::vector<std::string> values;
-};
-
-/** @brief The most parameters one statement can bind: the protocol counts them in 16 bits. */
-inline constexpr std::size_t MAX_STATEMENT_PARAMETERS = 65535;
-
-/** @return `sql_t::VALUE`, naming `table` instead of the schema's own if `table` isn't null. */
-template <typename sql_t>
-[[nodiscard]] std::string sql_on(const schema::TableName* table) {
-  return table == nullptr ? std::string(sql_t::VALUE) : query::sql::on_table(sql_t::VALUE, sql_t::TABLE_SLOT, *table);
-}
-
 namespace insert_detail {
-
-template <schema::IsSchema schema_t, std::size_t... idx>
-consteval bool any_insertable_array(std::index_sequence<idx...> /*indices*/) {
-  return ((! schema_t::template field_at<idx>::GENERATED && util::SqlArray<typename schema_t::template field_at<idx>::value_type>) || ...);
-}
 
 template <schema::IsSchema schema_t, std::size_t... idx>
 consteval bool every_insertable_has_sql_type(std::index_sequence<idx...> /*indices*/) {
@@ -97,31 +77,11 @@ consteval bool every_insertable_has_sql_type(std::index_sequence<idx...> /*indic
   );
 }
 
-/**
- * @brief Whether rows of `schema_t` are inserted with `unnest`: one array argument per column. A column that is itself an
- * array can't be: `unnest` would flatten an array of arrays into its elements.
- */
-template <schema::IsSchema schema_t>
-inline constexpr bool USES_UNNEST = ! any_insertable_array<schema_t>(std::make_index_sequence<schema_t::FIELD_COUNT>{});
-
-/** @brief The `unnest` INSERT for `schema_t`, as a static string. */
+/** @brief The INSERT for `schema_t` (see `query::sql::insert_unnest_statement`), as a static string. */
 template <schema::IsSchema schema_t>
 class UnnestSql {
   static constexpr auto PARTS = [] {
     constexpr auto TEXT = query::sql::insert_unnest_statement<schema_t>();
-    return std::pair{query::sql::terminated<TEXT.size()>(TEXT), TEXT.table_slot()};
-  }();
-
- public:
-  static constexpr std::string_view      VALUE{PARTS.first.data(), PARTS.first.size() - 1};
-  static constexpr query::sql::TableSlot TABLE_SLOT = PARTS.second;  ///< Where `VALUE` names the table (see `query::sql::on_table`).
-};
-
-/** @brief `INSERT INTO <table> (<columns>) VALUES ` for `schema_t`, as a static string. */
-template <schema::IsSchema schema_t>
-class ValuesHeadSql {
-  static constexpr auto PARTS = [] {
-    constexpr auto TEXT = query::sql::insert_values_head<schema_t>();
     return std::pair{query::sql::terminated<TEXT.size()>(TEXT), TEXT.table_slot()};
   }();
 
@@ -138,7 +98,10 @@ inline constexpr std::size_t POSITION = std::same_as<row_t, typename schema_t::i
 template <schema::IsSchema schema_t, schema::InsertRowOf<schema_t> row_t, std::size_t sent>
 using sent_field = std::tuple_element_t<POSITION<schema_t, row_t, sent>, row_t>;
 
-/** @return The array literal of the `sent`-th inserted column's value in every row (`NULL` for a NULL), for the `unnest` INSERT. */
+/**
+ * @return The array literal of the `sent`-th inserted column's value in every row (`NULL` for a NULL), for the INSERT. A value that
+ * is itself an array is one element: its own array literal, quoted.
+ */
 template <schema::IsSchema schema_t, schema::InsertRowOf<schema_t> row_t, std::size_t sent>
 [[nodiscard]] std::string column_array(std::span<const row_t> rows) {
   using field_t = sent_field<schema_t, row_t, sent>;
@@ -164,48 +127,10 @@ template <schema::IsSchema schema_t, schema::InsertRowOf<schema_t> row_t, std::s
   return literal;
 }
 
+/** @return The arguments of the INSERT of `rows`: the array literal of each inserted column. */
 template <schema::IsSchema schema_t, schema::InsertRowOf<schema_t> row_t, std::size_t... sent>
-[[nodiscard]] InsertStatement build_unnest(std::span<const row_t> rows, const schema::TableName* table, std::index_sequence<sent...> /*columns*/) {
-  return InsertStatement{.sql = sql_on<UnnestSql<schema_t>>(table), .values = {column_array<schema_t, row_t, sent>(rows)...}};
-}
-
-template <schema::IsSchema schema_t, schema::InsertRowOf<schema_t> row_t, std::size_t sent>
-void append_one_value(const row_t& row, InsertStatement& statement) {
-  using field_t = sent_field<schema_t, row_t, sent>;
-  if constexpr ( sent != 0 ) {
-    statement.sql += ", ";
-  }
-
-  if ( const auto* value = schema::value_if_present(std::get<POSITION<schema_t, row_t, sent>>(row)); value != nullptr ) {
-    statement.values.push_back(format_field<typename field_t::value_type>(*value));
-    statement.sql += "$" + std::to_string(statement.values.size());
-
-  } else {
-    statement.sql += "NULL";  // written into the statement: it takes the column's type, and needs no parameter
-  }
-}
-
-template <schema::IsSchema schema_t, schema::InsertRowOf<schema_t> row_t, std::size_t... sent>
-void append_row_values(const row_t& row, InsertStatement& statement, std::index_sequence<sent...> /*columns*/) {
-  (append_one_value<schema_t, row_t, sent>(row, statement), ...);
-}
-
-/** @return One multi-row `INSERT ... VALUES` for `rows`, which must fit in `MAX_STATEMENT_PARAMETERS`. */
-template <schema::IsSchema schema_t, schema::InsertRowOf<schema_t> row_t>
-[[nodiscard]] InsertStatement build_values(std::span<const row_t> rows, const schema::TableName* table) {
-  InsertStatement statement{.sql = sql_on<ValuesHeadSql<schema_t>>(table), .values = {}};
-
-  for ( std::size_t row = 0; row < rows.size(); ++row ) {
-    if ( row != 0 ) {
-      statement.sql += ", ";
-    }
-
-    statement.sql += '(';
-    append_row_values<schema_t, row_t>(rows[row], statement, std::make_index_sequence<schema_t::INSERTABLE_FIELD_COUNT>{});
-    statement.sql += ')';
-  }
-
-  return statement;
+[[nodiscard]] std::vector<std::string> column_arrays(std::span<const row_t> rows, std::index_sequence<sent...> /*columns*/) {
+  return {column_array<schema_t, row_t, sent>(rows)...};
 }
 
 }  // namespace insert_detail
@@ -223,7 +148,7 @@ class CreateTableSql {
   static constexpr query::sql::TableSlot TABLE_SLOT = PARTS.second;  ///< Where `VALUE` names the table (see `query::sql::on_table`).
 };
 
-/** @brief ` RETURNING <every column>` for `schema_t`, as a static string: what `insert_returning` adds to each INSERT. */
+/** @brief ` RETURNING <every column>` for `schema_t`, as a static string: what `insert_returning_statement` adds to its INSERT. */
 template <schema::IsSchema schema_t>
 class ReturningSql {
   static constexpr auto CHARS = [] {
@@ -248,46 +173,166 @@ class DropTableSql {
   static constexpr query::sql::TableSlot TABLE_SLOT = PARTS.second;  ///< Where `VALUE` names the table (see `query::sql::on_table`).
 };
 
+}  // namespace schemacht::postgres::detail
+
+namespace schemacht::postgres {
+
 /**
- * @brief Builds the statements that insert `rows`, leaving out generated columns (the database fills those in): from a
- * `row_type`, their values are not sent, and an `insert_row_type` has none.
+ * @brief A statement made from a schema rather than written as a query: its `CREATE TABLE`, `DROP TABLE` or `INSERT` (see
+ * `create_table_statement`, `drop_table_statement`, `insert_statement`). It runs as a query does (`execute`), on the schema's
+ * own table or, aimed with `on`, on another of its shape.
  *
- * Normally one statement, `INSERT ... SELECT * FROM unnest(...)`, with one array argument per column: any number of rows,
- * inserted atomically. A schema with an array-typed column can't use `unnest`; its rows go in multi-row `VALUES`
- * statements of at most `MAX_STATEMENT_PARAMETERS` arguments each, which `StatementRunner::insert` runs in a transaction.
- *
- * @param table The table to insert into, if not the schema's own.
- * @pre `rows` isn't empty.
+ * One that could not be made (a value of an insert that its codec refused) holds why, and fails with that when it runs: the
+ * error reaches the completion, or the future, as any error of a statement does.
+ * @tparam result_t What each row it returns is: `std::tuple<>` for none (`execute` gives the count of rows it affected), or the
+ * schema's `row_type` for an insert that gives back what it wrote.
  */
-template <TextSchema schema_t, schema::InsertRowOf<schema_t> row_t>
-[[nodiscard]] std::vector<InsertStatement> build_insert(std::span<const row_t> rows, const schema::TableName* table = nullptr) {
-  static_assert(schema_t::INSERTABLE_FIELD_COUNT > 0, "insert: the schema has no column that is not GENERATED");
+template <schema::IsSchema schema_t, typename result_t>
+class SchemaStatement {
+ public:
+  using schema_type = schema_t;
+  using result_type = result_t;
 
-  if constexpr ( insert_detail::USES_UNNEST<schema_t> ) {
-    static_assert(
-        insert_detail::every_insertable_has_sql_type<schema_t>(std::make_index_sequence<schema_t::FIELD_COUNT>{}),
-        "insert: every inserted column's type needs a SQL type name (it is sent as an array of that type): give it "
-        "one (ColumnType::SQL_TYPE, or a query::sql::SqlType specialization)"
-    );
+  /**
+   * @param sql        The statement, with `$n` placeholders for `params`.
+   * @param table_slot Where `sql` names the schema's table (see `query::sql::on_table`).
+   * @param params     The text of each argument, in placeholder order.
+   */
+  SchemaStatement(std::string sql, query::sql::TableSlot table_slot, std::vector<std::string> params)
+      : _sql(std::move(sql)), _table_slot(table_slot), _params(std::move(params)) {}
 
-    return {insert_detail::build_unnest<schema_t, row_t>(rows, table, std::make_index_sequence<schema_t::INSERTABLE_FIELD_COUNT>{})};
+  /** @brief A statement that could not be made, for `error`: running it fails with that. */
+  SchemaStatement(std::string sql, query::sql::TableSlot table_slot, std::exception_ptr error)
+      : _sql(std::move(sql)), _table_slot(table_slot), _error(std::move(error)) {}
 
-  } else {
-    constexpr std::size_t        ROWS_PER_STATEMENT = MAX_STATEMENT_PARAMETERS / schema_t::INSERTABLE_FIELD_COUNT;
-    std::vector<InsertStatement> statements;
-    for ( std::size_t first = 0; first < rows.size(); first += ROWS_PER_STATEMENT ) {
-      statements.push_back(
-          insert_detail::build_values<schema_t, row_t>(rows.subspan(first, std::min(ROWS_PER_STATEMENT, rows.size() - first)), table)
-      );
-    }
+  [[nodiscard]] std::string_view sql() const noexcept { return _sql; }
 
-    return statements;
+  /** @return The text of each argument, in placeholder order: `params().front()` is `$1`. */
+  [[nodiscard]] std::span<const std::string> params() const noexcept { return _params; }
+
+  /** @return The arguments, taken out of this statement (which is then left without them): to send them without a copy. */
+  [[nodiscard]] std::vector<std::string> take_params() && noexcept { return std::move(_params); }
+
+  /** @return Why the statement could not be made, or null. */
+  [[nodiscard]] const std::exception_ptr& error() const noexcept { return _error; }
+
+  /** @return This statement on `table` instead of its schema's own: the same statement and arguments, naming `table`. */
+  [[nodiscard]] SchemaStatement on(const schema::Table<schema_t>& table) const& {
+    SchemaStatement aimed = *this;
+    aimed.aim(table.name());
+    return aimed;
   }
+
+  /** @brief As above, moving the arguments rather than copying them. */
+  [[nodiscard]] SchemaStatement on(const schema::Table<schema_t>& table) && {
+    aim(table.name());
+    return std::move(*this);
+  }
+
+  /** @brief Refused: a table of another schema's shape. */
+  template <schema::IsSchema other_t>
+  void on(const schema::Table<other_t>& /*table*/) const {
+    static_assert(
+        std::same_as<other_t, schema_t>,
+        "a statement runs only on a table of its own schema's shape: aim it at a schema::Table of the schema it was written against"
+    );
+  }
+
+ private:
+  std::string              _sql;
+  query::sql::TableSlot    _table_slot;
+  std::vector<std::string> _params;
+  std::exception_ptr       _error;
+
+  void aim(const schema::TableName& table) {
+    _sql = query::sql::on_table(_sql, _table_slot, table);
+    _table_slot.size = table.quoted().size();
+  }
+};
+
+namespace detail {
+
+/** @return The arguments of the INSERT of `rows`: the array literal of each inserted column. */
+template <TextSchema schema_t, std::ranges::contiguous_range rows_t>
+  requires schema::InsertRowOf<std::ranges::range_value_t<rows_t>, schema_t>
+[[nodiscard]] std::vector<std::string> insert_params(const rows_t& rows) {
+  static_assert(schema_t::INSERTABLE_FIELD_COUNT > 0, "insert: the schema has no column that is not GENERATED");
+  static_assert(
+      insert_detail::every_insertable_has_sql_type<schema_t>(std::make_index_sequence<schema_t::FIELD_COUNT>{}),
+      "insert: every inserted column's type needs a SQL type name (it is sent as an array of that type): give it "
+      "one (ColumnType::SQL_TYPE, or a query::sql::SqlType specialization)"
+  );
+
+  using row_t = std::ranges::range_value_t<rows_t>;
+  return insert_detail::column_arrays<schema_t, row_t>(std::span<const row_t>(rows), std::make_index_sequence<schema_t::INSERTABLE_FIELD_COUNT>{});
 }
 
-// ---- what a backend sends: a query or a raw statement, bound ------------------------------------------------------
+namespace insert_detail {
 
-}  // namespace schemacht::postgres::detail
+/**
+ * @return The insert `sql` of `rows`; or, if their arguments could not be made (a value its codec refused), a statement that
+ * fails with that when it runs. The arguments are made first, so that `sql` is still whole for the one that fails.
+ */
+template <TextSchema schema_t, typename result_t, std::ranges::contiguous_range rows_t>
+[[nodiscard]] SchemaStatement<schema_t, result_t> made(std::string sql, const rows_t& rows) {
+  std::vector<std::string> params;
+  try {
+    params = insert_params<schema_t>(rows);
+  } catch ( ... ) {
+    return {std::move(sql), UnnestSql<schema_t>::TABLE_SLOT, std::current_exception()};
+  }
+
+  return {std::move(sql), UnnestSql<schema_t>::TABLE_SLOT, std::move(params)};
+}
+
+}  // namespace insert_detail
+
+}  // namespace detail
+
+/**
+ * @return The statement that inserts `rows` (`row_type`s, or `insert_row_type`s without the generated columns): one statement,
+ * `INSERT ... FROM unnest(...)` with one array argument per column, whatever the schema and however many rows, inserted
+ * atomically. Generated columns are never sent: the database fills them in. `execute` gives the count of rows inserted.
+ */
+template <TextSchema schema_t, std::ranges::contiguous_range rows_t>
+  requires schema::InsertRowOf<std::ranges::range_value_t<rows_t>, schema_t>
+[[nodiscard]] SchemaStatement<schema_t, std::tuple<>> insert_statement(const rows_t& rows) {
+  using sql_t = detail::insert_detail::UnnestSql<schema_t>;
+  return detail::insert_detail::made<schema_t, std::tuple<>>(std::string(sql_t::VALUE), rows);
+}
+
+/**
+ * @return As `insert_statement`, giving back every column of each row it writes (`RETURNING`), generated ones included: the key
+ * the database chose, say. PostgreSQL returns one row per row inserted, but does not promise their order: match several by a
+ * column they were given (a unique one), not by position.
+ */
+template <TextSchema schema_t, std::ranges::contiguous_range rows_t>
+  requires schema::InsertRowOf<std::ranges::range_value_t<rows_t>, schema_t>
+[[nodiscard]] SchemaStatement<schema_t, typename schema_t::row_type> insert_returning_statement(const rows_t& rows) {
+  using sql_t = detail::insert_detail::UnnestSql<schema_t>;
+  return detail::insert_detail::made<schema_t, typename schema_t::row_type>(
+      std::string(sql_t::VALUE) + std::string(detail::ReturningSql<schema_t>::VALUE), rows
+  );
+}
+
+/**
+ * @return `schema_t`'s `CREATE TABLE`: each column's SQL type, `NOT NULL` unless its field is a `std::optional`, the primary key,
+ * and a `UNIQUE` constraint per unique column. A generated key (the one primary key column, a signed integer) is an identity
+ * column the database numbers. For tests, examples and a first start; a table with more to it (indexes, other constraints, any
+ * other generated column) is created with SQL.
+ */
+template <schema::IsSchema schema_t>
+[[nodiscard]] SchemaStatement<schema_t, std::tuple<>> create_table_statement() {
+  return {std::string(detail::CreateTableSql<schema_t>::VALUE), detail::CreateTableSql<schema_t>::TABLE_SLOT, std::vector<std::string>{}};
+}
+
+/** @return `schema_t`'s `DROP TABLE IF EXISTS`. */
+template <schema::IsSchema schema_t>
+[[nodiscard]] SchemaStatement<schema_t, std::tuple<>> drop_table_statement() {
+  return {std::string(detail::DropTableSql<schema_t>::VALUE), detail::DropTableSql<schema_t>::TABLE_SLOT, std::vector<std::string>{}};
+}
+
+}  // namespace schemacht::postgres
 
 namespace schemacht::postgres::detail {
 
@@ -299,15 +344,27 @@ struct WireStatement {
 };
 
 /**
- * @return `statement` as it goes to the database: a `CompiledQuery` (with the names of the columns it returns, from its schema), or a
- * `BoundRawStatement` (which is about no table). The column names point at static storage.
+ * @return `statement` as it goes to the database: a `CompiledQuery` (with the names of the columns it returns, from its schema), a
+ * `SchemaStatement`, or a `BoundRawStatement` (which is about no table). The column names point at static storage.
  */
 template <SendableStatement statement_t>
 [[nodiscard]] WireStatement wire(const statement_t& statement) {
   WireStatement wired;
   wired.sql = statement.sql();
 
-  if constexpr ( query::IsBoundRawStatement<statement_t> ) {
+  if constexpr ( IsSchemaStatement<statement_t> ) {
+    if ( statement.error() ) {
+      std::rethrow_exception(statement.error());  // it could not be made
+    }
+
+    wired.params.assign(statement.params().begin(), statement.params().end());
+
+    if constexpr ( std::tuple_size_v<typename statement_t::result_type> > 0 ) {  // an insert's RETURNING: every column
+      const auto names = statement_t::schema_type::column_names();
+      wired.column_names.assign(names.begin(), names.end());
+    }
+
+  } else if constexpr ( query::IsBoundRawStatement<statement_t> ) {
     wired.params.reserve(std::tuple_size_v<typename statement_t::arguments_type>);
     std::apply([&wired](const auto&... arguments) { (TextBinder{&wired.params}(arguments), ...); }, statement.arguments());
 
@@ -327,16 +384,14 @@ template <SendableStatement statement_t>
   return wired;
 }
 
-/** @return As `wire`, for `statement` run on `table` instead of its schema's own table (`on`), if there is one: a `Table`'s. */
-template <SendableStatement statement_t>
-[[nodiscard]] WireStatement wire_on(const statement_t& statement, const schema::TableName* table) {
-  if constexpr ( RunsOnTable<statement_t> ) {
-    if ( table != nullptr ) {
-      return wire(statement.on(*table));
-    }
-  }
+/** @brief As above, for a statement made from a schema given as a temporary: its arguments (an insert's rows) are moved, not copied. */
+template <schema::IsSchema schema_t, typename result_t>
+[[nodiscard]] WireStatement wire(SchemaStatement<schema_t, result_t>&& statement) {
+  std::vector<std::string> params = std::move(statement).take_params();
+  WireStatement            wired = wire(std::as_const(statement));  // its error, its text and columns; no arguments left to copy
+  wired.params = std::move(params);
 
-  return wire(statement);
+  return wired;
 }
 
 /**

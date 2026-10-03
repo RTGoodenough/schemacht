@@ -17,8 +17,8 @@ include(Catch)
 # The integration tests skip themselves unless SCHEMACHT_TEST_DB holds a libpq connection string.
 add_executable(
   schemacht_tests
-  compile/completions_test.cpp
   compile/raw_statement_test.cpp
+  compile/runner_test.cpp
   compile/schema_test.cpp
   compile/sql_test.cpp
   compile/table_test.cpp
@@ -107,8 +107,9 @@ schemacht_compile_fail(OPERATION_ARGUMENT_TYPE "the type its operation declares"
 schemacht_compile_fail(OPERATION_ARGUMENT_OTHER_TYPE "the type its operation declares")
 schemacht_compile_fail(OPERATION_ARGUMENT_DISAGREES "disagree")
 schemacht_compile_fail(OPERATION_ARGUMENT_NOT_COLUMN_TYPE "must be a column type of your own")
-schemacht_compile_fail(TABLE_WRONG_SCHEMA "a Table runs only queries, updates and deletes written against its own schema")
-schemacht_compile_fail(TABLE_RAW_STATEMENT "a Table runs only queries, updates and deletes written against its own schema")
+schemacht_compile_fail(TABLE_WRONG_SCHEMA "a statement runs only on a table of its own schema's shape")
+schemacht_compile_fail(TABLE_WRONG_SCHEMA_INSERT "a statement runs only on a table of its own schema's shape")
+schemacht_compile_fail(TABLE_RAW_STATEMENT "no member named")
 
 # With no case defined, cases.cpp must compile: the failures above are the cases', not the file's.
 add_test(NAME compile_fail.baseline COMMAND ${CMAKE_CXX_COMPILER} -std=c++23 -fsyntax-only -I${PROJECT_SOURCE_DIR}/include

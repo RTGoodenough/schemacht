@@ -200,9 +200,43 @@ consteval std::array<bool, schema_t::FIELD_COUNT> identity_flags(std::index_sequ
   };
 }
 
+/** @return Whether each column's SQL type is an array (`text[]`, say): a `std::vector`, or a column type of your own around one. */
+template <schema::IsSchema schema_t, std::size_t... idx>
+consteval std::array<bool, schema_t::FIELD_COUNT> array_flags(std::index_sequence<idx...> /*indices*/) {
+  return {type_name<typename schema_t::template field_at<idx>::value_type>().ends_with("[]")...};
+}
+
+/** @return Whether each column's type is one of your own (a `ColumnType`, or a `SqlType` specialization), not one schemacht names. */
+template <schema::IsSchema schema_t, std::size_t... idx>
+consteval std::array<bool, schema_t::FIELD_COUNT> own_type_flags(std::index_sequence<idx...> /*indices*/) {
+  return {builtin_type_name<typename schema_t::template field_at<idx>::value_type>().empty()...};
+}
+
 template <schema::IsSchema schema_t, std::size_t... idx>
 consteval std::array<bool, schema_t::FIELD_COUNT> nullable_flags(std::index_sequence<idx...> /*indices*/) {
   return {schema_t::template field_at<idx>::NULLABLE...};
+}
+
+/** @brief Whether each column of `schema_t` is itself an array: its SQL type ends in `[]`. */
+template <schema::IsSchema schema_t>
+inline constexpr std::array<bool, schema_t::FIELD_COUNT> COLUMN_ARRAY = array_flags<schema_t>(std::make_index_sequence<schema_t::FIELD_COUNT>{});
+
+/**
+ * @brief Whether each column of `schema_t` is of a type of your own. Its values in an array argument go as a `text[]` and are
+ * cast to the type one by one: an array literal is split on its element type's own delimiter, which schemacht knows only for
+ * the types it names (PostGIS's `geometry` uses `:`, not `,`).
+ */
+template <schema::IsSchema schema_t>
+inline constexpr std::array<bool, schema_t::FIELD_COUNT> COLUMN_OWN_TYPE =
+    own_type_flags<schema_t>(std::make_index_sequence<schema_t::FIELD_COUNT>{});
+
+/**
+ * @brief Whether the column `column` of `schema_t` goes in an `unnest` insert as a `text[]`, cast back in the select list: an
+ * array (`unnest` would flatten an array of arrays), or a type of your own (`COLUMN_OWN_TYPE`).
+ */
+template <schema::IsSchema schema_t>
+[[nodiscard]] consteval bool sent_as_text(std::size_t column) {
+  return COLUMN_ARRAY<schema_t>.at(column) || COLUMN_OWN_TYPE<schema_t>.at(column);
 }
 
 /** @brief Whether each column of `schema_t` can be NULL (its field is a `std::optional`). */
@@ -315,7 +349,7 @@ class Emitter {
         _text->append_identifier(schema_t::column_names().at(current.column));
         _text->append(" = ANY(");
         operand(current.operand);
-        cast_array(column_type_name<schema_t>(current.column));
+        list_cast(current.column);
         _text->push(')');
         return;
       case NodeKind::Call:
@@ -405,11 +439,18 @@ class Emitter {
     }
   }
 
-  consteval void cast_array(std::string_view type) {
-    if ( ! type.empty() ) {
-      cast(type);
-      _text->append("[]");
+  /** @brief `::<type>[]` on a list argument, or `::text[]::<type>[]` for a type of your own (see `COLUMN_OWN_TYPE`). */
+  consteval void list_cast(std::size_t column) {
+    const std::string_view type = column_type_name<schema_t>(column);
+    if ( type.empty() ) {
+      return;
     }
+
+    if ( COLUMN_OWN_TYPE<schema_t>.at(column) ) {
+      _text->append("::text[]");
+    }
+    cast(type);
+    _text->append("[]");
   }
 
   consteval void operand(const Operand& value) { append_operand(*_text, value); }
@@ -651,15 +692,36 @@ consteval void append_insert_into(Text<text_capacity>& text) {
 }
 
 /**
- * @return `INSERT INTO <table> (<columns>) SELECT * FROM unnest($1::<type>[], $2::<type>[], ...)`: one array argument per
- * insertable column, holding that column's value for every row. Every insertable column's type needs an SQL type name (`sql::type_name`).
+ * @return `INSERT INTO <table> (<columns>) SELECT <columns> FROM unnest($1::<type>[], ...) AS u(<columns>)`: one array argument per
+ * insertable column, holding that column's value for every row, so any number of rows go in one statement. A column that is
+ * itself an array, or of a type of your own, goes as a `text[]` of its values' text forms, cast back to its type in the select
+ * list (`detail::sent_as_text`). Every insertable column's type needs an SQL type name (`sql::type_name`).
  */
 template <schema::IsSchema schema_t>
 [[nodiscard]] consteval Text<STATEMENT_CAPACITY> insert_unnest_statement() {
   Text<STATEMENT_CAPACITY> text;
   append_insert_into<schema_t>(text);
-  text.append(" SELECT * FROM unnest(");
 
+  text.append(" SELECT ");
+  bool first = true;
+  for ( std::size_t column = 0; column < schema_t::FIELD_COUNT; ++column ) {
+    if ( detail::COLUMN_GENERATED<schema_t>.at(column) ) {
+      continue;
+    }
+
+    if ( ! first ) {
+      text.append(", ");
+    }
+    first = false;
+
+    text.append_identifier(schema_t::column_names().at(column));
+    if ( detail::sent_as_text<schema_t>(column) ) {
+      text.append("::");
+      text.append(detail::COLUMN_TYPE_NAMES<schema_t>.at(column));
+    }
+  }
+
+  text.append(" FROM unnest(");
   std::uint64_t placeholder = 0;
   for ( std::size_t column = 0; column < schema_t::FIELD_COUNT; ++column ) {
     if ( detail::COLUMN_GENERATED<schema_t>.at(column) ) {
@@ -673,21 +735,13 @@ template <schema::IsSchema schema_t>
     text.push('$');
     text.append_unsigned(++placeholder);
     text.append("::");
-    text.append(detail::COLUMN_TYPE_NAMES<schema_t>.at(column));
+    text.append(detail::sent_as_text<schema_t>(column) ? std::string_view("text") : detail::COLUMN_TYPE_NAMES<schema_t>.at(column));
     text.append("[]");
   }
 
+  text.append(") AS u(");
+  text.append_identifier_list(schema_t::insertable_column_names());
   text.push(')');
-
-  return text;
-}
-
-/** @return `INSERT INTO <table> (<columns>) VALUES `, to which the rows are appended. */
-template <schema::IsSchema schema_t>
-[[nodiscard]] consteval Text<STATEMENT_CAPACITY> insert_values_head() {
-  Text<STATEMENT_CAPACITY> text;
-  append_insert_into<schema_t>(text);
-  text.append(" VALUES ");
 
   return text;
 }

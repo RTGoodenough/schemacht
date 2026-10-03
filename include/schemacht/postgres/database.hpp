@@ -1,7 +1,6 @@
 #pragma once
 
 #include <exception>
-#include <future>
 #include <memory>
 #include <string>
 #include <utility>
@@ -23,15 +22,14 @@
  * - **Transactions:** `begin` one, run the same calls on it, then `commit` or `rollback` (transaction.hpp).
  * - **Notices** the server sends are dropped, unless `Options::pool.on_notice` takes them.
  *
- * Every call returns a `std::future` at once and the work finishes in the background (call `get()` to wait). Outside a
- * transaction, each call is one statement in autocommit mode.
+ * Every call returns at once and the work finishes in the background: a `std::future` (call `get()` to wait), or, given a
+ * completion last, nothing (see `StatementRunner`). Outside a transaction, each call is one statement in autocommit mode.
  *
- * @note No error escapes a call: see `StatementRunner`. A call that takes a completion (`..._into`) is `noexcept`; one that
- * returns a future can throw only `std::bad_alloc`, when there is no memory for the future itself.
+ * @note Errors arrive through the future or the completion, exactly once; a call throws only if it can't start at all (see
+ * `StatementRunner`).
  *
  * @warning Row handlers and completions run on the pool's worker threads. They must not block on another of this database's
- * futures (`get()`), which could leave no worker free to complete it; chain with `execute_into` / `stream_into` / `insert_into` /
- * `begin_into` instead.
+ * futures (`get()`), which could leave no worker free to complete it: chain the next call with a completion instead.
  */
 namespace schemacht::postgres {
 
@@ -75,45 +73,40 @@ class Database : private detail::ClientHolder, public StatementRunner {
   [[nodiscard]] AsyncClient& pool() noexcept { return held_client(); }
 
   /**
-   * @brief Begins a transaction in the background and calls `done` exactly once, on a worker thread, with it and the error
-   * (null on success; on failure the transaction it gets is ended). The primitive `begin` is built on, for chaining.
-   *
-   * The transaction takes a connection of the pool's until it ends, so it waits for one if none is free.
+   * @brief Begins a transaction (`BEGIN`, with `options`). It takes a connection of the pool's until it ends, so it waits for
+   * one if none is free; it must not outlive this database. examples/transfers.cpp makes transfers in transactions.
+   * @param done none given (`util::UseFuture`): returns a `std::future` of the transaction. Else called with it and the error (on
+   *        failure, the transaction it gets has ended: it refuses every statement).
    */
-  template <detail::TransactionCallback done_t>
-  void begin_into(done_t done, const TransactionOptions& options = {}) noexcept {
-    AsyncClient* const client = &held_client();
-    const auto         fail = [client, read = read_options()](auto& done, const std::exception_ptr& error) {
-      done(Transaction(*client, {}, read), error);  // ended: it refuses every statement
-    };
-
-    guarded(std::move(done), fail, [&](const auto& once) {
-      client->lease([client, read = read_options(), fail, sql = detail::begin_statement(options),
-                     once](AsyncClient::Lease lease, const std::exception_ptr& error) mutable {
-        if ( error ) {
-          fail(once, error);
-          return;
+  template <util::CompletionFor<Transaction> done_t = util::UseFuture>
+  auto begin(const TransactionOptions& options = TransactionOptions(), done_t done = {}) {
+    return util::complete<Transaction>(std::move(done), [&](auto done) {
+      // Shared here, on the caller's thread: a worker that can't queue the BEGIN still holds `done`, to say so.
+      const auto shared = std::make_shared<decltype(done)>(std::move(done));
+      held_client().lease([client = &held_client(), read = read_options(), sql = detail::begin_statement(options),
+                           shared](AsyncClient::Lease lease, std::exception_ptr error) mutable {
+        if ( ! error ) {
+          try {
+            // The lease goes with the BEGIN's completion: to the transaction, or (if the BEGIN failed) back to the pool.
+            const auto held = std::make_shared<AsyncClient::Lease>(std::move(lease));
+            client->run(*held, std::move(sql), {}, [client, held, read, shared](const QueryResult& /*began*/, const std::exception_ptr& began) {
+              (*shared)(Transaction(*client, began ? AsyncClient::Lease() : std::move(*held), read), began);
+            });
+            return;
+          } catch ( ... ) {  // no memory to send the BEGIN: the lease goes back unused
+            error = std::current_exception();
+          }
         }
 
-        try {
-          // The lease goes with the BEGIN's completion: to the transaction, or (if the BEGIN failed) back to the pool.
-          const auto held = std::make_shared<AsyncClient::Lease>(std::move(lease));
-          client->run(*held, std::move(sql), {}, [client, held, read, once](const QueryResult& /*began*/, const std::exception_ptr& began) {
-            once(Transaction(*client, began ? AsyncClient::Lease() : std::move(*held), read), began);
-          });
-        } catch ( ... ) {  // no memory to send the BEGIN: the lease goes back unused
-          fail(once, std::current_exception());
-        }
+        (*shared)(Transaction(*client, {}, read), error);  // ended: it refuses every statement
       });
     });
   }
 
-  /**
-   * @return A future for a new transaction (`BEGIN`, with `options`), or holding the error. It must not outlive this database.
-   * examples/transfers.cpp makes transfers in transactions.
-   */
-  [[nodiscard]] std::future<Transaction> begin(const TransactionOptions& options = {}) {
-    return util::future_from<Transaction>([&](auto done) { begin_into(std::move(done), options); });
+  /** @brief As above, with the default options: `db.begin(done)`. */
+  template <util::CompletionFor<Transaction> done_t>
+  auto begin(done_t done) {
+    return begin(TransactionOptions(), std::move(done));
   }
 
   Database(const Database&) = delete;  // it owns the pool: one per database

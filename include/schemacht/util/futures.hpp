@@ -1,9 +1,7 @@
 #pragma once
 
-#include <atomic>
 #include <concepts>
 #include <exception>
-#include <functional>
 #include <future>
 #include <memory>
 #include <type_traits>
@@ -12,9 +10,8 @@
 #include "schemacht/util/concepts/futures.hpp"  // IWYU pragma: export
 
 /**
- * Completions and the futures made from them: completing a `std::promise` from a completion that gets an error or a result
- * (what turns a callback, `execute_into` or `begin_into`, into the future a caller waits on), and a completion that runs
- * exactly once however many paths may finish it.
+ * Completions and the futures made from them: completing a `std::promise` from a completion that gets an error or a result,
+ * which turns a callback into the future a caller waits on, and `complete`, which lets one call take either.
  */
 namespace schemacht::util {
 
@@ -66,7 +63,7 @@ class Settler<void> {
 
 /**
  * @return The future of a call that takes a completion instead: `start` gets a `Settler` and hands it to that call, as in
- * `future_from<void>([&](auto done) { runner.insert_into<Orders>(rows, std::move(done)); })`.
+ * `future_from<std::uint64_t>([&](auto done) { runner.insert<Orders>(rows, std::move(done)); })`.
  * @throws std::bad_alloc if the future itself can't be made, before `start` is called.
  */
 template <FutureValue value_t, std::invocable<Settler<value_t>> start_t>
@@ -79,40 +76,29 @@ template <FutureValue value_t, std::invocable<Settler<value_t>> start_t>
   return future;
 }
 
-/**
- * @brief A completion that runs only the first time it is called, on whichever path gets there first; later calls do
- * nothing. Copies share it.
- *
- * For a call that hands its completion on and must still report a failure through it should the handing on throw part way:
- * the call keeps a copy, and the completion still runs exactly once.
- */
-template <MovableValue done_t>
-class OnceCallback {
- public:
-  /**
-   * @throws std::bad_alloc, and then `done` is left as it was: it is moved only once there is room for it. Or what moving
-   * `done` throws, which leaves it as that move did (as it was, for one that copies).
-   */
-  explicit OnceCallback(done_t&& done) : _state(std::make_shared<State>(std::move(done))) {}
-
-  /** @brief Calls the completion with `args`, unless it has been called already. */
-  template <typename... args_t>
-    requires std::invocable<done_t&, args_t...>
-  void operator()(args_t&&... args) const {
-    if ( ! _state->called.exchange(true) ) {
-      std::invoke(_state->done, std::forward<args_t>(args)...);
-    }
-  }
-
- private:
-  struct State {
-    explicit State(done_t&& completion) : done(std::move(completion)) {}
-
-    std::atomic<bool> called = false;
-    done_t            done;
-  };
-
-  std::shared_ptr<State> _state;
+/** @brief The completion that makes a call return a `std::future` of its outcome: what every call takes unless given another. */
+struct UseFuture {
+  constexpr UseFuture() noexcept = default;  // declared, so that `= {}` is a default, not an aggregate's braces
 };
+
+/** @brief The completion `complete` hands its `start`: a `Settler` for `UseFuture`, else the one given. */
+template <typename done_t, FutureValue value_t>
+using completion_t = std::conditional_t<std::same_as<done_t, UseFuture>, Settler<value_t>, done_t>;
+
+/**
+ * @return What a call that takes a completion `done` (`CompletionFor<value_t>`) returns: for `UseFuture`, the future of its
+ * outcome; for any other completion, nothing. `start` begins the work and gets the completion to hand on: a `Settler` of that
+ * future, or `done` itself. So each call is written once, as
+ * `return util::complete<value_t>(std::move(done), [&](auto done) { ... });`.
+ * @throws std::bad_alloc for `UseFuture`, if the future itself can't be made, before `start` is called.
+ */
+template <FutureValue value_t, CompletionFor<value_t> done_t, std::invocable<completion_t<done_t, value_t>> start_t>
+auto complete(done_t done, start_t start) {
+  if constexpr ( std::same_as<done_t, UseFuture> ) {
+    return future_from<value_t>(std::move(start));
+  } else {
+    start(std::move(done));
+  }
+}
 
 }  // namespace schemacht::util

@@ -13,9 +13,12 @@
 
 #include "schemacht/column_type.hpp"
 #include "schemacht/postgres/statements.hpp"
+#include "schemacht/query/predicate.hpp"
+#include "schemacht/query/prepared.hpp"
 #include "schemacht/schema/schema.hpp"
 
 namespace pg = schemacht::postgres;
+namespace q = schemacht::query;
 namespace sch = schemacht::schema;
 namespace sql = schemacht::query::sql;
 
@@ -83,10 +86,18 @@ std::vector<std::byte> bytes_of(std::string_view text) {
   return bytes;
 }
 
+/** @brief Several labels as one value: an array inside a column type of one's own. */
+struct LabelList {
+  std::vector<std::string> values;
+};
+
 }  // namespace
 
 template <>
 struct schemacht::ColumnType<OrderId> : schemacht::WrappedColumn<&OrderId::value> {};
+
+template <>
+struct schemacht::ColumnType<LabelList> : schemacht::WrappedColumn<&LabelList::values> {};
 
 template <>
 struct schemacht::ColumnType<Color> : schemacht::EnumColumn<Color, "color", "red", "green"> {};
@@ -178,16 +189,38 @@ TEST_CASE("an EnumColumn is stored as its labels", "[column_type]") {
   CHECK_THROWS_AS(pg::format_field(static_cast<Color>(7)), std::invalid_argument);
 }
 
-TEST_CASE("a column of an own type is inserted with its SQL type", "[column_type][insert]") {
+// An array literal is split on its element type's own delimiter, which isn't always a comma (PostGIS's geometry uses `:`), so a
+// type of one's own goes in an array as text, whose delimiter is, and is cast to its type one value at a time.
+TEST_CASE("a column of an own type is inserted as text, cast to its SQL type", "[column_type][insert]") {
   using Id = sch::Field<OrderId, "id", sch::KeyRole::Primary>;
   using Shade = sch::Field<Color, "shade">;
   using Paints = sch::Schema<"paints", Id, Shade>;
 
   const std::vector<Paints::row_type> rows{Paints::make_row(OrderId{1}, Color::Red)};
-  const auto                          statements = pg::detail::build_insert<Paints, Paints::row_type>(rows);
+  const auto                          statement = pg::insert_statement<Paints>(rows);
 
-  CHECK(statements.at(0).sql == R"(INSERT INTO "paints" ("id", "shade") SELECT * FROM unnest($1::bigint[], $2::color[]))");
-  CHECK(statements.at(0).values == std::vector<std::string>{R"({"1"})", R"({"red"})"});
+  CHECK(
+      statement.sql() ==
+      R"(INSERT INTO "paints" ("id", "shade") SELECT "id"::bigint, "shade"::color FROM unnest($1::text[], $2::text[]) AS u("id", "shade"))"
+  );
+  CHECK(std::vector<std::string>(statement.params().begin(), statement.params().end()) == std::vector<std::string>{R"({"1"})", R"({"red"})"});
+}
+
+TEST_CASE("a list of an own type is sent as text, cast to its SQL type", "[column_type][sql]") {
+  using Paints = sch::Schema<"paints", sch::Field<OrderId, "id", sch::KeyRole::Primary>, sch::Field<Color, "shade">>;
+  static constexpr auto SHADE_IN = q::On<Paints>::col<"shade">().in(q::arg<0>());
+
+  STATIC_REQUIRE(q::Prepared<SHADE_IN>::SQL == R"(SELECT "id", "shade" FROM "paints" WHERE "shade" = ANY($1::text[]::color[]))");
+}
+
+TEST_CASE("an array inside a column type of one's own is inserted as an array: as text, cast back", "[column_type][insert]") {
+  using Listed = sch::Schema<"listed", sch::Field<LabelList, "labels">>;
+  STATIC_REQUIRE(sql::type_name<LabelList>() == "text[]");
+
+  const std::vector<Listed::row_type> rows{Listed::make_row(LabelList{{"a", "b"}})};
+  CHECK(
+      pg::insert_statement<Listed>(rows).sql() == R"(INSERT INTO "listed" ("labels") SELECT "labels"::text[] FROM unnest($1::text[]) AS u("labels"))"
+  );
 }
 
 TEST_CASE("as_text views bytes as the characters they are", "[column_type]") {

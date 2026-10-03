@@ -12,6 +12,7 @@
 #include <optional>
 #include <span>
 #include <string>
+#include <vector>
 
 #include "schemacht/schemacht.hpp"
 
@@ -76,20 +77,21 @@ int main(int argc, char** argv) {
               << " on average.\n";
 
     // The same schema on a table whose name is known only now: a string, as configuration, a user, or another language's
-    // bindings would give it. Its name is checked once, here; the statements above run on it as they are.
-    const std::string                          archive_name = std::string(EmployeeSchema::TABLE_NAME) + "_archive";
-    schemacht::postgres::Table<EmployeeSchema> archive(database, schemacht::schema::TableName(archive_name));
+    // bindings would give it. Its name is checked once, here; any statement of the schema runs on it, aimed there with `on`.
+    const std::string                              archive_name = std::string(EmployeeSchema::TABLE_NAME) + "_archive";
+    const schemacht::schema::Table<EmployeeSchema> archive(archive_name);
+    const std::vector                              archived{EmployeeSchema::make_row(3, "johnny cash", 48000.0F)};
 
-    archive.drop().get();
-    archive.create().get();
-    archive.insert({EmployeeSchema::make_row(3, "johnny cash", 48000.0F)}).get();
+    database.execute(schemacht::postgres::drop_table_statement<EmployeeSchema>().on(archive)).get();
+    database.execute(schemacht::postgres::create_table_statement<EmployeeSchema>().on(archive)).get();
+    database.execute(schemacht::postgres::insert_statement<EmployeeSchema>(archived).on(archive)).get();
 
     std::cout << "In " << archive_name << ":\n";
-    for ( const EmployeeSchema::row_type& employee : archive.execute(NameLookup::bind("john%")).get() ) {
+    for ( const EmployeeSchema::row_type& employee : database.execute(NameLookup::bind("john%").on(archive)).get() ) {
       std::cout << "  " << schemacht::schema::get<"name">(employee) << '\n';
     }
 
-    archive.drop().get();
+    database.execute(schemacht::postgres::drop_table_statement<EmployeeSchema>().on(archive)).get();
 
     database.drop_table<EmployeeSchema>().get();
 

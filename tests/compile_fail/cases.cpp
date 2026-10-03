@@ -7,8 +7,8 @@
 
 #include "schemacht/column_type.hpp"
 #include "schemacht/postgres/database.hpp"
-#include "schemacht/postgres/table.hpp"
 #include "schemacht/query.hpp"
+#include "schemacht/schema/table.hpp"
 
 namespace sch = schemacht::schema;
 namespace q = schemacht::query;
@@ -241,18 +241,23 @@ constexpr auto BAD = q::On<Things>::col<"name">().apply<Counts>(q::arg<0>());
 
 #if defined(CASE_TABLE_RAW_STATEMENT)
 using EveryThing = q::RawStatement<"SELECT id FROM things", q::RawArguments<>, Id>;
-[[maybe_unused]] void run(pg::Database& database) {
-  pg::Table<Things> table(database, sch::TableName("archive"));
-  (void)table.execute(EveryThing::bind());  // a raw statement names its own table
+[[maybe_unused]] void run() {
+  (void)EveryThing::bind().on(sch::Table<Things>("archive"));  // a raw statement names its own table
 }
 #endif
 
 #if defined(CASE_TABLE_WRONG_SCHEMA)
 using Others = sch::Schema<"others", Id, Name>;
 constexpr auto        ALL_OTHERS = q::select<Others>();
-[[maybe_unused]] void run(pg::Database& database) {
-  pg::Table<Things> table(database, sch::TableName("archive"));
-  (void)table.execute(q::Prepared<ALL_OTHERS>::bind());  // a query over another schema
+[[maybe_unused]] void run() {
+  (void)q::Prepared<ALL_OTHERS>::bind().on(sch::Table<Things>("archive"));  // a query over another schema
+}
+#endif
+
+#if defined(CASE_TABLE_WRONG_SCHEMA_INSERT)
+using Others = sch::Schema<"others", Id, Name>;
+[[maybe_unused]] void run(const std::vector<Others::row_type>& rows) {
+  (void)pg::insert_statement<Others>(rows).on(sch::Table<Things>("archive"));  // rows of another schema
 }
 #endif
 

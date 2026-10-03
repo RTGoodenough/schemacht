@@ -4,6 +4,7 @@
 #include <cstddef>
 #include <string_view>
 #include <tuple>
+#include <type_traits>
 
 #include "schemacht/postgres/concepts/field_codec.hpp"
 #include "schemacht/postgres/concepts/row_reader.hpp"
@@ -30,15 +31,34 @@ inline constexpr bool EVERY_ARGUMENT_HAS_TEXT_FORM<std::tuple<argument_ts...>> =
 
 }  // namespace detail
 
+template <schema::IsSchema schema_t, typename result_t>
+class SchemaStatement;  // postgres/statements.hpp
+
+namespace detail {
+
+template <typename statement_t>
+inline constexpr bool IS_SCHEMA_STATEMENT = false;
+
+template <typename schema_t, typename result_t>
+inline constexpr bool IS_SCHEMA_STATEMENT<SchemaStatement<schema_t, result_t>> = true;
+
+}  // namespace detail
+
+/** @brief Whether `statement_t` is a statement made from a schema (`insert_statement`, `create_table_statement`, ...). */
+template <typename statement_t>
+concept IsSchemaStatement = detail::IS_SCHEMA_STATEMENT<statement_t>;
+
 /**
- * @brief What a `Database` can send, with a `result_type` (a `TextRow`): a query or command (`Prepared::bind`) of a `TextSchema`, or a
- * bound raw statement (`RawStatement::bind`), which is about no table, whose every argument has a text form (`HasTextForm`) to be sent as.
+ * @brief What a `Database` can send, with a `result_type` (a `TextRow`): a query or command (`Prepared::bind`) of a `TextSchema`, a
+ * statement made from a schema (`SchemaStatement`), or a bound raw statement (`RawStatement::bind`), which is about no table,
+ * whose every argument has a text form (`HasTextForm`) to be sent as.
  */
 template <typename statement_t>
 concept SendableStatement =
     (query::IsBoundRawStatement<statement_t> && detail::EVERY_ARGUMENT_HAS_TEXT_FORM<typename statement_t::arguments_type> &&
      TextRow<typename statement_t::result_type>) ||
-    (std::derived_from<statement_t, query::CompiledQuery<typename statement_t::schema_type>> && TextSchema<typename statement_t::schema_type>);
+    (std::derived_from<statement_t, query::CompiledQuery<typename statement_t::schema_type>> && TextSchema<typename statement_t::schema_type>) ||
+    (IsSchemaStatement<statement_t> && TextRow<typename statement_t::result_type>);
 
 /** @brief A statement that returns rows (`Database::execute` gives them): a query, or a raw statement that names its columns. */
 template <typename statement_t>
@@ -50,6 +70,18 @@ concept RunnableStatement = SendableStatement<statement_t> && (std::tuple_size_v
  */
 template <typename statement_t>
 concept CommandStatement = SendableStatement<statement_t> && (std::tuple_size_v<typename statement_t::result_type> == 0);
+
+/** @brief Whether `statement_t` is a `SendableStatement`, given by reference or as a temporary: what a call taking it by forwarding reference accepts. */
+template <typename statement_t>
+concept SendableStatementRef = SendableStatement<std::remove_cvref_t<statement_t>>;
+
+/** @brief As `SendableStatementRef`, for a `RunnableStatement`. */
+template <typename statement_t>
+concept RunnableStatementRef = RunnableStatement<std::remove_cvref_t<statement_t>>;
+
+/** @brief As `SendableStatementRef`, for a `CommandStatement`. */
+template <typename statement_t>
+concept CommandStatementRef = CommandStatement<std::remove_cvref_t<statement_t>>;
 
 /** @brief A result whose columns can be counted and named (`QueryResult` is one). */
 template <typename result_t>

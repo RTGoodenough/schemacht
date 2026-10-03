@@ -4,76 +4,87 @@
 #include <cstdint>
 #include <optional>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "schemacht/postgres/statements.hpp"
 #include "schemacht/schema/field.hpp"
 #include "schemacht/schema/schema.hpp"
-#include "schemacht/schema/table_name.hpp"
+#include "schemacht/schema/table.hpp"
 #include "support/schemas.hpp"
 
 namespace pg = schemacht::postgres;
 namespace t = schemacht::test;
 namespace sch = schemacht::schema;
 
+namespace {
+
+/** @return `statement`'s arguments, to compare. */
+template <typename statement_t>
+std::vector<std::string> params_of(const statement_t& statement) {
+  return {statement.params().begin(), statement.params().end()};
+}
+
+}  // namespace
+
 TEST_CASE("rows are inserted with one array per column", "[insert]") {
   const std::vector<t::People::row_type> rows{
       {t::Id{1}, t::Name{R"(a "quoted" name)"}, t::Nick{"al"}, t::Score{1.5}, t::Active{true}},
       {t::Id{2}, t::Name{"bo"}, t::Nick{std::nullopt}, t::Score{-2}, t::Active{false}},
   };
-  const std::vector<pg::detail::InsertStatement> statements = pg::detail::build_insert<t::People, t::People::row_type>(rows);
+  const auto statement = pg::insert_statement<t::People>(rows);
 
-  REQUIRE(statements.size() == 1);
   CHECK(
-      statements[0].sql == R"(INSERT INTO "people" ("id", "name", "nick", "score", "active") )"
-                           R"(SELECT * FROM unnest($1::bigint[], $2::text[], $3::text[], $4::double precision[], $5::boolean[]))"
+      statement.sql() == R"(INSERT INTO "people" ("id", "name", "nick", "score", "active") SELECT "id", "name", "nick", "score", "active" )"
+                         R"(FROM unnest($1::bigint[], $2::text[], $3::text[], $4::double precision[], $5::boolean[]) )"
+                         R"(AS u("id", "name", "nick", "score", "active"))"
   );
   CHECK(
-      statements[0].values ==
+      params_of(statement) ==
       std::vector<std::string>{R"({"1","2"})", R"({"a \"quoted\" name","bo"})", R"({"al",NULL})", R"({"1.5","-2"})", R"({"t","f"})"}
   );
 }
 
 TEST_CASE("generated columns are not inserted", "[insert]") {
   const std::vector<t::WithGenerated::row_type> rows{{t::Id{1}, t::Doubled{0}, t::Name{"x"}}};
-  const auto                                    statements = pg::detail::build_insert<t::WithGenerated, t::WithGenerated::row_type>(rows);
+  const auto                                    statement = pg::insert_statement<t::WithGenerated>(rows);
 
-  CHECK(statements[0].sql == R"(INSERT INTO "with_generated" ("id", "name") SELECT * FROM unnest($1::bigint[], $2::text[]))");
-  CHECK(statements[0].values.size() == 2);
+  CHECK(
+      statement.sql() == R"(INSERT INTO "with_generated" ("id", "name") SELECT "id", "name" FROM unnest($1::bigint[], $2::text[]) AS u("id", "name"))"
+  );
+  CHECK(params_of(statement).size() == 2);
 }
 
 TEST_CASE("rows without their generated columns are inserted the same way", "[insert]") {
   const std::vector<t::WithGenerated::insert_row_type> rows{t::WithGenerated::make_insert_row(1, "x"), t::WithGenerated::make_insert_row(2, "y")};
-  const auto statements = pg::detail::build_insert<t::WithGenerated, t::WithGenerated::insert_row_type>(rows);
+  const auto                                           statement = pg::insert_statement<t::WithGenerated>(rows);
 
-  REQUIRE(statements.size() == 1);
-  CHECK(statements[0].sql == R"(INSERT INTO "with_generated" ("id", "name") SELECT * FROM unnest($1::bigint[], $2::text[]))");
-  CHECK(statements[0].values == std::vector<std::string>{R"({"1","2"})", R"({"x","y"})"});
-
-  // With an array column, in VALUES: only the columns sent have a placeholder.
-  using NumberedTags = sch::Schema<"numbered_tags", t::NumberedId, t::Tags, t::Nick>;
-  const std::vector<NumberedTags::insert_row_type> tagged{NumberedTags::make_insert_row(std::vector<std::string>{"a"}, std::nullopt)};
-  const auto                                       values = pg::detail::build_insert<NumberedTags, NumberedTags::insert_row_type>(tagged);
-
-  REQUIRE(values.size() == 1);
-  CHECK(values[0].sql == R"(INSERT INTO "numbered_tags" ("tags", "nick") VALUES ($1, NULL))");
-  CHECK(values[0].values == std::vector<std::string>{R"({"a"})"});
+  CHECK(
+      statement.sql() == R"(INSERT INTO "with_generated" ("id", "name") SELECT "id", "name" FROM unnest($1::bigint[], $2::text[]) AS u("id", "name"))"
+  );
+  CHECK(params_of(statement) == std::vector<std::string>{R"({"1","2"})", R"({"x","y"})"});
 }
 
-TEST_CASE("an array-typed column falls back to VALUES, split to fit the parameter limit", "[insert]") {
-  std::vector<t::Tagged::row_type> rows;
-  rows.reserve(40000);
-  for ( std::int64_t id = 0; id < 40000; ++id ) {
-    rows.push_back({t::Id{id}, t::Tags{{"a", "b"}}});
-  }
+TEST_CASE("an array column goes as text, each value its own array literal, and is cast back", "[insert]") {
+  // unnest would flatten an array of arrays: each row's array goes as one text element instead.
+  const std::vector<t::Tagged::row_type> rows{{t::Id{1}, t::Tags{{"a", "b,c"}}}, {t::Id{2}, t::Tags{{}}}};
+  const auto                             statement = pg::insert_statement<t::Tagged>(rows);
 
-  const auto statements = pg::detail::build_insert<t::Tagged, t::Tagged::row_type>(rows);
+  CHECK(
+      statement.sql() == R"(INSERT INTO "tagged" ("id", "tags") SELECT "id", "tags"::text[] FROM unnest($1::bigint[], $2::text[]) AS u("id", "tags"))"
+  );
+  CHECK(params_of(statement) == std::vector<std::string>{R"({"1","2"})", R"({"{\"a\",\"b,c\"}","{}"})"});
 
-  REQUIRE(statements.size() == 2);  // 32767 rows of 2 parameters fit in one statement
-  CHECK(statements[0].values.size() == std::size_t{2} * 32767);
-  CHECK(statements[1].values.size() == std::size_t{2} * (40000 - 32767));
-  CHECK(statements[0].sql.starts_with(R"(INSERT INTO "tagged" ("id", "tags") VALUES ($1, $2), ($3, $4))"));
-  CHECK(statements[0].values[1] == R"({"a","b"})");
+  // Without the generated column: only the columns sent are in it.
+  using NumberedTags = sch::Schema<"numbered_tags", t::NumberedId, t::Tags, t::Nick>;
+  const std::vector<NumberedTags::insert_row_type> tagged{NumberedTags::make_insert_row(std::vector<std::string>{"a"}, std::nullopt)};
+  const auto                                       numbered = pg::insert_statement<NumberedTags>(tagged);
+
+  CHECK(
+      numbered.sql() == R"(INSERT INTO "numbered_tags" ("tags", "nick") SELECT "tags"::text[], "nick" FROM unnest($1::text[], $2::text[]) )"
+                        R"(AS u("tags", "nick"))"
+  );
+  CHECK(params_of(numbered) == std::vector<std::string>{R"({"{\"a\"}"})", "{NULL}"});
 }
 
 TEST_CASE("a table is created from its schema", "[ddl]") {
@@ -120,28 +131,36 @@ TEST_CASE("a table is created from its schema", "[ddl]") {
 }
 
 TEST_CASE("a table named while the program runs gets the same statements, naming it", "[ddl][insert][table_name]") {
-  const sch::TableName archive("gis", "people_2026");
+  const sch::Table<t::People>   archive("gis", "people_2026");
+  const sch::Table<t::Numbered> numbered("gis", "people_2026");
 
-  CHECK(pg::detail::sql_on<pg::detail::DropTableSql<t::People>>(&archive) == R"(DROP TABLE IF EXISTS "gis"."people_2026")");
-  CHECK(pg::detail::sql_on<pg::detail::DropTableSql<t::People>>(nullptr) == R"(DROP TABLE IF EXISTS "people")");
+  CHECK(pg::drop_table_statement<t::People>().on(archive).sql() == R"(DROP TABLE IF EXISTS "gis"."people_2026")");
+  CHECK(pg::drop_table_statement<t::People>().sql() == R"(DROP TABLE IF EXISTS "people")");
   CHECK(
-      pg::detail::sql_on<pg::detail::CreateTableSql<t::Numbered>>(&archive) ==
+      pg::create_table_statement<t::Numbered>().on(numbered).sql() ==
       R"(CREATE TABLE "gis"."people_2026" ("id" integer NOT NULL GENERATED ALWAYS AS IDENTITY, "name" text NOT NULL, "nick" text, )"
       R"(PRIMARY KEY ("id")))"
   );
 
-  // Both kinds of insert: `unnest`, and multi-row `VALUES` for a schema with an array column.
   const std::vector<t::People::row_type> people{{t::Id{1}, t::Name{"al"}, t::Nick{std::nullopt}, t::Score{1}, t::Active{true}}};
-  CHECK(pg::detail::build_insert<t::People, t::People::row_type>(people, &archive)[0].sql.starts_with(R"(INSERT INTO "gis"."people_2026" ("id", )"));
-
-  const std::vector<t::Tagged::row_type> tagged{{t::Id{1}, t::Tags{{"a"}}}};
-  CHECK(
-      pg::detail::build_insert<t::Tagged, t::Tagged::row_type>(tagged, &archive)[0].sql ==
-      R"(INSERT INTO "gis"."people_2026" ("id", "tags") VALUES ($1, $2))"
-  );
+  CHECK(pg::insert_statement<t::People>(people).on(archive).sql().starts_with(R"(INSERT INTO "gis"."people_2026" ("id", )"));
 }
 
 TEST_CASE("an insert gives back every column with RETURNING", "[insert]") {
   CHECK(pg::detail::ReturningSql<t::Numbered>::VALUE == R"( RETURNING "id", "name", "nick")");
+  const std::vector<t::Numbered::insert_row_type> rows{t::Numbered::make_insert_row("a", std::nullopt)};
+  CHECK(pg::insert_returning_statement<t::Numbered>(rows).sql().ends_with(R"(AS u("name", "nick") RETURNING "id", "name", "nick")"));
   CHECK(pg::detail::ReturningSql<t::Tiles>::VALUE == R"( RETURNING "id", ST_AsBinary("rast") AS "rast")");  // read as a query reads it
+}
+
+TEST_CASE("a statement made from a schema, sent as a temporary, gives up its arguments rather than copying them", "[insert]") {
+  const std::vector<t::Tagged::row_type> rows{{t::Id{1}, t::Tags{{"a"}}}};
+  auto                                   statement = pg::insert_statement<t::Tagged>(rows);
+  const auto                             copied = pg::detail::wire(statement);
+  CHECK(statement.params().size() == 2);
+
+  const auto moved = pg::detail::wire(std::move(statement));
+  CHECK(moved.params == copied.params);
+  CHECK(moved.sql == copied.sql);
+  CHECK(statement.params().empty());  // NOLINT(bugprone-use-after-move,clang-analyzer-cplusplus.Move) -- what this checks
 }

@@ -1,4 +1,4 @@
-// The public helpers in schemacht/util: hex, all_distinct, and completions (settle, future_from, OnceCallback).
+// The public helpers in schemacht/util: hex, all_distinct, and completions (settle, future_from, complete).
 
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/matchers/catch_matchers.hpp>
@@ -100,19 +100,12 @@ TEST_CASE("future_from makes a future of a call that takes a completion", "[util
   CHECK_THROWS_AS(failed.get(), std::runtime_error);
 }
 
-TEST_CASE("a OnceCallback runs on the first call, from any copy, and never again", "[util]") {
-  int                      calls = 0;
-  std::exception_ptr       seen;
-  const util::OnceCallback once([&calls, &seen](const std::exception_ptr& error) {
-    ++calls;
-    seen = error;
-  });
-  const util::OnceCallback copy = once;  // NOLINT(performance-unnecessary-copy-initialization) -- a second holder of it
+TEST_CASE("complete gives a future for UseFuture, and hands any other completion on", "[util]") {
+  std::future<std::int64_t> counted =
+      util::complete<std::int64_t>(util::UseFuture{}, [](const util::Settler<std::int64_t>& done) { done(3, nullptr); });
+  CHECK(counted.get() == 3);
 
-  copy(std::make_exception_ptr(std::runtime_error("first")));
-  once(nullptr);
-  copy(nullptr);
-
-  CHECK(calls == 1);
-  CHECK_THROWS_WITH(std::rethrow_exception(seen), "first");
+  std::int64_t got = 0;
+  util::complete<std::int64_t>([&got](std::int64_t value, const std::exception_ptr& /*error*/) { got = value; }, [](auto done) { done(4, nullptr); });
+  CHECK(got == 4);
 }

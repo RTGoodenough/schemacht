@@ -216,7 +216,7 @@ TEST_CASE("integration: every built-in type round-trips, in binary and in text",
   CHECK(sch::get<"text">(by_key[0]) == std::get<Text>(sample_rows()[0]).value);
 }
 
-TEST_CASE("integration: an insert larger than one statement's parameter limit", "[integration]") {
+TEST_CASE("integration: a large insert is one statement, whatever the schema", "[integration]") {
   pg::Database database(test_db());
   create_types_table(database, "schemacht_it_bulk");
   exec(database, "DROP TABLE IF EXISTS schemacht_it_tagged");
@@ -233,12 +233,124 @@ TEST_CASE("integration: an insert larger than one statement's parameter limit", 
 
   std::vector<Tagged::row_type> tagged;
   tagged.reserve(40000);
-  for ( std::int64_t id = 0; id < 40000; ++id ) {  // array column: VALUES statements of at most 65,535 parameters
+  for ( std::int64_t id = 0; id < 40000; ++id ) {  // an array column: in the one statement too, each value an element of a text[]
     tagged.push_back({Id{id}, Tags{{"a", "b,c"}}});
   }
 
   database.insert<Tagged>(tagged).get();
   CHECK(std::get<0>(database.execute(CountTagged::bind()).get().at(0)).value == 40000);
+}
+
+namespace {
+
+/** @brief An array inside a column type of one's own: stored as `text[]`. */
+struct Labels {
+  std::vector<std::string> values;
+
+  auto operator<=>(const Labels&) const = default;
+};
+
+}  // namespace
+
+template <>
+struct schemacht::ColumnType<Labels> : schemacht::WrappedColumn<&Labels::values> {};
+
+TEST_CASE("integration: array values round-trip through the insert, whatever they hold", "[integration][insert]") {
+  using Ranks = sch::Field<std::optional<std::vector<std::int32_t>>, "ranks">;
+  using Blobs = sch::Field<std::vector<std::vector<std::byte>>, "blobs">;
+  using Docs = sch::Field<std::vector<schemacht::json::Json>, "docs">;
+  using Keys = sch::Field<std::optional<std::vector<schemacht::Uuid>>, "keys">;
+  using Levels = sch::Field<std::vector<Priority>, "levels">;
+  using Amounts = sch::Field<std::vector<Cents>, "amounts">;
+  using Wrapped = sch::Field<Labels, "labels">;
+  using Lists = sch::Schema<"schemacht_it_lists", Id, Tags, Ranks, Blobs, Docs, Keys, Levels, Amounts, Wrapped>;
+  pg::Database database(test_db());
+  database.drop_table<Lists>().get();
+  database.create_table<Lists>().get();
+
+  const std::vector<Lists::row_type> rows{
+      Lists::make_row(
+          1, std::vector<std::string>{R"(a "quoted")", "b,c", "{braced}", R"(back\slash)", "", "NULL"}, std::vector<std::int32_t>{1, -2},
+          std::vector{bytes({0x5c, 0x22, 0x00}), bytes({})}, std::vector{schemacht::json::Json(R"({"k": "v \"q\""})")},
+          std::vector{schemacht::Uuid::from_string("00000000-0000-0000-0000-000000000001")}, std::vector{Priority::High, Priority::Low},
+          std::vector{Cents{1999}, Cents{-5}}, Labels{{"x", "y,z"}}
+      ),
+      Lists::make_row(
+          2, std::vector<std::string>{}, std::nullopt, std::vector<std::vector<std::byte>>{}, std::vector<schemacht::json::Json>{}, std::nullopt,
+          std::vector<Priority>{}, std::vector<Cents>{}, Labels{}
+      ),
+  };
+  CHECK(database.insert<Lists>(rows).get() == 2);
+
+  static constexpr auto ALL = q::select<Lists>().order_by(q::On<Lists>::col<"id">().asc());
+  for ( const pg::ResultFormat format : {pg::ResultFormat::Binary, pg::ResultFormat::Text} ) {
+    const std::vector<Lists::row_type> read = database.execute(q::Prepared<ALL>::bind(), pg::ReadOptions{.format = format}).get();
+    REQUIRE(read.size() == rows.size());
+    for ( std::size_t row = 0; row < rows.size(); ++row ) {
+      CHECK(sch::get<"tags">(read.at(row)) == sch::get<"tags">(rows.at(row)));
+      CHECK(sch::get<"ranks">(read.at(row)) == sch::get<"ranks">(rows.at(row)));
+      CHECK(sch::get<"blobs">(read.at(row)) == sch::get<"blobs">(rows.at(row)));
+      CHECK(sch::get<"docs">(read.at(row)) == sch::get<"docs">(rows.at(row)));
+      CHECK(sch::get<"keys">(read.at(row)) == sch::get<"keys">(rows.at(row)));
+      CHECK(sch::get<"levels">(read.at(row)) == sch::get<"levels">(rows.at(row)));
+      CHECK(sch::get<"amounts">(read.at(row)) == sch::get<"amounts">(rows.at(row)));
+      CHECK(sch::get<"labels">(read.at(row)) == sch::get<"labels">(rows.at(row)));
+    }
+  }
+
+  database.drop_table<Lists>().get();
+}
+
+namespace {
+
+/** @brief A `box`, kept in its text form: PostgreSQL's built-in type whose array delimiter is `;`, not `,` (as PostGIS's `geometry`'s is `:`). */
+struct Box {
+  std::string text;
+
+  auto operator<=>(const Box&) const = default;
+};
+
+}  // namespace
+
+template <>
+struct schemacht::ColumnType<Box> {
+  static constexpr std::string_view SQL_TYPE = "box";
+  static Box                        parse(std::string_view text) { return {std::string(text)}; }
+  static std::string                format(const Box& box) { return box.text; }
+};
+
+TEST_CASE("integration: a type whose array delimiter isn't a comma is inserted and listed", "[integration][insert]") {
+  using Shape = sch::Field<Box, "shape">;
+  using Boxes = sch::Schema<"schemacht_it_boxes", Id, Shape>;
+  pg::Database database(test_db());
+  database.drop_table<Boxes>().get();
+  database.create_table<Boxes>().get();
+
+  // A `box`'s `=` compares areas: 4, 1 and 9 here.
+  const std::vector<Boxes::row_type> rows{
+      Boxes::make_row(1, Box{"(2,2),(0,0)"}), Boxes::make_row(2, Box{"(1,1),(0,0)"}), Boxes::make_row(3, Box{"(3,3),(0,0)"})
+  };
+  CHECK(database.insert<Boxes>(rows).get() == 3);
+
+  static constexpr auto ALL = q::select<Boxes>().order_by(q::On<Boxes>::col<"id">().asc());
+  const auto            read = database.execute(q::Prepared<ALL>::bind(), pg::ReadOptions{.format = pg::ResultFormat::Text}).get();
+  REQUIRE(read.size() == rows.size());
+  for ( std::size_t row = 0; row < rows.size(); ++row ) {
+    CHECK(sch::get<"shape">(read.at(row)) == sch::get<"shape">(rows.at(row)));
+  }
+
+  static constexpr auto SHAPE_IN = q::select(q::On<Boxes>::col<"shape">().in(q::arg<0>())).order_by(q::On<Boxes>::col<"id">().asc());
+  const auto            listed =
+      database
+          .execute(
+              q::Prepared<SHAPE_IN>::bind(std::vector{Box{"(2,2),(0,0)"}, Box{"(3,3),(0,0)"}}), pg::ReadOptions{.format = pg::ResultFormat::Text}
+          )
+          .get();
+  REQUIRE(listed.size() == 2);
+  CHECK(sch::get<"id">(listed.at(0)) == 1);
+  CHECK(sch::get<"id">(listed.at(1)) == 3);
+
+  database.drop_table<Boxes>().get();
 }
 
 TEST_CASE("integration: stopping a stream cancels the query and frees the connection", "[integration]") {
@@ -314,7 +426,7 @@ TEST_CASE("integration: a statement that cannot start reports why, through its c
   CHECK_THROWS_WITH(database.execute(Refused::bind(Unwritable{})).get(), "this argument has no text form");
 
   std::promise<std::pair<std::thread::id, bool>> called;  // on which thread, and with an error
-  database.execute_into(Refused::bind(Unwritable{}), [&called](const std::vector<Refused::row_type>& /*rows*/, const std::exception_ptr& error) {
+  database.execute(Refused::bind(Unwritable{}), [&called](const std::vector<Refused::row_type>& /*rows*/, const std::exception_ptr& error) {
     called.set_value({std::this_thread::get_id(), error != nullptr});
   });
   const auto [thread, failed] = called.get_future().get();
@@ -596,7 +708,8 @@ TEST_CASE("integration: a table whose key the database numbers gives the keys ba
   CHECK(sch::get<"label">(whole[0]) == "c");
 
   // Read as text, the same.
-  const auto as_text = database.insert_returning<Numbered>({Numbered::make_insert_row("d")}, pg::ReadOptions{.format = pg::ResultFormat::Text}).get();
+  const std::vector<Numbered::insert_row_type> text_rows{Numbered::make_insert_row("d")};
+  const auto as_text = database.execute(pg::insert_returning_statement<Numbered>(text_rows), pg::ReadOptions{.format = pg::ResultFormat::Text}).get();
   REQUIRE(as_text.size() == 1);
   CHECK(sch::get<"id">(as_text[0]) > sch::get<"id">(whole[0]));
   CHECK(sch::get<"label">(as_text[0]) == "d");
@@ -761,61 +874,77 @@ std::vector<std::string> names(const std::vector<Named::row_type>& rows) {
 
 }  // namespace
 
-TEST_CASE("integration: one schema on tables named while the program runs", "[integration][table_name]") {
-  pg::Database     database(test_db());
-  pg::Table<Named> first(database, sch::TableName("schemacht_it_named_a"));
-  pg::Table<Named> second(database, sch::TableName("schemacht_it_named_b"));
-  for ( pg::Table<Named>* table : {&first, &second} ) {
-    table->drop().get();
-    table->create().get();
-  }
+namespace {
 
-  first.insert({Named::make_insert_row("cat", std::nullopt), Named::make_insert_row("ann", "a")}).get();
-  const auto written = second.insert_returning({Named::make_insert_row("bob", "b")}).get();
+/** @brief Makes `table` afresh: dropped if it was there, then created. */
+template <sch::IsSchema schema_t>
+void recreate(pg::StatementRunner& runner, const sch::Table<schema_t>& table) {
+  runner.execute(pg::drop_table_statement<schema_t>().on(table)).get();
+  runner.execute(pg::create_table_statement<schema_t>().on(table)).get();
+}
+
+/** @brief Drops `table`. */
+template <sch::IsSchema schema_t>
+void drop(pg::StatementRunner& runner, const sch::Table<schema_t>& table) {
+  runner.execute(pg::drop_table_statement<schema_t>().on(table)).get();
+}
+
+}  // namespace
+
+TEST_CASE("integration: one schema on tables named while the program runs", "[integration][table_name]") {
+  pg::Database            database(test_db());
+  const sch::Table<Named> first("schemacht_it_named_a");
+  const sch::Table<Named> second("schemacht_it_named_b");
+  recreate(database, first);
+  recreate(database, second);
+
+  database
+      .execute(pg::insert_statement<Named>(std::vector{Named::make_insert_row("cat", std::nullopt), Named::make_insert_row("ann", "a")}).on(first))
+      .get();
+  const auto written = database.execute(pg::insert_returning_statement<Named>(std::vector{Named::make_insert_row("bob", "b")}).on(second)).get();
   REQUIRE(written.size() == 1);
 
   // Each table holds its own rows.
-  CHECK(names(first.execute(q::Prepared<BY_NAME>::bind()).get()) == std::vector<std::string>{"ann", "cat"});
-  CHECK(names(second.execute(q::Prepared<BY_NAME>::bind()).get()) == std::vector<std::string>{"bob"});
-  CHECK(names(second.select_by_key(std::vector{sch::get<"id">(written[0])}).get()) == std::vector<std::string>{"bob"});
+  CHECK(names(database.execute(q::Prepared<BY_NAME>::bind().on(first)).get()) == std::vector<std::string>{"ann", "cat"});
+  CHECK(names(database.execute(q::Prepared<BY_NAME>::bind().on(second)).get()) == std::vector<std::string>{"bob"});
+  CHECK(names(database.execute(pg::by_key<Named>(std::vector{sch::get<"id">(written[0])}).on(second)).get()) == std::vector<std::string>{"bob"});
 
   // Updates and deletes, with and without RETURNING, change only their own table.
-  const auto renamed = first.execute(q::Prepared<RENAME>::bind("anne", "ann")).get();
+  const auto renamed = database.execute(q::Prepared<RENAME>::bind("anne", "ann").on(first)).get();
   REQUIRE(renamed.size() == 1);
   CHECK(sch::get<"name">(renamed[0]) == "anne");
-  CHECK(first.execute(q::Prepared<REMOVE_NAMED>::bind("cat")).get() == 1);
-  CHECK(second.execute(q::Prepared<REMOVE_NAMED>::bind("cat")).get() == 0);
+  CHECK(database.execute(q::Prepared<REMOVE_NAMED>::bind("cat").on(first)).get() == 1);
+  CHECK(database.execute(q::Prepared<REMOVE_NAMED>::bind("cat").on(second)).get() == 0);
 
   std::size_t streamed = 0;
-  first.stream(q::Prepared<BY_NAME>::bind(), [&streamed](const Named::row_type& /*row*/) { ++streamed; }).get();
+  database.stream(q::Prepared<BY_NAME>::bind().on(first), [&streamed](const Named::row_type& /*row*/) { ++streamed; }).get();
   CHECK(streamed == 1);
 
-  // On a transaction's connection: rolled back, as anything else in it would be.
+  // The same table on a transaction's connection: rolled back, as anything else in it would be.
   {
-    pg::Transaction  transaction = database.begin().get();
-    pg::Table<Named> in_transaction(transaction, first.name());
-    in_transaction.insert({Named::make_insert_row("dan", std::nullopt)}).get();
-    CHECK(in_transaction.execute(q::Prepared<BY_NAME>::bind()).get().size() == 2);
+    pg::Transaction transaction = database.begin().get();
+    transaction.execute(pg::insert_statement<Named>(std::vector{Named::make_insert_row("dan", std::nullopt)}).on(first)).get();
+    CHECK(transaction.execute(q::Prepared<BY_NAME>::bind().on(first)).get().size() == 2);
     transaction.rollback().get();
   }
-  CHECK(names(first.execute(q::Prepared<BY_NAME>::bind()).get()) == std::vector<std::string>{"anne"});
+  CHECK(names(database.execute(q::Prepared<BY_NAME>::bind().on(first)).get()) == std::vector<std::string>{"anne"});
 
-  first.drop().get();
-  second.drop().get();
+  drop(database, first);
+  drop(database, second);
 }
 
-TEST_CASE("integration: a table named while the program runs takes rows through VALUES too", "[integration][table_name]") {
-  using schemacht::test::Tagged;  // an array column, which `unnest` can't send
+TEST_CASE("integration: a table named while the program runs takes an array column's rows", "[integration][table_name]") {
+  using schemacht::test::Tagged;
 
-  pg::Database      database(test_db());
-  pg::Table<Tagged> tagged(database, sch::TableName("schemacht_it_named_tagged"));
-  tagged.drop().get();
-  tagged.create().get();
+  pg::Database             database(test_db());
+  const sch::Table<Tagged> tagged("schemacht_it_named_tagged");
+  recreate(database, tagged);
 
-  tagged.insert({Tagged::make_row(1, std::vector<std::string>{"a", "b"}), Tagged::make_row(2, std::vector<std::string>{})}).get();
-  CHECK(tagged.execute(q::Prepared<ALL_TAGGED>::bind()).get().size() == 2);
+  const std::vector rows{Tagged::make_row(1, std::vector<std::string>{"a", "b"}), Tagged::make_row(2, std::vector<std::string>{})};
+  CHECK(database.execute(pg::insert_statement<Tagged>(rows).on(tagged)).get() == 2);
+  CHECK(database.execute(q::Prepared<ALL_TAGGED>::bind().on(tagged)).get().size() == 2);
 
-  tagged.drop().get();
+  drop(database, tagged);
 }
 
 TEST_CASE("integration: a table named while the program runs, in a schema of its own", "[integration][table_name]") {
@@ -823,10 +952,10 @@ TEST_CASE("integration: a table named while the program runs, in a schema of its
   exec(database, "DROP SCHEMA IF EXISTS schemacht_it_schema CASCADE");
   exec(database, "CREATE SCHEMA schemacht_it_schema");
 
-  pg::Table<Named> table(database, sch::TableName("schemacht_it_schema", "numbered"));
-  table.create().get();
-  table.insert({Named::make_insert_row("eve", std::nullopt)}).get();
-  CHECK(names(table.execute(q::Prepared<BY_NAME>::bind()).get()) == std::vector<std::string>{"eve"});
+  const sch::Table<Named> table("schemacht_it_schema", "numbered");
+  database.execute(pg::create_table_statement<Named>().on(table)).get();
+  database.execute(pg::insert_statement<Named>(std::vector{Named::make_insert_row("eve", std::nullopt)}).on(table)).get();
+  CHECK(names(database.execute(q::Prepared<BY_NAME>::bind().on(table)).get()) == std::vector<std::string>{"eve"});
 
   exec(database, "DROP SCHEMA schemacht_it_schema CASCADE");
 }
@@ -840,15 +969,16 @@ constexpr auto ALL_PAIRS = q::select<Pairs>().order_by(q::On<Pairs>::col<"a">().
 constexpr auto ALL_KEYLESS = q::select<Keyless>().order_by(q::On<Keyless>::col<"name">().asc());
 
 /**
- * @brief Waits for an `insert_into`'s completion: `done()` is the completion, `wait()` rethrows its error, and `thread()` is
- * the thread it ran on, once it has.
+ * @brief Waits for a call's completion: `done()` is the completion, `wait()` rethrows its error, and `thread()` is the thread it
+ * ran on, once it has.
  */
 class Completion {
  public:
+  /** @return The completion: it takes whatever the call gives it (a count, say), of which the last is the error. */
   [[nodiscard]] auto done() {
-    return [this](const std::exception_ptr& error) {
+    return [this](const auto&... results) {
       _thread = std::this_thread::get_id();
-      schemacht::util::settle(_promise, error);
+      schemacht::util::settle(_promise, std::get<sizeof...(results) - 1>(std::tie(results...)));
     };
   }
 
@@ -876,42 +1006,12 @@ struct schemacht::ColumnType<Unstorable>
 
 namespace {
 
-/** @brief A completion that can't be moved (its move throws): passed on to `completion`, through the copy the failed move leaves. */
-class Unmovable {
- public:
-  explicit Unmovable(Completion& completion) : _completion(&completion) {}
-  Unmovable(const Unmovable& /*other*/) = default;
-  // NOLINTNEXTLINE(bugprone-unsafe-to-allow-exceptions,cppcoreguidelines-noexcept-move-operations,performance-noexcept-move-constructor)
-  Unmovable(Unmovable&& /*other*/) noexcept(false) { throw std::runtime_error("this completion can't be moved"); }
-  Unmovable& operator=(const Unmovable& /*other*/) = delete;
-  Unmovable& operator=(Unmovable&& /*other*/) = delete;
-  ~Unmovable() = default;
-
-  void operator()(const std::exception_ptr& error) const { _completion->done()(error); }
-
- private:
-  Completion* _completion = nullptr;
-};
-
-/** @brief A row handler that can't be moved (its move throws). */
-struct UnmovableHandler {
-  UnmovableHandler() = default;
-  UnmovableHandler(const UnmovableHandler& /*other*/) = default;
-  // NOLINTNEXTLINE(bugprone-unsafe-to-allow-exceptions,cppcoreguidelines-noexcept-move-operations,performance-noexcept-move-constructor)
-  UnmovableHandler(UnmovableHandler&& /*other*/) noexcept(false) { throw std::runtime_error("this row handler can't be moved"); }
-  UnmovableHandler& operator=(const UnmovableHandler& /*other*/) = delete;
-  UnmovableHandler& operator=(UnmovableHandler&& /*other*/) = delete;
-  ~UnmovableHandler() = default;
-
-  void operator()(const Keyless::row_type& /*row*/) const {}
-};
-
 /** @brief A completion that can be called only as an lvalue. */
 struct LvalueOnly {
   Completion* completion;
 
   // NOLINTNEXTLINE(readability-make-member-function-const) -- `&` alone, so that it can't be called as an rvalue
-  void operator()(const std::exception_ptr& error) & { completion->done()(error); }
+  void operator()(std::uint64_t inserted, const std::exception_ptr& error) & { completion->done()(inserted, error); }
 };
 
 using Refusals = sch::Schema<"refusals", schemacht::test::Name, sch::Field<Unstorable, "value">>;
@@ -922,21 +1022,19 @@ constexpr auto RESCORE = q::update<Keyless>().set(q::On<Keyless>::col<"score">()
 }  // namespace
 
 TEST_CASE("integration: tables named while the program runs, with a two-column key or none", "[integration][table_name]") {
-  pg::Database database(test_db());
-
-  pg::Table<Pairs> pairs(database, sch::TableName("schemacht_it_named_pairs"));
-  pairs.drop().get();
-  pairs.create().get();
-  pairs.insert({Pairs::make_row(1, 1, 10), Pairs::make_row(1, 2, 20)}).get();
+  pg::Database            database(test_db());
+  const sch::Table<Pairs> pairs("schemacht_it_named_pairs");
+  recreate(database, pairs);
+  database.execute(pg::insert_statement<Pairs>(std::vector{Pairs::make_row(1, 1, 10), Pairs::make_row(1, 2, 20)}).on(pairs)).get();
 
   Completion inserted;
-  pairs.insert_into(std::vector{Pairs::make_row(2, 1, 30)}, inserted.done());
+  database.execute(pg::insert_statement<Pairs>(std::vector{Pairs::make_row(2, 1, 30)}).on(pairs), inserted.done());
   inserted.wait();
-  CHECK(pairs.execute(q::Prepared<ALL_PAIRS>::bind()).get().size() == 3);
+  CHECK(database.execute(q::Prepared<ALL_PAIRS>::bind().on(pairs)).get().size() == 3);
 
   // The key is both columns: the same pair again is refused, through the completion.
   Completion refused;
-  pairs.insert_into(std::vector{Pairs::make_row(1, 2, 99)}, refused.done());
+  database.execute(pg::insert_statement<Pairs>(std::vector{Pairs::make_row(1, 2, 99)}).on(pairs), refused.done());
   try {
     refused.wait();
     FAIL("the insert should have been refused");
@@ -944,149 +1042,150 @@ TEST_CASE("integration: tables named while the program runs, with a two-column k
     CHECK(error.sqlstate() == "23505");  // unique_violation
   }
 
-  pg::Table<Keyless> keyless(database, sch::TableName("schemacht_it_named_keyless"));
-  keyless.drop().get();
-  keyless.create().get();
-  keyless.insert({Keyless::make_row("b", 2.0), Keyless::make_row("a", 1.0), Keyless::make_row("a", 1.0)}).get();  // repeats allowed
-  CHECK(keyless.execute(q::Prepared<ALL_KEYLESS>::bind()).get().size() == 3);
+  const sch::Table<Keyless> keyless("schemacht_it_named_keyless");
+  recreate(database, keyless);
+  const std::vector rows{Keyless::make_row("b", 2.0), Keyless::make_row("a", 1.0), Keyless::make_row("a", 1.0)};  // repeats allowed
+  database.execute(pg::insert_statement<Keyless>(rows).on(keyless)).get();
+  CHECK(database.execute(q::Prepared<ALL_KEYLESS>::bind().on(keyless)).get().size() == 3);
 
-  pairs.drop().get();
-  keyless.drop().get();
+  drop(database, pairs);
+  drop(database, keyless);
 }
 
 TEST_CASE("integration: an insert chained onto a query's completion, without a future in between", "[integration][table_name]") {
-  pg::Database     database(test_db());
-  pg::Table<Named> source(database, sch::TableName("schemacht_it_chain_source"));
-  pg::Table<Named> copy(database, sch::TableName("schemacht_it_chain_copy"));
-  for ( pg::Table<Named>* table : {&source, &copy} ) {
-    table->drop().get();
-    table->create().get();
-  }
-  source.insert({Named::make_insert_row("ann", std::nullopt), Named::make_insert_row("bob", "b")}).get();
+  pg::Database            database(test_db());
+  const sch::Table<Named> source("schemacht_it_chain_source");
+  const sch::Table<Named> copy("schemacht_it_chain_copy");
+  recreate(database, source);
+  recreate(database, copy);
+  database
+      .execute(pg::insert_statement<Named>(std::vector{Named::make_insert_row("ann", std::nullopt), Named::make_insert_row("bob", "b")}).on(source))
+      .get();
 
   // Read on a worker, then insert from that completion, then finish: nothing blocks a worker on a future.
   Completion copied;
-  source.execute_into(q::Prepared<BY_NAME>::bind(), [&copy, &copied](const std::vector<Named::row_type>& rows, const std::exception_ptr& error) {
-    if ( error ) {
-      copied.done()(error);
-      return;
-    }
+  database.execute(
+      q::Prepared<BY_NAME>::bind().on(source),
+      [&database, &copy, &copied](const std::vector<Named::row_type>& rows, const std::exception_ptr& error) {
+        if ( error ) {
+          copied.done()(error);
+          return;
+        }
 
-    copy.insert_into(rows, copied.done());  // whole rows: their generated ids are not sent, so `copy` numbers its own
-  });
+        try {  // whole rows: their generated ids are not sent, so `copy` numbers its own
+          database.execute(pg::insert_statement<Named>(rows).on(copy), copied.done());
+        } catch ( ... ) {  // no memory to start it: say so, or the wait below would never end
+          copied.done()(std::current_exception());
+        }
+      }
+  );
   copied.wait();
-  CHECK(names(copy.execute(q::Prepared<BY_NAME>::bind()).get()) == std::vector<std::string>{"ann", "bob"});
+  CHECK(names(database.execute(q::Prepared<BY_NAME>::bind().on(copy)).get()) == std::vector<std::string>{"ann", "bob"});
 
   // Nothing to insert still completes, on a worker.
   Completion nothing;
-  copy.insert_into(std::vector<Named::row_type>{}, nothing.done());
+  database.execute(pg::insert_statement<Named>(std::vector<Named::row_type>{}).on(copy), nothing.done());
   nothing.wait();
 
   // In a transaction, the rows go when it rolls back.
   {
-    pg::Transaction  transaction = database.begin().get();
-    pg::Table<Named> in_transaction(transaction, copy.name());
-    Completion       added;
-    in_transaction.insert_into(std::vector{Named::make_insert_row("cat", std::nullopt)}, added.done());
+    pg::Transaction transaction = database.begin().get();
+    Completion      added;
+    transaction.execute(pg::insert_statement<Named>(std::vector{Named::make_insert_row("cat", std::nullopt)}).on(copy), added.done());
     added.wait();
     transaction.rollback().get();
   }
-  CHECK(copy.execute(q::Prepared<BY_NAME>::bind()).get().size() == 2);
+  CHECK(database.execute(q::Prepared<BY_NAME>::bind().on(copy)).get().size() == 2);
 
-  // A stream with a completion, on the table.
+  // A stream with a completion.
   std::size_t streamed = 0;
   Completion  streamed_all;
-  source.stream_into(q::Prepared<BY_NAME>::bind(), [&streamed](const Named::row_type& /*row*/) { ++streamed; }, streamed_all.done());
+  database.stream(q::Prepared<BY_NAME>::bind().on(source), [&streamed](const Named::row_type& /*row*/) { ++streamed; }, streamed_all.done());
   streamed_all.wait();
   CHECK(streamed == 2);
 
-  source.drop().get();
-  copy.drop().get();
+  // A transaction begun, and committed, from completions.
+  Completion committed;
+  database.begin({}, [&committed](pg::Transaction transaction, const std::exception_ptr& error) {
+    if ( error ) {
+      committed.done()(error);
+      return;
+    }
+
+    const auto held = std::make_shared<pg::Transaction>(std::move(transaction));
+    held->commit([held, &committed](const std::exception_ptr& commit_error) { committed.done()(commit_error); });
+  });
+  committed.wait();
+
+  drop(database, source);
+  drop(database, copy);
 }
 
-TEST_CASE("integration: a call with a completion calls it once, on a worker, whatever fails", "[integration][table_name]") {
-  pg::Database       database(test_db());
-  pg::Table<Keyless> keyless(database, sch::TableName("schemacht_it_completions"));
-  keyless.drop().get();
-  keyless.create().get();
+TEST_CASE("integration: a call with a completion calls it once, on a worker, whatever fails", "[integration]") {
+  pg::Database              database(test_db());
+  const sch::Table<Keyless> keyless("schemacht_it_completions");
+  recreate(database, keyless);
   const std::vector<Keyless::row_type> rows{Keyless::make_row("a", 1.0), Keyless::make_row("b", 2.0)};
 
-  // On the database, into the schema's own table: as a vector and as a span.
+  // On the database, into the schema's own table.
   database.drop_table<Listed>().get();
   database.create_table<Listed>().get();
   const std::vector<Listed::row_type> listed{Listed::make_row("a", 1.0), Listed::make_row("b", 2.0)};
 
   Completion from_vector;
-  database.insert_into<Listed>(listed, from_vector.done());
+  database.insert<Listed>(listed, from_vector.done());
   from_vector.wait();
   CHECK(from_vector.thread() != std::this_thread::get_id());
 
-  Completion from_span;
-  database.insert_into<Listed>(std::span<const Listed::row_type>(listed).first(1), from_span.done());
+  Completion from_span;  // any contiguous range, through the statement
+  database.execute(pg::insert_statement<Listed>(std::span<const Listed::row_type>(listed).first(1)), from_span.done());
   from_span.wait();
   CHECK(database.execute(q::Prepared<q::select<Listed>()>::bind()).get().size() == 3);
   database.drop_table<Listed>().get();
 
-  // On a table, as a span.
-  Completion into_table;
-  keyless.insert_into(std::span<const Keyless::row_type>(rows), into_table.done());
-  into_table.wait();
-  CHECK(into_table.thread() != std::this_thread::get_id());
+  database.execute(pg::insert_statement<Keyless>(rows).on(keyless)).get();
 
-  // No rows: the future is complete already, as `insert_returning`'s is, so nothing waits for a worker.
-  CHECK(keyless.insert(std::vector<Keyless::row_type>{}).wait_for(0s) == std::future_status::ready);
+  // No rows: an insert of nothing, sent all the same.
+  CHECK(database.execute(pg::insert_statement<Keyless>(std::vector<Keyless::row_type>{}).on(keyless)).get() == 0);
 
   // An update with a completion, on the table: the count of rows it changed.
   std::promise<std::uint64_t> rescored;
-  keyless.execute_into(q::Prepared<RESCORE>::bind(5.0), [&rescored](std::uint64_t count, const std::exception_ptr& error) {
+  database.execute(q::Prepared<RESCORE>::bind(5.0).on(keyless), [&rescored](std::uint64_t count, const std::exception_ptr& error) {
     schemacht::util::settle(rescored, error, count);
   });
   CHECK(rescored.get_future().get() == 2);
 
   // A value its codec refuses: no throw from the call, the error through the completion, on a worker, and nothing written.
-  pg::Table<Refusals> refusals(database, sch::TableName("schemacht_it_refusals"));
-  refusals.drop().get();
-  refusals.create().get();
+  const sch::Table<Refusals> refusals("schemacht_it_refusals");
+  recreate(database, refusals);
+  const std::vector refused_rows{Refusals::make_row("a", Unstorable{})};
 
   Completion refused;
-  refusals.insert_into(std::vector{Refusals::make_row("a", Unstorable{})}, refused.done());
+  database.execute(pg::insert_statement<Refusals>(refused_rows).on(refusals), refused.done());
   CHECK_THROWS_WITH(refused.wait(), "this value has no stored form");
   CHECK(refused.thread() != std::this_thread::get_id());
 
-  CHECK_THROWS_WITH(refusals.insert({Refusals::make_row("a", Unstorable{})}).get(), "this value has no stored form");
+  CHECK_THROWS_WITH(database.execute(pg::insert_statement<Refusals>(refused_rows).on(refusals)).get(), "this value has no stored form");
 
   // An argument its codec refuses, in a stream and in a command: the same.
   using RefusedQuery = q::RawStatement<"SELECT $1::text AS n", q::RawArguments<Unwritable>, sch::Field<std::string, "n">>;
   Completion streamed;
-  database.stream_into(RefusedQuery::bind(Unwritable{}), [](const RefusedQuery::row_type& /*row*/) {}, streamed.done());
+  database.stream(RefusedQuery::bind(Unwritable{}), [](const RefusedQuery::row_type& /*row*/) {}, streamed.done());
   CHECK_THROWS_WITH(streamed.wait(), "this argument has no text form");
   CHECK(streamed.thread() != std::this_thread::get_id());
 
   using RefusedCommand = q::RawStatement<"UPDATE schemacht_it_completions SET score = 0 WHERE $1::text = ''", q::RawArguments<Unwritable>>;
   std::promise<std::uint64_t> commanded;
-  database.execute_into(RefusedCommand::bind(Unwritable{}), [&commanded](std::uint64_t count, const std::exception_ptr& error) {
+  database.execute(RefusedCommand::bind(Unwritable{}), [&commanded](std::uint64_t count, const std::exception_ptr& error) {
     schemacht::util::settle(commanded, error, count);
   });
   CHECK_THROWS_WITH(commanded.get_future().get(), "this argument has no text form");
 
-  // A row handler that can't be moved: the stream's error, from `stream_into` and from `stream` alike.
-  Completion unmoved_handler;
-  keyless.stream_into(q::Prepared<ALL_KEYLESS>::bind(), UnmovableHandler{}, unmoved_handler.done());
-  CHECK_THROWS_WITH(unmoved_handler.wait(), "this row handler can't be moved");
-  CHECK_THROWS_WITH(keyless.stream(q::Prepared<ALL_KEYLESS>::bind(), UnmovableHandler{}).get(), "this row handler can't be moved");
-
-  // A completion that can't be moved gets its own error, through what the failed move left: on this thread, before the call
-  // returns, as there is nothing to hand to a worker.
-  Completion unmoved;
-  keyless.insert_into(rows, Unmovable(unmoved));
-  CHECK_THROWS_WITH(unmoved.wait(), "this completion can't be moved");
-  CHECK(unmoved.thread() == std::this_thread::get_id());
-
   // A completion callable only as an lvalue.
   Completion lvalue_only;
-  keyless.insert_into(rows, LvalueOnly{&lvalue_only});
+  database.execute(pg::insert_statement<Keyless>(rows).on(keyless), LvalueOnly{&lvalue_only});
   lvalue_only.wait();
 
-  keyless.drop().get();
-  refusals.drop().get();
+  drop(database, keyless);
+  drop(database, refusals);
 }

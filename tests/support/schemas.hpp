@@ -29,7 +29,7 @@ using Count = sch::Field<std::uint32_t, "count">;
 using Doc = sch::Field<json::Json, "doc">;
 using Counted = sch::Schema<"counted", Id, Count, Doc>;
 
-/** @brief A schema with an array-typed column, which `insert` cannot send with `unnest`. */
+/** @brief A schema with an array-typed column, which `insert` sends as a `text[]` of array literals (`unnest` would flatten it). */
 using Tags = sch::Field<std::vector<std::string>, "tags">;
 using Tagged = sch::Schema<"tagged", Id, Tags>;
 

@@ -6,9 +6,9 @@
 // - A transaction: a transfer takes from one account, gives to another and records itself, all of it or none. One that
 //   would overdraw is rolled back.
 // - RETURNING on an update and a delete: `execute` gives the rows as changed, instead of a count.
-// - Steps chained by completions: the day's closing balances are read (`execute_into`) and, from that completion, written to
-//   a table of their own (`insert_into`); the caller waits once, at the end. No worker waits on a future in between, which
-//   could leave none free to finish it.
+// - Steps chained by completions: the day's closing balances are read (`execute` with a completion) and, from that completion,
+//   written to a table of their own (`insert`, with one too); the caller waits once, at the end. No worker waits on a future
+//   in between, which could leave none free to finish it.
 //
 // Run with a libpq connection string: schemacht_example_transfers "host=localhost dbname=app user=app"
 // It creates the tables schemacht_example_accounts, schemacht_example_transfers and schemacht_example_closing_balances, and
@@ -108,11 +108,11 @@ void transfer(pg::Database& database, std::int64_t from, std::int64_t to, std::i
  * @brief Records every account's balance at the end of the day: reads the accounts, and from that completion inserts the
  * snapshot. @return How many balances were recorded.
  */
-std::size_t record_closing_balances(pg::Database& database) {
-  std::promise<std::size_t> recorded;
-  std::future<std::size_t>  done = recorded.get_future();
+std::uint64_t record_closing_balances(pg::Database& database) {
+  std::promise<std::uint64_t> recorded;
+  std::future<std::uint64_t>  done = recorded.get_future();
 
-  database.execute_into(
+  database.execute(
       q::Prepared<ALL_ACCOUNTS>::bind(), [&database, &recorded](const std::vector<Accounts::row_type>& accounts, const std::exception_ptr& error) {
         if ( error ) {
           recorded.set_exception(error);
@@ -127,10 +127,10 @@ std::size_t record_closing_balances(pg::Database& database) {
           }
 
           // From a worker, so no `.get()` here: the insert takes a completion too.
-          database.insert_into<ClosingBalances>(snapshot, [&recorded, count = snapshot.size()](const std::exception_ptr& insert_error) {
-            schemacht::util::settle(recorded, insert_error, count);
+          database.insert<ClosingBalances>(snapshot, [&recorded](std::uint64_t inserted, const std::exception_ptr& insert_error) {
+            schemacht::util::settle(recorded, insert_error, inserted);
           });
-        } catch ( ... ) {  // a worker drops what a completion throws: without this, the wait below would never end
+        } catch ( ... ) {  // no memory to start the insert: a worker drops what a completion throws, and the wait below would never end
           recorded.set_exception(std::current_exception());
         }
       }

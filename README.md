@@ -90,12 +90,13 @@ int main() {
   - comparisons, `in(...)`, `IS NULL`, `AND`/`OR`/`NOT`, `LIKE`;
   - `order_by`, `limit`, and `project` to fetch only some columns;
   - `stream` to handle a large result a chunk at a time, with backpressure;
-  - `execute_into`, `stream_into` and `insert_into` to chain on a callback instead of a future;
-  - errors arrive through the future, or through the callback, which runs exactly once; a call that takes a callback never
-    throws, and one that returns a future throws only `std::bad_alloc`, when there is no memory for the future itself.
+  - every call returns a `std::future`, or, given a callback last, calls it instead, to chain the next step:
+    `database.execute(query, [](std::vector<Row> rows, std::exception_ptr error) { ... })`;
+  - every error from making and running a statement arrives through the future or the callback, which runs exactly once; a
+    call throws only if it can't start at all (no memory to hand the statement on, say), and then its callback never runs.
 - **Changes:**
   - `update(...)` and `delete_where(...)` give the count of rows changed, or the rows themselves with `.returning(...)`;
-  - `insert` writes any number of rows atomically: all of them or none.
+  - `insert` writes any number of rows atomically, in one statement: all of them or none.
 - **Transactions:** `Database::begin` (with an isolation level, or read-only). A transaction that is dropped without a
   commit is rolled back.
 - **Raw SQL with types:** `q::RawStatement<"SELECT ...", q::RawArguments<...>, Fields...>` checks its `$n` placeholders
@@ -112,10 +113,10 @@ int main() {
   jsonb's `?`, say. See [examples/extensions.cpp](examples/extensions.cpp).
 - **Tables from schemas:** `create_table` and `drop_table`, for tests, examples and a first start. They cover the primary
   key, `UNIQUE` columns and an identity key.
-- **Tables named while the program runs:** a schema's name is its default table. `pg::Table<Schema>` runs the same
-  statements on another, named by a `schema::TableName` (checked once, when made, and optionally in a PostgreSQL schema:
-  `"gis"."roads"`),
-  for a name from configuration, a user, or another language's bindings.
+- **Tables named while the program runs:** a schema's name is its default table. A `sch::Table<Schema>` names another of
+  its shape (checked once, when made, and optionally in a PostgreSQL schema: `"gis"."roads"`), for a name from
+  configuration, a user, or another language's bindings. Any statement of the schema runs there once aimed at it:
+  `database.execute(query.on(archive))`, `database.execute(pg::insert_statement<Schema>(rows).on(archive))`.
 
 The examples show these together:
 - [examples/basic.cpp](examples/basic.cpp): a schema, an insert, queries, a raw statement, and a table named while the program
