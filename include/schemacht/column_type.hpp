@@ -15,7 +15,8 @@
  *
  * For anything else, write the specialization: postgres/binary_form.hpp and postgres/numeric.hpp have what a `parse_binary`
  * is written with. Give the type `operator<=>` if queries should compare with it (`<`, `>`) or order by it.
- * examples/custom_types.cpp uses them, and json/json.hpp and uuid.hpp are two the library ships.
+ * examples/custom_types.cpp uses each helper but `ScaledNumericColumn`, whose `Money` it writes out by hand instead; json/json.hpp
+ * and uuid.hpp are two column types the library ships.
  */
 
 #include <algorithm>

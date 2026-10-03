@@ -114,13 +114,19 @@ struct HasKey {
 }  // namespace schemacht::test
 
 template <>
-struct schemacht::ColumnType<schemacht::test::Box> : schemacht::WrappedColumn<&schemacht::test::Box::text> {
+struct schemacht::ColumnType<schemacht::test::Box> {  // text only: a box's binary form is not text's
   static constexpr std::string_view SQL_TYPE = "box";
+
+  static schemacht::test::Box parse(std::string_view text) { return {std::string(text)}; }
+  static std::string          format(const schemacht::test::Box& box) { return box.text; }
 };
 
 template <>
-struct schemacht::ColumnType<schemacht::test::Point> : schemacht::WrappedColumn<&schemacht::test::Point::text> {
+struct schemacht::ColumnType<schemacht::test::Point> {  // text only, as `Box`
   static constexpr std::string_view SQL_TYPE = "point";
+
+  static schemacht::test::Point parse(std::string_view text) { return {std::string(text)}; }
+  static std::string            format(const schemacht::test::Point& point) { return point.text; }
 };
 
 template <>

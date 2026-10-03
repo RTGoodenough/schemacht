@@ -34,6 +34,9 @@ constexpr auto SIMILAR_ABOVE = People::col<"name">().apply<t::trgm::SimilarAbove
 constexpr auto COVERING_NEAREST = q::select(q::On<t::Regions>::col<"area">().apply<t::geo::Covers>(q::arg<0>()))
                                       .order_by(q::On<t::Regions>::col<"area">().ranked_by<t::geo::Nearest>(q::arg<1>()));
 constexpr auto HAS_KEY = q::On<t::Counted>::col<"doc">().apply<t::HasKey>(q::arg<0>());
+using TwoDocs = schemacht::schema::Schema<
+    "two_docs", t::Id, schemacht::schema::Field<schemacht::json::Json, "a">, schemacht::schema::Field<schemacht::json::Json, "b">>;
+constexpr auto EITHER_HAS_KEY = q::On<TwoDocs>::col<"a">().apply<t::HasKey>(q::arg<0>()) || q::On<TwoDocs>::col<"b">().apply<t::HasKey>(q::arg<0>());
 constexpr auto CONTAINS = schemacht::json::contains(q::On<t::Counted>::col<"doc">(), q::arg<0>());
 constexpr auto COUNT_IN = q::On<t::Counted>::col<"count">().in(q::arg<0>());
 constexpr auto ALL_TILES = q::select<t::Tiles>();
@@ -88,6 +91,10 @@ TEST_CASE("an operation or ranking whose argument has a type of its own", "[sql]
   STATIC_REQUIRE(q::Prepared<HAS_KEY>::SQL == R"(SELECT "id", "count", "doc" FROM "counted" WHERE "doc" ? $1::text)");
 
   STATIC_REQUIRE(q::Prepared<COVERING_NEAREST>::ARG_COUNT == 2);
+
+  // Its type does not depend on the column, so one argument can be tested against several.
+  STATIC_REQUIRE(q::Prepared<EITHER_HAS_KEY>::SQL == R"(SELECT "id", "a", "b" FROM "two_docs" WHERE "a" ? $1::text OR "b" ? $1::text)");
+  STATIC_REQUIRE(q::Prepared<EITHER_HAS_KEY>::ARG_COUNT == 1);
 
   // `bind` takes the argument's type, and sends its text form.
   const auto bound = q::Prepared<COVERING_NEAREST>::bind(t::Point{"(0.5,0.5)"}, t::Point{"(2,2)"});

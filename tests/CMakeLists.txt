@@ -95,6 +95,7 @@ schemacht_compile_fail(CREATE_TABLE_WITHOUT_SQL_TYPE "a column's type has no SQL
 schemacht_compile_fail(COLUMN_TYPE_WITHOUT_FORMAT "HasTextForm")
 schemacht_compile_fail(IN_ON_ARRAY_COLUMN "can't test a column that is itself an array")
 schemacht_compile_fail(OPERATION_ARGUMENT_TYPE "the type its operation declares")
+schemacht_compile_fail(OPERATION_ARGUMENT_OTHER_TYPE "the type its operation declares")
 schemacht_compile_fail(OPERATION_ARGUMENT_DISAGREES "disagree")
 schemacht_compile_fail(OPERATION_ARGUMENT_NOT_COLUMN_TYPE "must be a column type of your own")
 

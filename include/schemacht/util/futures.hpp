@@ -6,6 +6,8 @@
 #include <type_traits>
 #include <utility>
 
+#include "schemacht/util/concepts/futures.hpp"  // IWYU pragma: export
+
 /**
  * Completing a `std::promise` from a completion that gets an error or a result: what turns a callback (`execute_into`,
  * `begin_into`, ...) into the future a caller waits on.
@@ -25,7 +27,7 @@ inline void settle(std::promise<void>& promise, const std::exception_ptr& error)
  * @brief Completes `promise` with `error`, or with `value` if there is none. `value_t` is the promise's, so `3` settles a
  * `std::promise<std::int64_t>`.
  */
-template <std::move_constructible value_t>
+template <PromiseValue value_t>
 void settle(std::promise<value_t>& promise, const std::exception_ptr& error, std::type_identity_t<value_t> value) {
   if ( error ) {
     promise.set_exception(error);

@@ -15,7 +15,8 @@
 /**
  * Statements that change rows instead of returning them: `UPDATE` and `DELETE`, written like queries and checked against
  * the schema the same way. `Prepared` lowers them to SQL; a backend's `execute` returns how many rows they changed, or, with
- * `returning(...)`, the rows themselves. examples/transfers.cpp has both, with and without `returning`.
+ * `returning(...)`, the rows themselves. examples/custom_types.cpp has an update and a delete that count, and
+ * examples/transfers.cpp ones with `returning`.
  *
  * An update or delete of every row has to be asked for (`all_rows()`, `delete_all`): one that forgets its `where` doesn't compile.
  */

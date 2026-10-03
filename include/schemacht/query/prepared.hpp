@@ -51,7 +51,11 @@ constexpr void note_slot(Slots<capacity>& slots, std::size_t slot, const SlotInf
   }
 
   SlotInfo& known = slots.info.at(slot);
-  if ( known.seen && (known.column != use.column || known.is_list != use.is_list || known.is_limit != use.is_limit || known.is_real != use.is_real ||
+
+  // An argument of an operation's own type (`argument_type`) has that type whatever column it is tested against, so it can be
+  // used with several; any other argument takes its column's type, so it is used with one.
+  const bool column_differs = use.argument == nullptr && known.column != use.column;
+  if ( known.seen && (column_differs || known.is_list != use.is_list || known.is_limit != use.is_limit || known.is_real != use.is_real ||
                       known.argument != use.argument) ) {
     throw std::logic_error("query argument is used in ways that disagree: with different columns, as a list and not, or as different types");
   }

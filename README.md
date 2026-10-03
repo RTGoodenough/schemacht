@@ -106,7 +106,8 @@ int main() {
     [examples/custom_types.cpp](examples/custom_types.cpp).
 - **An extension's operators and functions** (pg_trgm, PostGIS, ...): `col.apply<Op>(arg)` for a test, and
   `col.ranked_by<Op>(arg)` to sort by one. An operation's argument can be of a type other than the column's, with
-  `using argument_type = T;`: a text key for jsonb's `?`, say. See [examples/extensions.cpp](examples/extensions.cpp).
+  `using argument_type = T;`, where `T` is a column type of your own (a `ColumnType` specialization): a text key for
+  jsonb's `?`, say. See [examples/extensions.cpp](examples/extensions.cpp).
 - **Tables from schemas:** `create_table` and `drop_table`, for tests, examples and a first start. They cover the primary
   key, `UNIQUE` columns and an identity key.
 

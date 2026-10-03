@@ -197,7 +197,8 @@ struct schemacht::ColumnType<Half> {
 [[maybe_unused]] const std::string text = pg::format_field(Half{});
 #endif
 
-#if defined(CASE_OPERATION_ARGUMENT_TYPE) || defined(CASE_OPERATION_ARGUMENT_DISAGREES) || defined(CASE_OPERATION_ARGUMENT_NOT_COLUMN_TYPE)
+#if defined(CASE_OPERATION_ARGUMENT_TYPE) || defined(CASE_OPERATION_ARGUMENT_OTHER_TYPE) || defined(CASE_OPERATION_ARGUMENT_DISAGREES) || \
+    defined(CASE_OPERATION_ARGUMENT_NOT_COLUMN_TYPE)
 struct Key {
   std::string value;
 };
@@ -212,6 +213,16 @@ struct HasKey {
 #if defined(CASE_OPERATION_ARGUMENT_TYPE)
 constexpr auto        NAMED = q::On<Things>::col<"name">().apply<HasKey>(q::arg<0>());
 [[maybe_unused]] auto bound = q::Prepared<NAMED>::bind(std::string("name"));  // the column's type, not the operation's
+#endif
+
+#if defined(CASE_OPERATION_ARGUMENT_OTHER_TYPE)
+struct Label {  // the same SQL type as `Key`, text, but another C++ type
+  std::string value;
+};
+template <>
+struct schemacht::ColumnType<Label> : schemacht::WrappedColumn<&Label::value> {};
+constexpr auto        NAMED = q::On<Things>::col<"name">().apply<HasKey>(q::arg<0>());
+[[maybe_unused]] auto bound = q::Prepared<NAMED>::bind(Label{"name"});
 #endif
 
 #if defined(CASE_OPERATION_ARGUMENT_DISAGREES)

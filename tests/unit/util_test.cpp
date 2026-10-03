@@ -83,6 +83,9 @@ TEST_CASE("settle completes a promise with the error, or with the value", "[util
   util::settle(counted, nullptr, 3);  // the value takes the promise's type
   CHECK(counted.get_future().get() == 3);
 
+  // A reference can't be moved into a promise: refused by the concept, not deep inside `settle`.
+  STATIC_REQUIRE_FALSE(util::PromiseValue<std::string&>);
+
   std::promise<std::string> refused;
   util::settle(refused, std::make_exception_ptr(std::runtime_error("no")), std::string("unused"));
   CHECK_THROWS_AS(refused.get_future().get(), std::runtime_error);
