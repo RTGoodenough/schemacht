@@ -394,8 +394,8 @@ template <TextSchema schema_t, std::ranges::contiguous_range rows_t>
  * gone in, by the SQL function or operator `merge_t` names (`FUNCTION` or `OPERATOR`, one of the two, as an operation names its
  * test). A function is called `FUNCTION("current"."column", excluded."column")`, the row there first; an operator is written
  * `"current"."column" OPERATOR excluded."column"`. The function may be the application's own (`CREATE FUNCTION`), and must
- * give the column's type. Its name is checked as an operation's is: a name on the search path, not one with its schema
- * (`gis.merge`).
+ * give the column's type. Named alone, it is found through the search path; named with its schema (`miniverse.merge_raster`),
+ * it is called there whatever the search path is, and whichever schema the table is in.
  *
  * In a column that can be NULL, a NULL on either side makes an operator's result NULL, and a function's if it is `STRICT`; a
  * function that keeps the value that isn't NULL handles it (`coalesce`, or a `CASE`).

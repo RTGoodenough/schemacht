@@ -173,6 +173,11 @@ struct KeepLonger {
   static constexpr std::string_view FUNCTION = "keep_longer";
 };
 
+/** @brief A merge by a function named with its schema: `app.merge_scores("current"."score", excluded."score")`. */
+struct MergeScores {
+  static constexpr std::string_view FUNCTION = "app.merge_scores";
+};
+
 /** @brief A merge by a SQL operator: `"current"."score" + excluded."score"`. */
 struct Add {
   static constexpr std::string_view OPERATOR = "+";
@@ -196,6 +201,15 @@ TEST_CASE("an upsert updates the row already there: merged as a MergeWith says, 
 
   const sch::Table<t::People> archive("gis", "people_2026");
   CHECK(pg::upsert_statement<t::People>(people).on(archive).sql().starts_with(R"(INSERT INTO "gis"."people_2026" AS "current" ("id", )"));
+}
+
+TEST_CASE("an upsert calls a merge function named with its schema there, whatever schema the table is in", "[upsert]") {
+  const std::vector<t::People::row_type> people{{t::Id{1}, t::Name{"al"}, t::Nick{std::nullopt}, t::Score{1}, t::Active{true}}};
+  const sch::Table<t::People>            archive("gis", "people_2026");
+  const auto                             statement = pg::upsert_statement<t::People, pg::MergeWith<"score", MergeScores>>(people).on(archive);
+
+  CHECK(statement.sql().starts_with(R"(INSERT INTO "gis"."people_2026" AS "current" )"));
+  CHECK(statement.sql().contains(R"("score" = app.merge_scores("current"."score", excluded."score"))"));
 }
 
 TEST_CASE("an upsert matches on the whole primary key, and never sets a key or generated column", "[upsert]") {

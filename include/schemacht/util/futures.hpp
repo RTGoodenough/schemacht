@@ -37,13 +37,19 @@ void settle(std::promise<value_t>& promise, const std::exception_ptr& error, std
   }
 }
 
-/** @brief The completion `future_from` hands out: called with the value and the error (null on success), it settles the future. */
+/**
+ * @brief The completion `future_from` hands out: called with the value and the error (null on success), it settles the future.
+ * `fail` settles it with an error alone, where there is no value to pass.
+ */
 template <FutureValue value_t>
 class Settler {
  public:
   explicit Settler(std::shared_ptr<std::promise<value_t>> promise) noexcept : _promise(std::move(promise)) {}
 
   void operator()(value_t value, const std::exception_ptr& error) const { settle(*_promise, error, std::move(value)); }
+
+  /** @brief Settles the future with `error` (not null), without a value to pass alongside it. */
+  void fail(const std::exception_ptr& error) const { _promise->set_exception(error); }
 
  private:
   std::shared_ptr<std::promise<value_t>> _promise;
@@ -56,6 +62,9 @@ class Settler<void> {
   explicit Settler(std::shared_ptr<std::promise<void>> promise) noexcept : _promise(std::move(promise)) {}
 
   void operator()(const std::exception_ptr& error) const { settle(*_promise, error); }
+
+  /** @brief Settles the future with `error` (not null), as `Settler<value_t>::fail` does. */
+  void fail(const std::exception_ptr& error) const { _promise->set_exception(error); }
 
  private:
   std::shared_ptr<std::promise<void>> _promise;

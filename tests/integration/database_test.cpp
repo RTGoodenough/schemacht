@@ -1320,6 +1320,11 @@ using Total = sch::Field<Cents, "total">;  // a type of the test's own: sent as 
 using Seen = sch::Field<std::vector<std::string>, "seen">;
 using Tallies = sch::Schema<"schemacht_it_tallies", Region, TallyDay, Total, Seen>;
 
+/** @brief Merges totals by a function named with its schema, called there whatever the search path is. */
+struct AddTotals {
+  static constexpr std::string_view FUNCTION = "schemacht_it_upsert.add_totals";
+};
+
 /** @brief Merges arrays by appending: `"current"."seen" || excluded."seen"`. */
 struct Append {
   static constexpr std::string_view OPERATOR = "||";
@@ -1335,14 +1340,25 @@ TEST_CASE("integration: an upsert merges a type of one's own and an array, on a 
   database.execute(pg::unchecked_sql("CREATE SCHEMA schemacht_it_upsert")).get();
   const sch::Table<Tallies> tallies("schemacht_it_upsert", "tallies");
   database.execute(pg::create_table_statement<Tallies>().on(tallies)).get();
+  database
+      .execute(
+          pg::unchecked_sql(
+              "CREATE FUNCTION schemacht_it_upsert.add_totals(current_total numeric, incoming numeric) RETURNS numeric LANGUAGE sql IMMUTABLE "
+              "AS $$ SELECT current_total + incoming $$"
+          )
+      )
+      .get();
 
   database.execute(pg::insert_statement<Tallies>(std::vector{Tallies::make_row(1, 1, Cents{100}, std::vector<std::string>{"a"})}).on(tallies)).get();
 
-  // (1, 1) is there: its total adds up and its array grows. (1, 2) shares only half the key, so it is a row of its own.
+  // (1, 1) is there: its total adds up (by the function in the table's schema, not on the search path) and its array grows. (1, 2) shares only half the key, so it is a row of its own.
   const std::vector incoming{
       Tallies::make_row(1, 1, Cents{250}, std::vector<std::string>{"b", "c,d"}), Tallies::make_row(1, 2, Cents{5}, std::vector<std::string>{})
   };
-  CHECK(database.execute(pg::upsert_statement<Tallies, pg::MergeWith<"total", Add>, pg::MergeWith<"seen", Append>>(incoming).on(tallies)).get() == 2);
+  CHECK(
+      database.execute(pg::upsert_statement<Tallies, pg::MergeWith<"total", AddTotals>, pg::MergeWith<"seen", Append>>(incoming).on(tallies)).get() ==
+      2
+  );
 
   const auto rows = database.execute(q::Prepared<ALL_TALLIES>::bind().on(tallies)).get();
   REQUIRE(rows.size() == 2);

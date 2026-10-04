@@ -1,4 +1,4 @@
-// The public helpers in schemacht/util: hex, all_distinct, and completions (settle, future_from, complete).
+// The public helpers in schemacht/util: hex, all_distinct, SQL function names, and completions (settle, future_from, complete).
 
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/matchers/catch_matchers.hpp>
@@ -18,6 +18,7 @@
 #include "schemacht/util/compile_time.hpp"
 #include "schemacht/util/futures.hpp"
 #include "schemacht/util/hex.hpp"
+#include "schemacht/util/identifier.hpp"
 
 namespace util = schemacht::util;
 
@@ -70,6 +71,21 @@ TEST_CASE("all_distinct finds a value given twice", "[util]") {
   STATIC_REQUIRE_FALSE(util::EqualityComparableRange<Filtered>);
 }
 
+TEST_CASE("a SQL function name may be named with its schema, and nothing else", "[util]") {
+  STATIC_REQUIRE(util::is_sql_function_name("similarity"));
+  STATIC_REQUIRE(util::is_sql_function_name("ST_AsBinary"));
+  STATIC_REQUIRE(util::is_sql_function_name("miniverse.merge_raster"));
+
+  STATIC_REQUIRE_FALSE(util::is_sql_function_name(""));
+  STATIC_REQUIRE_FALSE(util::is_sql_function_name("1st"));
+  STATIC_REQUIRE_FALSE(util::is_sql_function_name("gis.1st"));
+  STATIC_REQUIRE_FALSE(util::is_sql_function_name("a.b.c"));
+  STATIC_REQUIRE_FALSE(util::is_sql_function_name(".merge"));
+  STATIC_REQUIRE_FALSE(util::is_sql_function_name("gis."));
+  STATIC_REQUIRE_FALSE(util::is_sql_function_name(R"("gis".merge)"));
+  STATIC_REQUIRE_FALSE(util::is_sql_function_name("f(); DROP TABLE t; --"));
+}
+
 TEST_CASE("settle completes a promise with the error, or with the value", "[util]") {
   std::promise<void> done;
   util::settle(done, nullptr);
@@ -97,6 +113,21 @@ TEST_CASE("future_from makes a future of a call that takes a completion", "[util
 
   std::future<void> failed =
       util::future_from<void>([](const util::Settler<void>& done) { done(std::make_exception_ptr(std::runtime_error("no"))); });
+  CHECK_THROWS_AS(failed.get(), std::runtime_error);
+}
+
+TEST_CASE("a settler fails its future with an error alone, with no value to pass", "[util]") {
+  struct NoDefault {  // no value to make up for the error path
+    explicit NoDefault(int value) : value(value) {}
+    int value;
+  };
+
+  std::future<NoDefault> refused =
+      util::future_from<NoDefault>([](const util::Settler<NoDefault>& done) { done.fail(std::make_exception_ptr(std::runtime_error("no"))); });
+  CHECK_THROWS_AS(refused.get(), std::runtime_error);
+
+  std::future<void> failed =
+      util::future_from<void>([](const util::Settler<void>& done) { done.fail(std::make_exception_ptr(std::runtime_error("no"))); });
   CHECK_THROWS_AS(failed.get(), std::runtime_error);
 }
 

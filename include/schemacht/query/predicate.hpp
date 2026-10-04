@@ -241,7 +241,8 @@ class BoundOperation {
   );
   static_assert(
       NamesOperator<operation_t> || util::is_sql_function_name(spelling<operation_t>()),
-      "an operation's FUNCTION must be a SQL function name: letters, digits and underscores, not starting with a digit"
+      "an operation's FUNCTION must be a SQL function name: letters, digits and underscores, not starting with a digit, "
+      "optionally after its schema and a dot (gis.merge)"
   );
 
   static constexpr Operation VALUE{
