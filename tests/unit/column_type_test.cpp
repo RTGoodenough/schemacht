@@ -15,6 +15,7 @@
 #include "schemacht/postgres/statements.hpp"
 #include "schemacht/query/predicate.hpp"
 #include "schemacht/query/prepared.hpp"
+#include "schemacht/query/sql.hpp"
 #include "schemacht/schema/schema.hpp"
 
 namespace pg = schemacht::postgres;
@@ -330,6 +331,16 @@ TEST_CASE("an argument is cast to a string column's type without its length, and
   const std::vector<Places::row_type> places{Places::make_row(OrderId{1}, Cents{100}, Spot{"0101000020E6100000"})};
   CHECK(pg::insert_statement<Places>(places).sql().contains(R"(SELECT "id"::bigint, "price"::numeric(12,2), "spot"::geometry(Point,4326) FROM)"));
   STATIC_REQUIRE(q::Prepared<SPOT_IN>::SQL.ends_with(R"(WHERE "spot" = ANY($1::text[]::geometry(Point,4326)[]))"));
+
+  // The other spellings of the string types, in either case; no other type has an unlimited form to be cast to.
+  STATIC_REQUIRE(sql::detail::unlimited_string_type("National Character Varying") == "varchar");
+  STATIC_REQUIRE(sql::detail::unlimited_string_type("nchar") == "bpchar");
+  STATIC_REQUIRE(sql::detail::unlimited_string_type("bit varying") == "varbit");
+  STATIC_REQUIRE(sql::detail::unlimited_string_type("national char") == "bpchar");
+  STATIC_REQUIRE(sql::detail::unlimited_string_type("national varchar").empty());  // not a type PostgreSQL has
+  STATIC_REQUIRE(sql::detail::unlimited_string_type("national bit").empty());
+  STATIC_REQUIRE(sql::detail::unlimited_string_type("text").empty());
+  STATIC_REQUIRE(sql::detail::unlimited_string_type("geometry").empty());
 
   // The table itself keeps the lengths.
   CHECK(

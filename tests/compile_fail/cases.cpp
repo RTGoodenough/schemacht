@@ -361,6 +361,13 @@ using Bad = pg::MergeWith<"count", Both>;
 [[maybe_unused]] Bad merge;
 #endif
 
+#if defined(CASE_STREAM_CHUNKS_ROW_HANDLER)
+constexpr auto        ALL_THINGS = q::select<Things>();
+[[maybe_unused]] void run(pg::Database& database) {
+  database.stream_chunks(q::Prepared<ALL_THINGS>::bind(), [](const Things::row_type& /*row*/) {});  // a row, where it gets a chunk's rows
+}
+#endif
+
 #if defined(CASE_UNCHECKED_SQL_ARGUMENT_WITHOUT_TEXT_FORM)
 struct Opaque {};
 [[maybe_unused]] void run() { (void)pg::unchecked_sql("SELECT $1", Opaque{}); }

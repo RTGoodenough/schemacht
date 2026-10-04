@@ -1,7 +1,9 @@
 #pragma once
 
+#include <concepts>
 #include <cstdint>
 #include <exception>
+#include <functional>
 #include <memory>
 #include <span>
 #include <type_traits>
@@ -41,9 +43,13 @@ template <SendableStatementRef statement_t>
   }
 }
 
+/** @brief A row `statement_t` returns (the statement given by reference or as a temporary). */
+template <SendableStatementRef statement_t>
+using row_of = std::remove_cvref_t<statement_t>::result_type;
+
 /** @brief The rows `execute` gives for `statement_t` (given by reference or as a temporary). */
 template <SendableStatementRef statement_t>
-using rows_of = std::vector<typename std::remove_cvref_t<statement_t>::result_type>;
+using rows_of = std::vector<row_of<statement_t>>;
 
 }  // namespace detail
 
@@ -117,7 +123,8 @@ class StatementRunner {
 
   /**
    * @brief Runs `statement` and calls `on_row` with each row it returns (a `statement_t::result_type`, as `execute` gives them),
-   * in order, as they arrive: nothing holds the whole result.
+   * in order, as they arrive: nothing holds the whole result. The rows are read from the database a chunk at a time
+   * (`read.chunk_rows` of them), and handed over one by one; `stream_chunks` hands over each chunk whole.
    *
    * `on_row` is called one row at a time, never from two threads at once, on a thread of the pool's (not the caller's), and
    * returns `void`, or a `bool` where `false` stops: no more rows are delivered and the query is cancelled (in a transaction,
@@ -126,20 +133,74 @@ class StatementRunner {
    * @param done none given (`util::UseFuture`): returns a `std::future<void>` that completes once the stream ends (whether it ran to
    *        the end or `on_row` stopped it). Else called with the error once it ends.
    */
-  template <
-      RunnableStatement statement_t, RowCallback<typename statement_t::result_type> handler_t, util::CompletionFor<void> done_t = util::UseFuture>
-  auto stream(const statement_t& statement, handler_t on_row, const ReadOptions& read, done_t done = {}) {
+  template <RunnableStatementRef statement_t, RowCallback<detail::row_of<statement_t>> handler_t, util::CompletionFor<void> done_t = util::UseFuture>
+  auto stream(statement_t&& statement, handler_t on_row, const ReadOptions& read, done_t done = {}) {
+    using row_t = detail::row_of<statement_t>;
+
     return util::complete<void>(std::move(done), [&](auto done) {
-      send_rows<typename statement_t::result_type>(detail::wire_caught(statement), read, std::move(on_row), std::move(done));
+      send_stream<row_t>(
+          detail::wire_caught(std::forward<statement_t>(statement)), read,
+          [on_row = std::move(on_row)](const QueryResult& chunk) mutable { return read_rows<row_t>(chunk, on_row); }, std::move(done)
+      );
+    });
+  }
+
+  /** @brief As above, read as this runner reads results by default. */
+  template <RunnableStatementRef statement_t, RowCallback<detail::row_of<statement_t>> handler_t, util::CompletionFor<void> done_t = util::UseFuture>
+  auto stream(statement_t&& statement, handler_t on_row, done_t done = {}) {
+    return stream(std::forward<statement_t>(statement), std::move(on_row), _read, std::move(done));
+  }
+
+  /**
+   * @brief As `stream`, handing over the rows a chunk at a time: `on_chunk` is called with each chunk's rows as a
+   * `std::vector` of them (`read.chunk_rows` rows; the last has what is left), in order, as they arrive. For work done a batch
+   * at a time: writing each to a file, or passing it on.
+   *
+   * `on_chunk` is called as `stream`'s `on_row` is (one call at a time, on a thread of the pool's), never with an empty vector,
+   * and returns `void`, or a `bool` where `false` stops. If it throws, that is the stream's error; chunks delivered before an
+   * error stay delivered, but none of the rows of a chunk with a row that can't be read.
+   * @param done none given (`util::UseFuture`): returns a `std::future<void>` that completes once the stream ends. Else called
+   *        with the error once it ends.
+   */
+  template <
+      RunnableStatementRef statement_t, ChunkCallback<detail::row_of<statement_t>> handler_t, util::CompletionFor<void> done_t = util::UseFuture>
+  auto stream_chunks(statement_t&& statement, handler_t on_chunk, const ReadOptions& read, done_t done = {}) {
+    using row_t = detail::row_of<statement_t>;
+
+    return util::complete<void>(std::move(done), [&](auto done) {
+      send_stream<row_t>(
+          detail::wire_caught(std::forward<statement_t>(statement)), read,
+          [on_chunk = std::move(on_chunk)](const QueryResult& chunk) mutable {
+            // NOLINTNEXTLINE(misc-const-correctness) -- moved to the handler below, which may take it over
+            std::vector<row_t> rows = read_chunk<row_t>(chunk);
+            if ( rows.empty() ) {  // the client hands over none today; this keeps the promise whatever it does
+              return true;
+            }
+
+            if constexpr ( std::same_as<std::invoke_result_t<handler_t&, std::vector<row_t>&&>, bool> ) {
+              return std::invoke(on_chunk, std::move(rows));
+            } else {
+              std::invoke(on_chunk, std::move(rows));
+              return true;
+            }
+          },
+          std::move(done)
+      );
     });
   }
 
   /** @brief As above, read as this runner reads results by default. */
   template <
-      RunnableStatement statement_t, RowCallback<typename statement_t::result_type> handler_t, util::CompletionFor<void> done_t = util::UseFuture>
-  auto stream(const statement_t& statement, handler_t on_row, done_t done = {}) {
-    return stream(statement, std::move(on_row), _read, std::move(done));
+      RunnableStatementRef statement_t, ChunkCallback<detail::row_of<statement_t>> handler_t, util::CompletionFor<void> done_t = util::UseFuture>
+  auto stream_chunks(statement_t&& statement, handler_t on_chunk, done_t done = {}) {
+    return stream_chunks(std::forward<statement_t>(statement), std::move(on_chunk), _read, std::move(done));
   }
+
+  /**
+   * @return How this runner reads results by default (a `Database`'s `Options::read`; a `Transaction` reads as its database
+   * does). To change one setting for a call and keep the rest: `auto read = db.read_options(); read.chunk_rows = 100;`.
+   */
+  [[nodiscard]] const ReadOptions& read_options() const noexcept { return _read; }
 
   // ---- conveniences: each one statement, run by `execute` on the schema's own table ------------------------------------------
 
@@ -228,7 +289,6 @@ class StatementRunner {
   [[nodiscard]] const AsyncClient::Lease& lease() const noexcept { return _lease; }
   [[nodiscard]] bool                      holds_lease() const noexcept { return static_cast<bool>(_lease); }
   [[nodiscard]] AsyncClient::Lease        take_lease() noexcept { return std::move(_lease); }
-  [[nodiscard]] const ReadOptions&        read_options() const noexcept { return _read; }
 
  private:
   AsyncClient*       _client;
@@ -243,15 +303,22 @@ class StatementRunner {
   void send_for_rows(detail::Wired wired, const ReadOptions& read, done_t done) {
     const auto rows = std::make_shared<std::vector<result_t>>();
 
-    send_rows<result_t>(
-        std::move(wired), read, [rows](result_t&& row) { rows->push_back(std::move(row)); },
+    send_stream<result_t>(
+        std::move(wired), read,
+        [rows](const QueryResult& chunk) {
+          const auto keep = [&rows](result_t&& row) { rows->push_back(std::move(row)); };
+          return read_rows<result_t>(chunk, keep);
+        },
         [rows, done = std::move(done)](const std::exception_ptr& error) mutable { done(error ? std::vector<result_t>{} : std::move(*rows), error); }
     );
   }
 
-  /** @brief Sends `wired`, calls `on_row` with each row it returns, read as a `result_t`, and then `done`. */
-  template <TextRow result_t, RowCallback<result_t> handler_t>
-  void send_rows(detail::Wired wired, ReadOptions read, handler_t on_row, AsyncClient::StreamCompletion done) {
+  /**
+   * @brief Sends `wired`, calls `reader` with each chunk of `result_t` rows it returns (checked to have the statement's
+   * columns; `false` back stops the stream), and then `done`.
+   */
+  template <TextRow result_t, std::predicate<const QueryResult&> reader_t>
+  void send_stream(detail::Wired wired, ReadOptions read, reader_t reader, AsyncClient::StreamCompletion done) {
     if ( wired.error ) {
       _client->post([done = std::move(done), error = wired.error] mutable { done(error); });
       return;
@@ -259,9 +326,9 @@ class StatementRunner {
 
     read.format = BinaryReadableRow<result_t> ? read.format : ResultFormat::Text;
     AsyncClient::ChunkHandler on_chunk = [column_names = std::move(wired.statement.column_names),
-                                          on_row = std::move(on_row)](QueryResult chunk) mutable {
+                                          reader = std::move(reader)](const QueryResult& chunk) mutable {
       detail::check_result_columns(column_names, chunk);
-      return read_rows<result_t>(chunk, on_row);  // false: `on_row` wants no more rows, stop the query
+      return reader(chunk);  // false: the handler wants no more rows, stop the query
     };
 
     if ( _on_lease ) {

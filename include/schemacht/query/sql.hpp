@@ -304,10 +304,16 @@ inline constexpr std::size_t MAX_CAST_TYPE_LENGTH = 128;
  * length of one), `varchar` for the varying ones, `varbit` for the bit strings.
  */
 [[nodiscard]] consteval std::string_view unlimited_string_type(std::string_view type) {
-  constexpr std::array<std::string_view, 6> PADDED{"char", "character", "nchar", "national character", "national char", "bpchar"};
-  constexpr std::array<std::string_view, 6> VARYING{"varchar",       "character varying",          "char varying",
-                                                    "nchar varying", "national character varying", "national char varying"};
+  constexpr std::string_view                NATIONAL = "national ";  // `national character varying` is `character varying`
+  constexpr std::array<std::string_view, 4> PADDED{"char", "character", "nchar", "bpchar"};
+  constexpr std::array<std::string_view, 4> VARYING{"varchar", "character varying", "char varying", "nchar varying"};
   constexpr std::array<std::string_view, 3> BITS{"bit", "bit varying", "varbit"};
+
+  constexpr std::string_view CHAR = "char";
+  if ( type.size() >= NATIONAL.size() + CHAR.size() && same_name(type.substr(0, NATIONAL.size()), NATIONAL) &&
+       same_name(type.substr(NATIONAL.size(), CHAR.size()), CHAR) ) {  // `national char...` only: there is no `national varchar` or `national bit`
+    type.remove_prefix(NATIONAL.size());
+  }
 
   const auto named = [type](std::string_view name) { return same_name(type, name); };
   if ( std::ranges::any_of(PADDED, named) ) {

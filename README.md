@@ -89,7 +89,8 @@ int main() {
 - **Queries:**
   - comparisons, `in(...)`, `IS NULL`, `AND`/`OR`/`NOT`, `LIKE`;
   - `order_by`, `limit`, and `project` to fetch only some columns;
-  - `stream` to handle a large result a chunk at a time, with backpressure;
+  - `stream` to handle a large result a row at a time as it arrives, or `stream_chunks` a chunk at a time, with
+    backpressure;
   - every call returns a `std::future`, or, given a callback last, calls it instead, to chain the next step:
     `database.execute(query, [](std::vector<Row> rows, std::exception_ptr error) { ... })`;
   - every error from making and running a statement arrives through the future or the callback, which runs exactly once; a

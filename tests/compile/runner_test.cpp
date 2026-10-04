@@ -14,6 +14,7 @@
 #include <vector>
 
 #include "schemacht/postgres/database.hpp"
+#include "schemacht/postgres/row_reader.hpp"
 #include "schemacht/postgres/statement_runner.hpp"
 #include "schemacht/postgres/statements.hpp"
 #include "schemacht/postgres/transaction.hpp"
@@ -57,6 +58,10 @@ struct OnRow {
   void operator()(const t::People::row_type& /*row*/) const {}
 };
 
+struct OnChunk {
+  bool operator()(const std::vector<t::People::row_type>& /*rows*/) const { return true; }
+};
+
 template <typename schema_t, typename key_t>
 concept SelectsByKey = requires(pg::Database& database, std::span<const key_t> keys) { database.select_by_key<schema_t>(keys); };
 
@@ -80,6 +85,11 @@ TEST_CASE("a call returns a future of its outcome, or nothing when given a compl
   STATIC_REQUIRE(std::same_as<decltype(std::declval<pg::Database&>().execute(std::declval<const Command&>(), CountDone{})), void>);
   STATIC_REQUIRE(std::same_as<decltype(std::declval<pg::Database&>().stream(std::declval<const Query&>(), OnRow{})), std::future<void>>);
   STATIC_REQUIRE(std::same_as<decltype(std::declval<pg::Database&>().stream(std::declval<const Query&>(), OnRow{}, ErrorDone{})), void>);
+  STATIC_REQUIRE(std::same_as<decltype(std::declval<pg::Database&>().stream(std::declval<Query>(), OnRow{})), std::future<void>>);  // a temporary
+  STATIC_REQUIRE(std::same_as<decltype(std::declval<pg::Database&>().stream_chunks(std::declval<const Query&>(), OnChunk{})), std::future<void>>);
+  STATIC_REQUIRE(
+      std::same_as<decltype(std::declval<pg::Transaction&>().stream_chunks(std::declval<Query>(), OnChunk{}, pg::ReadOptions{}, ErrorDone{})), void>
+  );
   STATIC_REQUIRE(std::same_as<decltype(std::declval<pg::Database&>().insert<t::People>(std::declval<const Rows&>())), std::future<std::uint64_t>>);
   STATIC_REQUIRE(std::same_as<decltype(std::declval<pg::Database&>().upsert<t::People>(std::declval<const Rows&>())), std::future<std::uint64_t>>);
   STATIC_REQUIRE(
@@ -102,4 +112,16 @@ TEST_CASE("select_by_key is there only for a schema whose key is one column", "[
   STATIC_REQUIRE(SelectsByKey<t::People, std::int64_t>);
   STATIC_REQUIRE_FALSE(SelectsByKey<t::Pairs, std::int32_t>);   // a key of two columns
   STATIC_REQUIRE_FALSE(SelectsByKey<t::Keyless, std::string>);  // no key
+}
+
+TEST_CASE("a stream's handler takes a row, and a chunk stream's a vector of them", "[completions]") {
+  STATIC_REQUIRE(pg::RowCallback<OnRow, t::People::row_type>);
+  STATIC_REQUIRE(pg::ChunkCallback<OnChunk, t::People::row_type>);
+
+  STATIC_REQUIRE_FALSE(pg::ChunkCallback<OnRow, t::People::row_type>);
+  STATIC_REQUIRE_FALSE(pg::RowCallback<OnChunk, t::People::row_type>);
+  STATIC_REQUIRE_FALSE(pg::ChunkCallback<RowsDone, t::People::row_type>);  // it takes an error too
+
+  STATIC_REQUIRE(std::same_as<decltype(std::declval<const pg::Database&>().read_options()), const pg::ReadOptions&>);
+  STATIC_REQUIRE(std::same_as<decltype(std::declval<const pg::Transaction&>().read_options()), const pg::ReadOptions&>);
 }

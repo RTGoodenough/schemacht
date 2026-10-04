@@ -1410,3 +1410,121 @@ TEST_CASE("integration: a value too long for its column's size is refused, not c
 
   database.drop_table<Codes>().get();
 }
+
+TEST_CASE("integration: a stream hands its rows over a chunk at a time, in order", "[integration][stream]") {
+  pg::Database database(test_db(), pg::Database::Options{.pool = {}, .read = {.chunk_rows = 100}});
+  CHECK(database.read_options().chunk_rows == 100);
+
+  // 250 rows as the database reads by default: chunks of 100, and the last has what is left.
+  std::vector<std::size_t> sizes;
+  std::int64_t             next = 1;
+  bool                     in_order = true;
+  database
+      .stream_chunks(
+          Series::bind(250),
+          [&](const std::vector<Series::row_type>& rows) {
+            sizes.push_back(rows.size());
+            for ( const Series::row_type& row : rows ) {
+              in_order = in_order && sch::get<"n">(row) == next++;
+            }
+          }
+      )
+      .get();
+  CHECK(sizes == std::vector<std::size_t>{100, 100, 50});
+  CHECK(in_order);
+
+  // One setting changed for the call, the rest as the database's: chunks of 40, with a completion.
+  pg::ReadOptions read = database.read_options();
+  read.chunk_rows = 40;
+  std::vector<std::vector<Series::row_type>> kept;  // each chunk is the handler's to keep
+  std::promise<void>                         ended;
+  database.stream_chunks(
+      Series::bind(100), [&kept](std::vector<Series::row_type>&& rows) { kept.push_back(std::move(rows)); }, read,
+      [&ended](const std::exception_ptr& error) { schemacht::util::settle(ended, error); }
+  );
+  ended.get_future().get();
+  REQUIRE(kept.size() == 3);
+  CHECK(kept.at(0).size() == 40);
+  CHECK(kept.at(1).size() == 40);
+  CHECK(kept.at(2).size() == 20);
+  CHECK(sch::get<"n">(kept.at(2).back()) == 100);
+
+  // A statement that returns no rows never calls the handler.
+  std::size_t calls = 0;
+  database.stream_chunks(Series::bind(0), [&calls](const std::vector<Series::row_type>& /*rows*/) { ++calls; }).get();
+  CHECK(calls == 0);
+}
+
+TEST_CASE("integration: a chunk handler stops its stream, or fails it; what it had stays", "[integration][stream]") {
+  // One connection: the query after each stream only runs if the stream's connection came back.
+  pg::Database database(test_db(), pg::Database::Options{.pool = {.connections = 1, .workers = 2, .session = {}}, .read = {.chunk_rows = 100}});
+
+  std::size_t seen = 0;
+  database.stream_chunks(Series::bind(100000000), [&seen](const std::vector<Series::row_type>& rows) { return (seen += rows.size()) < 250; }).get();
+  CHECK(seen == 300);  // stopped by the third chunk
+  CHECK(database.execute(Series::bind(3)).get().size() == 3);
+
+  seen = 0;
+  std::future<void> failed = database.stream_chunks(Series::bind(100000000), [&seen](const std::vector<Series::row_type>& rows) {
+    seen += rows.size();
+    if ( seen >= 200 ) {
+      throw std::runtime_error("no more");
+    }
+  });
+  CHECK_THROWS_WITH(failed.get(), "no more");
+  CHECK(seen == 200);
+  CHECK(database.execute(Series::bind(3)).get().size() == 3);
+
+  // In a transaction, a stream stopped early leaves the transaction usable.
+  pg::Transaction transaction = database.begin().get();
+  seen = 0;
+  transaction.stream_chunks(Series::bind(100000), [&seen](const std::vector<Series::row_type>& rows) { return (seen += rows.size()) < 250; }).get();
+  CHECK(seen == 300);
+  CHECK(transaction.read_options().chunk_rows == 100);  // as its database reads
+  CHECK(transaction.execute(Series::bind(3)).get().size() == 3);
+  transaction.commit().get();
+}
+
+TEST_CASE("integration: a chunk stream's last chunk, and a chunk with a row that can't be read", "[integration][stream]") {
+  pg::Database database(test_db(), pg::Database::Options{.pool = {}, .read = {.chunk_rows = 100}});
+
+  // A result that is a whole number of chunks ends without an empty one.
+  std::vector<std::size_t> sizes;
+  database.stream_chunks(Series::bind(300), [&sizes](const std::vector<Series::row_type>& rows) { sizes.push_back(rows.size()); }).get();
+  CHECK(sizes == std::vector<std::size_t>{100, 100, 100});
+
+  // Row 150 is NULL, which the field can't hold: the first chunk is handed over, and none of the second, where `stream` hands
+  // over the 149 rows before it.
+  using Holed = q::RawStatement<
+      "SELECT CASE WHEN n = 150 THEN NULL ELSE n END AS n FROM generate_series(1::bigint, 300) AS s(n)", q::RawArguments<>,
+      sch::Field<std::int64_t, "n">>;
+
+  std::size_t in_chunks = 0;
+  CHECK_THROWS(database.stream_chunks(Holed::bind(), [&in_chunks](const std::vector<Holed::row_type>& rows) { in_chunks += rows.size(); }).get());
+  CHECK(in_chunks == 100);
+
+  std::size_t in_rows = 0;
+  CHECK_THROWS(database.stream(Holed::bind(), [&in_rows](const Holed::row_type& /*row*/) { ++in_rows; }).get());
+  CHECK(in_rows == 149);
+}
+
+TEST_CASE("integration: a statement that is streamed is left whole, unless it was given as a temporary", "[integration][stream]") {
+  pg::Database                 database(test_db());
+  const sch::Table<Keyless> keyless("schemacht_it_stream_twice");
+  recreate(database, keyless);
+
+  // An insert that gives back its rows, kept and streamed twice: its arguments are still there the second time.
+  const std::vector<Keyless::row_type> rows{Keyless::make_row("a", 1.0), Keyless::make_row("b", 2.0)};
+  auto                                    statement = pg::insert_returning_statement<Keyless>(rows).on(keyless);
+
+  std::size_t by_row = 0;
+  database.stream(statement, [&by_row](const Keyless::row_type& /*row*/) { ++by_row; }).get();
+  CHECK(by_row == 2);
+
+  std::size_t by_chunk = 0;
+  database.stream_chunks(statement, [&by_chunk](const std::vector<Keyless::row_type>& chunk) { by_chunk += chunk.size(); }).get();
+  CHECK(by_chunk == 2);
+  CHECK(statement.params().size() == 2);
+
+  drop(database, keyless);
+}

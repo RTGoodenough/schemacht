@@ -14,7 +14,8 @@
  * A Postgres database: a pool of connections (an `AsyncClient`) that runs typed queries, raw statements and inserts for
  * any schema, from any thread.
  *
- * - **Rows:** `execute` a query (`Prepared::bind`) or a raw statement for every row, or `stream` them as they arrive.
+ * - **Rows:** `execute` a query (`Prepared::bind`) or a raw statement for every row, or `stream` them as they arrive, one at a
+ *   time (or a chunk at a time, with `stream_chunks`).
  * - **Changes:** `execute` an update or delete (command.hpp), or a raw statement with no columns (an `UPDATE`, a `CREATE TYPE`),
  *   for the count of rows it changed, or the rows themselves with `returning(...)`; `insert` rows of a schema, or
  *   `insert_returning` them to get back what the database filled in (an identity key, say).

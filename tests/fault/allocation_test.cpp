@@ -67,6 +67,7 @@ using WorkerLists = sch::Schema<"schemacht_it_fault_worker_lists", t::Name, t::T
 
 constexpr auto ALL_KEYLESS = q::select<t::Keyless>();
 constexpr auto NO_KEYLESS = q::delete_all<t::Keyless>();
+constexpr auto FEW_WORKER_LISTS = q::select<WorkerLists>().limit(3);
 
 /** @brief Counts the calls of the completions made from it, and waits for the first. */
 class Probe {
@@ -224,6 +225,9 @@ TEST_CASE("integration: a failed allocation on the caller's thread reaches the c
   sweeps.push_back(sweep_caller([&](const Probe& probe) {
     database->stream(q::Prepared<ALL_KEYLESS>::bind().on(keyless), [](const t::Keyless::row_type& /*row*/) {}, probe.done());
   }));
+  sweeps.push_back(sweep_caller([&](const Probe& probe) {
+    database->stream_chunks(q::Prepared<ALL_KEYLESS>::bind().on(keyless), [](const std::vector<t::Keyless::row_type>& /*rows*/) {}, probe.done());
+  }));
   sweeps.push_back(sweep_caller([&](const Probe& probe) { database->begin({}, probe.done()); }));
 
   // On a transaction: its statements, and ending it.
@@ -235,6 +239,9 @@ TEST_CASE("integration: a failed allocation on the caller's thread reaches the c
   }));
   sweeps.push_back(sweep_transaction(*database, [&](pg::Transaction& transaction, const Probe& probe) {
     transaction.stream(q::Prepared<ALL_KEYLESS>::bind().on(keyless), [](const t::Keyless::row_type& /*row*/) {}, probe.done());
+  }));
+  sweeps.push_back(sweep_transaction(*database, [&](pg::Transaction& transaction, const Probe& probe) {
+    transaction.stream_chunks(q::Prepared<ALL_KEYLESS>::bind().on(keyless), [](const std::vector<t::Keyless::row_type>& /*rows*/) {}, probe.done());
   }));
   sweeps.push_back(sweep_transaction(*database, [](pg::Transaction& transaction, const Probe& probe) { transaction.commit(probe.done()); }));
   sweeps.push_back(sweep_transaction(*database, [](pg::Transaction& transaction, const Probe& probe) { transaction.rollback(probe.done()); }));
@@ -279,6 +286,9 @@ TEST_CASE("integration: a failed allocation on a worker reaches the completion, 
   std::vector<std::vector<Probe>> sweeps;
   sweeps.push_back(sweep_worker(*database, [&](const Probe& probe) { database->begin({}, probe.done()); }));  // the BEGIN's own step
   sweeps.push_back(sweep_worker(*database, [&](const Probe& probe) { database->insert<WorkerLists>(many, probe.done()); }));
+  sweeps.push_back(sweep_worker(*database, [&](const Probe& probe) {  // reading a chunk's rows, on the worker
+    database->stream_chunks(q::Prepared<FEW_WORKER_LISTS>::bind(), [](const std::vector<WorkerLists::row_type>& /*rows*/) {}, probe.done());
+  }));
 
   database->drop_table<WorkerLists>().get();
   database.reset();

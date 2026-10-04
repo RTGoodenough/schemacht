@@ -124,6 +124,7 @@ schemacht_compile_fail(UPSERT_MERGE_BAD_FUNCTION "must be a SQL function name")
 schemacht_compile_fail(UPSERT_MERGE_BAD_OPERATOR "must be a single SQL operator")
 schemacht_compile_fail(UPSERT_MERGE_ARGUMENT_PREFIX "MergeOperation")
 schemacht_compile_fail(UPSERT_MERGE_BOTH "MergeOperation")
+schemacht_compile_fail(STREAM_CHUNKS_ROW_HANDLER "ChunkCallback")
 schemacht_compile_fail(UNCHECKED_SQL_ARGUMENT_WITHOUT_TEXT_FORM "UncheckedSqlArgument")
 
 # With no case defined, cases.cpp must compile: the failures above are the cases', not the file's.
