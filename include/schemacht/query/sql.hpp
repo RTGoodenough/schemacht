@@ -287,6 +287,88 @@ consteval std::string_view comparison_symbol(Comparison comparison) {
   return "";  // unreachable: every Comparison is handled above
 }
 
+/** @brief The longest SQL type name a value can be cast to (`append_cast_type`). */
+inline constexpr std::size_t MAX_CAST_TYPE_LENGTH = 128;
+
+/** @return Whether `left` and `right` are the same apart from the case of ASCII letters, as SQL reads an unquoted name. */
+[[nodiscard]] constexpr bool same_name(std::string_view left, std::string_view right) {
+  return std::ranges::equal(left, right, [](char lhs, char rhs) {
+    const auto lower = [](char chr) { return chr >= 'A' && chr <= 'Z' ? static_cast<char>(chr - 'A' + 'a') : chr; };
+    return lower(lhs) == lower(rhs);
+  });
+}
+
+/**
+ * @return The unlimited form of `type` if it is a character or bit string type of limited length (`varchar`, `char`, `bit` and
+ * their other spellings, without the length), else empty: `bpchar` for the blank-padded ones and `char` (which alone means a
+ * length of one), `varchar` for the varying ones, `varbit` for the bit strings.
+ */
+[[nodiscard]] consteval std::string_view unlimited_string_type(std::string_view type) {
+  constexpr std::array<std::string_view, 6> PADDED{"char", "character", "nchar", "national character", "national char", "bpchar"};
+  constexpr std::array<std::string_view, 6> VARYING{"varchar",       "character varying",          "char varying",
+                                                    "nchar varying", "national character varying", "national char varying"};
+  constexpr std::array<std::string_view, 3> BITS{"bit", "bit varying", "varbit"};
+
+  const auto named = [type](std::string_view name) { return same_name(type, name); };
+  if ( std::ranges::any_of(PADDED, named) ) {
+    return "bpchar";
+  }
+
+  if ( std::ranges::any_of(VARYING, named) ) {
+    return "varchar";
+  }
+
+  if ( std::ranges::any_of(BITS, named) ) {
+    return "varbit";
+  }
+
+  return {};
+}
+
+/**
+ * @brief Appends `type` as an argument is cast to it (`$1::<type>`). A character or bit string type of limited length is cast to
+ * its unlimited form (`varchar(3)` to `varchar`, `char(2)` to `bpchar`; see `unlimited_string_type`): a cast cuts such a value to
+ * fit, where storing it fails, so a value too long fails where it is stored (or matches nothing it is compared with) instead of
+ * being cut. Any other type is cast to as it is written: its modifier may be more than a size (`geometry(Point,4326)`'s is a
+ * geometry type and an SRID, which the cast checks and applies), and a number's precision rounds alike either way. An array's
+ * `[]` stays.
+ */
+template <std::size_t text_capacity>
+consteval void append_cast_type(Text<text_capacity>& text, std::string_view type) {
+  if ( type.size() > MAX_CAST_TYPE_LENGTH ) {
+    sql_statement_capacity_exceeded();
+  }
+
+  std::array<char, MAX_CAST_TYPE_LENGTH> chars{};  // `type` without its modifier: `varchar (3)[]` is `varchar[]`
+  std::size_t                            size = 0;
+  std::size_t                            depth = 0;
+  for ( const char chr : type ) {
+    if ( chr == '(' ) {
+      while ( size > 0 && chars.at(size - 1) == ' ' ) {
+        --size;
+      }
+      ++depth;
+
+    } else if ( chr == ')' ) {
+      --depth;
+
+    } else if ( depth == 0 ) {
+      chars.at(size++) = chr;
+    }
+  }
+
+  const std::string_view unmodified(chars.data(), size);
+  const std::size_t      dims = unmodified.find("[]");
+  const std::string_view unlimited = unlimited_string_type(unmodified.substr(0, dims));
+  if ( unlimited.empty() ) {
+    text.append(type);
+    return;
+  }
+
+  text.append(unlimited);
+  text.append(dims == std::string_view::npos ? std::string_view() : unmodified.substr(dims));
+}
+
 /** @brief Writes an operand: `$n` for a bound argument (`arg<N>()` is `$N+1`), or the literal itself. */
 template <std::size_t text_capacity>
 consteval void append_operand(Text<text_capacity>& text, const Operand& value) {
@@ -435,7 +517,7 @@ class Emitter {
   consteval void cast(std::string_view type) {
     if ( ! type.empty() ) {
       _text->append("::");
-      _text->append(type);
+      append_cast_type(*_text, type);
     }
   }
 
@@ -532,7 +614,7 @@ template <schema::IsSchema schema_t, std::size_t predicate_capacity, std::size_t
       const std::string_view type = own != nullptr ? own->sql_type : detail::column_type_name<schema_t>(term.column);
       if ( ! type.empty() ) {
         text.append("::");
-        text.append(type);
+        detail::append_cast_type(text, type);
       }
     }
 
@@ -733,7 +815,7 @@ consteval void append_insert_unnest(Text<text_capacity>& text, std::string_view 
     text.append_identifier(schema_t::column_names().at(column));
     if ( detail::sent_as_text<schema_t>(column) ) {
       text.append("::");
-      text.append(detail::COLUMN_TYPE_NAMES<schema_t>.at(column));
+      detail::append_cast_type(text, detail::COLUMN_TYPE_NAMES<schema_t>.at(column));
     }
   }
 
@@ -751,7 +833,9 @@ consteval void append_insert_unnest(Text<text_capacity>& text, std::string_view 
     text.push('$');
     text.append_unsigned(++placeholder);
     text.append("::");
-    text.append(detail::sent_as_text<schema_t>(column) ? std::string_view("text") : detail::COLUMN_TYPE_NAMES<schema_t>.at(column));
+    detail::append_cast_type(
+        text, detail::sent_as_text<schema_t>(column) ? std::string_view("text") : detail::COLUMN_TYPE_NAMES<schema_t>.at(column)
+    );
     text.append("[]");
   }
 
@@ -781,14 +865,15 @@ template <schema::IsSchema schema_t>
  */
 struct Merge {
   std::size_t      column = 0;           ///< Index into the schema's fields.
-  const Operation* operation = nullptr;  ///< The SQL function, or, if `infix`, the SQL operator, that merges the two values.
+  const Operation* operation = nullptr;  ///< The function or operator that merges the two values; null to keep the value there.
 };
 
 /**
  * @return `insert_unnest_statement`'s INSERT, with the table named `"current"`, ending `ON CONFLICT (<primary key>) DO UPDATE SET
  * ...`: a row whose key is already there updates it instead. Each column that is neither key nor generated is set as its
- * `Merge` in `merges` says, or else to the value that would have gone in (`"column" = excluded."column"`). The schema must
- * have a primary key and a column to set (`postgres::upsert_statement` checks both).
+ * `Merge` in `merges` says (or left out, if it keeps the value there), or else to the value that would have gone in
+ * (`"column" = excluded."column"`). The schema must have a primary key and a column to set (`postgres::upsert_statement` checks
+ * both).
  */
 template <schema::IsSchema schema_t, std::size_t merge_count>
 [[nodiscard]] consteval Text<STATEMENT_CAPACITY> upsert_statement(const std::array<Merge, merge_count>& merges) {
@@ -805,6 +890,11 @@ template <schema::IsSchema schema_t, std::size_t merge_count>
       continue;
     }
 
+    const auto merge = std::ranges::find(merges, column, &Merge::column);
+    if ( merge != merges.end() && merge->operation == nullptr ) {
+      continue;  // kept as it is
+    }
+
     if ( ! first ) {
       text.append(", ");
     }
@@ -814,7 +904,6 @@ template <schema::IsSchema schema_t, std::size_t merge_count>
     text.append_identifier(name);
     text.append(" = ");
 
-    const auto merge = std::ranges::find(merges, column, &Merge::column);
     if ( merge == merges.end() ) {
       append_excluded(text, name);
 

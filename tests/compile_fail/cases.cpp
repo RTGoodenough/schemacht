@@ -333,6 +333,25 @@ using Bad = pg::MergeWith<"count", Wrapped>;
 [[maybe_unused]] Bad merge;
 #endif
 
+#if defined(CASE_UPSERT_KEEP_KEY)
+[[maybe_unused]] void run(const std::vector<Things::row_type>& rows) { (void)pg::upsert_statement<Things, pg::Keep<"id">>(rows); }
+#endif
+
+#if defined(CASE_UPSERT_KEEP_EVERYTHING)
+[[maybe_unused]] void run(const std::vector<Things::row_type>& rows) {
+  (void)pg::upsert_statement<Things, pg::Keep<"name">, pg::Keep<"count">, pg::Keep<"ratio">>(rows);
+}
+#endif
+
+#if defined(CASE_UPSERT_KEEP_AND_MERGE)
+struct Add {
+  static constexpr std::string_view OPERATOR = "+";
+};
+[[maybe_unused]] void run(const std::vector<Things::row_type>& rows) {
+  (void)pg::upsert_statement<Things, pg::Keep<"count">, pg::MergeWith<"count", Add>>(rows);
+}
+#endif
+
 #if defined(CASE_UPSERT_MERGE_BOTH)
 struct Both {
   static constexpr std::string_view FUNCTION = "greatest";

@@ -212,6 +212,15 @@ TEST_CASE("an upsert calls a merge function named with its schema there, whateve
   CHECK(statement.sql().contains(R"("score" = app.merge_scores("current"."score", excluded."score"))"));
 }
 
+TEST_CASE("an upsert leaves a kept column of the row already there as it is", "[upsert]") {
+  const std::vector<t::People::row_type> people{{t::Id{1}, t::Name{"al"}, t::Nick{std::nullopt}, t::Score{1}, t::Active{true}}};
+  CHECK(
+      pg::upsert_statement<t::People, pg::Keep<"name">, pg::MergeWith<"score", Add>, pg::Keep<"active">>(people).sql().ends_with(
+          R"( ON CONFLICT ("id") DO UPDATE SET "nick" = excluded."nick", "score" = "current"."score" + excluded."score")"
+      )
+  );
+}
+
 TEST_CASE("an upsert matches on the whole primary key, and never sets a key or generated column", "[upsert]") {
   const std::vector<t::Pairs::row_type> pairs{t::Pairs::make_row(1, 2, 3)};
   CHECK(pg::upsert_statement<t::Pairs>(pairs).sql().ends_with(R"( ON CONFLICT ("a", "b") DO UPDATE SET "v" = excluded."v")"));

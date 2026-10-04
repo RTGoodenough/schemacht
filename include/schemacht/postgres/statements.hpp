@@ -94,13 +94,35 @@ class UnnestSql {
   static constexpr query::sql::TableSlot TABLE_SLOT = PARTS.second;  ///< Where `VALUE` names the table (see `query::sql::on_table`).
 };
 
-/** @brief The upsert for `schema_t` that merges as `merge_ts` say (see `query::sql::upsert_statement`), as a static string. */
-template <schema::IsSchema schema_t, IsMergeWith... merge_ts>
+/** @return The operation that merges a column by `rule_t` (a `MergeWith`), or null for a column it keeps (a `Keep`). */
+template <UpsertRule rule_t>
+[[nodiscard]] consteval const query::Operation* merge_operation() {
+  if constexpr ( IsMergeWith<rule_t> ) {
+    return &query::detail::BoundOperation<typename rule_t::merge_type>::VALUE;  // which checks its spelling
+  } else {
+    return nullptr;
+  }
+}
+
+/** @return Whether `rule_t` merges by a function or operator spelled as it must be; a `Keep` names none. */
+template <UpsertRule rule_t>
+[[nodiscard]] consteval bool spelled_validly() {
+  if constexpr ( IsMergeWith<rule_t> ) {
+    return query::detail::spelled_validly<typename rule_t::merge_type>();
+  } else {
+    return true;
+  }
+}
+
+/** @brief The upsert for `schema_t` that treats columns as `rule_ts` say (see `query::sql::upsert_statement`), as a static string. */
+template <schema::IsSchema schema_t, UpsertRule... rule_ts>
 class UpsertSql {
-  static constexpr std::array<query::sql::Merge, sizeof...(merge_ts)> MERGES{query::sql::Merge{
-      .column = schema_t::template checked_field_index<merge_ts::COLUMN>(),
-      .operation = &query::detail::BoundOperation<typename merge_ts::merge_type>::VALUE,  // which checks its spelling
+  static constexpr std::array<query::sql::Merge, sizeof...(rule_ts)> MERGES{query::sql::Merge{
+      .column = schema_t::template checked_field_index<rule_ts::COLUMN>(),
+      .operation = merge_operation<rule_ts>(),
   }...};
+
+  static constexpr std::size_t KEPT = (std::size_t{0} + ... + std::size_t{IsKeep<rule_ts>});
 
   [[nodiscard]] static constexpr bool is_key(std::size_t column) { return schema_t::KEY_ROLES.at(column) == schema::KeyRole::Primary; }
 
@@ -115,19 +137,19 @@ class UpsertSql {
     return false;
   }
 
-  [[nodiscard]] static consteval bool merges_distinct_columns() {
-    std::array<std::size_t, sizeof...(merge_ts)> columns{};
+  [[nodiscard]] static consteval bool distinct_columns() {
+    std::array<std::size_t, sizeof...(rule_ts)> columns{};
     std::ranges::transform(MERGES, columns.begin(), &query::sql::Merge::column);
     std::ranges::sort(columns);
 
     return std::ranges::adjacent_find(columns) == columns.end();
   }
 
-  // A MergeWith of a column the schema doesn't have, or of a misspelt function or operator, fails on its own
-  // (`checked_field_index`, `BoundOperation`); no second error follows.
-  static constexpr bool KNOWN_COLUMNS = (schema_t::template has_column<merge_ts::COLUMN>() && ...);
-  static constexpr bool SPELLED = (query::detail::spelled_validly<typename merge_ts::merge_type>() && ...);
-  static constexpr bool CHECKED = KNOWN_COLUMNS && SPELLED;  // the merges themselves are then checked
+  // A rule for a column the schema doesn't have, or a misspelt function or operator, fails on its own (`checked_field_index`,
+  // `BoundOperation`); no second error follows.
+  static constexpr bool KNOWN_COLUMNS = (schema_t::template has_column<rule_ts::COLUMN>() && ...);
+  static constexpr bool SPELLED = (insert_detail::spelled_validly<rule_ts>() && ...);
+  static constexpr bool CHECKED = KNOWN_COLUMNS && SPELLED;  // the rules themselves are then checked
 
   static_assert(schema_t::HAS_PRIMARY_KEY, "upsert: the schema has no primary key, which is what a row is matched on to the one already there");
   static_assert(! key_generated(), "upsert: the database numbers the primary key, so a row inserted never carries one to match");
@@ -137,13 +159,17 @@ class UpsertSql {
   );
   static_assert(
       ! CHECKED || std::ranges::none_of(MERGES, [](const query::sql::Merge& merge) { return is_key(merge.column); }),
-      "upsert: a MergeWith names a primary key column, which rows are matched on and is never updated"
+      "upsert: a MergeWith or Keep names a primary key column, which rows are matched on and is never updated"
   );
   static_assert(
       ! CHECKED || std::ranges::none_of(MERGES, [](const query::sql::Merge& merge) { return is_generated(merge.column); }),
-      "upsert: a MergeWith names a GENERATED column, which the database computes"
+      "upsert: a MergeWith or Keep names a GENERATED column, which the database computes"
   );
-  static_assert(! CHECKED || merges_distinct_columns(), "upsert: two MergeWith name the same column");
+  static_assert(! CHECKED || distinct_columns(), "upsert: two of its MergeWith and Keep name the same column");
+  static_assert(
+      key_generated() || ! CHECKED || ! distinct_columns() || schema_t::INSERTABLE_FIELD_COUNT - schema_t::PRIMARY_KEY_FIELD_COUNT > KEPT,
+      "upsert: every column besides the key is kept (Keep), so a row already there has nothing to update"
+  );
 
   [[nodiscard]] static consteval auto text() {
     if constexpr ( SPELLED ) {
@@ -250,6 +276,12 @@ class DropTableSql {
 
 namespace schemacht::postgres {
 
+namespace detail {
+
+struct SchemaStatementMaker;  // below
+
+}  // namespace detail
+
 /**
  * @brief A statement made from a schema rather than written as a query: its `CREATE TABLE`, `DROP TABLE`, `INSERT` or upsert
  * (see `create_table_statement`, `drop_table_statement`, `insert_statement`, `upsert_statement`). It runs as a query does
@@ -265,18 +297,6 @@ class SchemaStatement {
  public:
   using schema_type = schema_t;
   using result_type = result_t;
-
-  /**
-   * @param sql        The statement, with `$n` placeholders for `params`.
-   * @param table_slot Where `sql` names the schema's table (see `query::sql::on_table`).
-   * @param params     The text of each argument, in placeholder order.
-   */
-  SchemaStatement(std::string sql, query::sql::TableSlot table_slot, std::vector<std::string> params)
-      : _sql(std::move(sql)), _table_slot(table_slot), _params(std::move(params)) {}
-
-  /** @brief A statement that could not be made, for `error`: running it fails with that. */
-  SchemaStatement(std::string sql, query::sql::TableSlot table_slot, std::exception_ptr error)
-      : _sql(std::move(sql)), _table_slot(table_slot), _error(std::move(error)) {}
 
   [[nodiscard]] std::string_view sql() const noexcept { return _sql; }
 
@@ -312,10 +332,24 @@ class SchemaStatement {
   }
 
  private:
+  friend struct detail::SchemaStatementMaker;
+
   std::string              _sql;
   query::sql::TableSlot    _table_slot;
   std::vector<std::string> _params;
   std::exception_ptr       _error;
+
+  /**
+   * @param sql        The statement, with `$n` placeholders for `params`.
+   * @param table_slot Where `sql` names the schema's table (see `query::sql::on_table`).
+   * @param params     The text of each argument, in placeholder order.
+   */
+  SchemaStatement(std::string sql, query::sql::TableSlot table_slot, std::vector<std::string> params)
+      : _sql(std::move(sql)), _table_slot(table_slot), _params(std::move(params)) {}
+
+  /** @brief A statement that could not be made, for `error`: running it fails with that. */
+  SchemaStatement(std::string sql, query::sql::TableSlot table_slot, std::exception_ptr error)
+      : _sql(std::move(sql)), _table_slot(table_slot), _error(std::move(error)) {}
 
   void aim(const schema::TableName& table) {
     _sql = query::sql::on_table(_sql, _table_slot, table);
@@ -324,6 +358,17 @@ class SchemaStatement {
 };
 
 namespace detail {
+
+/**
+ * @brief Makes `SchemaStatement`s, whose constructors are private: only schemacht's own statement makers (`insert_statement`,
+ * `create_table_statement`, ...) make one, so its SQL and where that names the table always agree.
+ */
+struct SchemaStatementMaker {
+  template <schema::IsSchema schema_t, typename result_t, typename arguments_t>
+  [[nodiscard]] static SchemaStatement<schema_t, result_t> make(std::string sql, query::sql::TableSlot table_slot, arguments_t arguments) {
+    return SchemaStatement<schema_t, result_t>(std::move(sql), table_slot, std::move(arguments));  // the arguments, or the error
+  }
+};
 
 /** @return The arguments of the INSERT of `rows`: the array literal of each inserted column. */
 template <TextSchema schema_t, std::ranges::contiguous_range rows_t>
@@ -353,10 +398,10 @@ template <TextSchema schema_t, typename result_t, std::ranges::contiguous_range 
   try {
     params = insert_params<schema_t>(rows);
   } catch ( ... ) {
-    return {std::move(sql), table_slot, std::current_exception()};
+    return SchemaStatementMaker::make<schema_t, result_t>(std::move(sql), table_slot, std::current_exception());
   }
 
-  return {std::move(sql), table_slot, std::move(params)};
+  return SchemaStatementMaker::make<schema_t, result_t>(std::move(sql), table_slot, std::move(params));
 }
 
 }  // namespace insert_detail
@@ -394,8 +439,8 @@ template <TextSchema schema_t, std::ranges::contiguous_range rows_t>
  * gone in, by the SQL function or operator `merge_t` names (`FUNCTION` or `OPERATOR`, one of the two, as an operation names its
  * test). A function is called `FUNCTION("current"."column", excluded."column")`, the row there first; an operator is written
  * `"current"."column" OPERATOR excluded."column"`. The function may be the application's own (`CREATE FUNCTION`), and must
- * give the column's type. Named alone, it is found through the search path; named with its schema (`miniverse.merge_raster`),
- * it is called there whatever the search path is, and whichever schema the table is in.
+ * give the column's type. Named alone, it is found through the search path; named with its schema (`stats.add_counts`), it is
+ * called there whatever the search path is, and whichever schema the table is in.
  *
  * In a column that can be NULL, a NULL on either side makes an operator's result NULL, and a function's if it is `STRICT`; a
  * function that keeps the value that isn't NULL handles it (`coalesce`, or a `CASE`).
@@ -417,19 +462,28 @@ struct MergeWith {
 };
 
 /**
+ * @brief Leaves the column `column` of a row already in the table as it is, when `upsert_statement` updates that row: the value
+ * that would have gone in is used only for a row inserted. For what is set once, such as when a row was first made.
+ */
+template <util::CTString column>
+struct Keep {
+  static constexpr util::CTString COLUMN = column;  ///< The column kept.
+};
+
+/**
  * @return The statement that inserts `rows` as `insert_statement` does, and, for a row whose primary key is already in the table,
- * updates that row instead (`ON CONFLICT (<key>) DO UPDATE`): each column a `MergeWith` in `merge_ts` names is merged as it
- * says, and every other column that is neither key nor generated takes the value that would have gone in. One statement,
- * atomic; `execute` gives the count of rows inserted or updated.
+ * updates that row instead (`ON CONFLICT (<key>) DO UPDATE`): each column a `MergeWith` in `rule_ts` names is merged as it
+ * says, each a `Keep` names is left as it is, and every other column that is neither key nor generated takes the value that
+ * would have gone in. One statement, atomic; `execute` gives the count of rows inserted or updated.
  *
  * The schema must have a primary key that the database does not number (a row is matched on it), and a column besides the key
  * to update. Two rows with the same key in one statement fail it (PostgreSQL updates a row once per statement): the error is
  * the database's, through the completion or future.
  */
-template <TextSchema schema_t, IsMergeWith... merge_ts, std::ranges::contiguous_range rows_t>
+template <TextSchema schema_t, UpsertRule... rule_ts, std::ranges::contiguous_range rows_t>
   requires schema::InsertRowOf<std::ranges::range_value_t<rows_t>, schema_t>
 [[nodiscard]] SchemaStatement<schema_t, std::tuple<>> upsert_statement(const rows_t& rows) {
-  using sql_t = detail::insert_detail::UpsertSql<schema_t, merge_ts...>;
+  using sql_t = detail::insert_detail::UpsertSql<schema_t, rule_ts...>;
   return detail::insert_detail::made<schema_t, std::tuple<>>(std::string(sql_t::VALUE), sql_t::TABLE_SLOT, rows);
 }
 
@@ -441,13 +495,17 @@ template <TextSchema schema_t, IsMergeWith... merge_ts, std::ranges::contiguous_
  */
 template <schema::IsSchema schema_t>
 [[nodiscard]] SchemaStatement<schema_t, std::tuple<>> create_table_statement() {
-  return {std::string(detail::CreateTableSql<schema_t>::VALUE), detail::CreateTableSql<schema_t>::TABLE_SLOT, std::vector<std::string>{}};
+  return detail::SchemaStatementMaker::make<schema_t, std::tuple<>>(
+      std::string(detail::CreateTableSql<schema_t>::VALUE), detail::CreateTableSql<schema_t>::TABLE_SLOT, std::vector<std::string>{}
+  );
 }
 
 /** @return `schema_t`'s `DROP TABLE IF EXISTS`. */
 template <schema::IsSchema schema_t>
 [[nodiscard]] SchemaStatement<schema_t, std::tuple<>> drop_table_statement() {
-  return {std::string(detail::DropTableSql<schema_t>::VALUE), detail::DropTableSql<schema_t>::TABLE_SLOT, std::vector<std::string>{}};
+  return detail::SchemaStatementMaker::make<schema_t, std::tuple<>>(
+      std::string(detail::DropTableSql<schema_t>::VALUE), detail::DropTableSql<schema_t>::TABLE_SLOT, std::vector<std::string>{}
+  );
 }
 
 /**

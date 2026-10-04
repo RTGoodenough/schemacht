@@ -44,7 +44,7 @@ namespace detail {
 
 /**
  * @return Whether `name` is a valid SQL function name: letters, digits and underscores, not starting with a digit; optionally
- * after the schema it is in and a dot (`gis.merge_raster`), to call it whatever the search path is.
+ * after the schema it is in and a dot (`stats.add_counts`), to call it whatever the search path is.
  */
 [[nodiscard]] constexpr bool is_sql_function_name(std::string_view name) {
   const std::size_t dot = name.find('.');

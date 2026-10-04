@@ -98,8 +98,8 @@ int main() {
   - `update(...)` and `delete_where(...)` give the count of rows changed, or the rows themselves with `.returning(...)`;
   - `insert` writes any number of rows atomically, in one statement: all of them or none;
   - `upsert` does the same, updating the row already there for a key that is (`ON CONFLICT` on the primary key): each
-    column overwritten, or merged with the value already there by a SQL function or operator you name,
-    `database.upsert<Tiles, pg::MergeWith<"rast", MergeRaster>>(rows)`.
+    column overwritten, merged with the value already there by a SQL function or operator you name, or kept,
+    `database.upsert<PageViews, pg::MergeWith<"views", Add>, pg::Keep<"first_seen">>(rows)`.
 - **Transactions:** `Database::begin` (with an isolation level, or read-only). A transaction that is dropped without a
   commit is rolled back.
 - **Raw SQL with types:** `q::RawStatement<"SELECT ...", q::RawArguments<...>, Fields...>` checks its `$n` placeholders
@@ -127,7 +127,7 @@ The examples show these together:
   runs;
 - [examples/custom_types.cpp](examples/custom_types.cpp): column types of your own;
 - [examples/transfers.cpp](examples/transfers.cpp): identity keys, `insert_returning`, update and delete with
-  `returning`, a unique column, and transactions;
+  `returning`, a unique column, an upsert, and transactions;
 - [examples/extensions.cpp](examples/extensions.cpp): pg_trgm's operators and a function of the application's own, jsonb's
   operators, and an operation whose argument is not of the column's type.
 

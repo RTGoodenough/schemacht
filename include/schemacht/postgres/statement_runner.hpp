@@ -202,18 +202,18 @@ class StatementRunner {
 
   /**
    * @brief Writes `rows` of `schema_t`, updating the row already there for each key that is (see `upsert_statement`), for the
-   * count inserted or updated: `db.upsert<Tiles, pg::MergeWith<"rast", MergeRaster>>(rows)`. All of them, or none.
+   * count inserted or updated: `db.upsert<PageViews, pg::MergeWith<"views", Add>>(rows)`. All of them, or none.
    */
-  template <TextSchema schema_t, IsMergeWith... merge_ts, util::CompletionFor<std::uint64_t> done_t = util::UseFuture>
+  template <TextSchema schema_t, UpsertRule... rule_ts, util::CompletionFor<std::uint64_t> done_t = util::UseFuture>
   auto upsert(const std::vector<typename schema_t::row_type>& rows, done_t done = {}) {
-    return execute(upsert_statement<schema_t, merge_ts...>(rows), std::move(done));
+    return execute(upsert_statement<schema_t, rule_ts...>(rows), std::move(done));
   }
 
   /** @brief As above, for rows without the generated columns (`Schema::make_insert_row`). */
-  template <TextSchema schema_t, IsMergeWith... merge_ts, util::CompletionFor<std::uint64_t> done_t = util::UseFuture>
+  template <TextSchema schema_t, UpsertRule... rule_ts, util::CompletionFor<std::uint64_t> done_t = util::UseFuture>
     requires schema::HasGeneratedColumn<schema_t>
   auto upsert(const std::vector<typename schema_t::insert_row_type>& rows, done_t done = {}) {
-    return execute(upsert_statement<schema_t, merge_ts...>(rows), std::move(done));
+    return execute(upsert_statement<schema_t, rule_ts...>(rows), std::move(done));
   }
 
  protected:

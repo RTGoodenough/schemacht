@@ -91,7 +91,43 @@ struct LabelList {
   std::vector<std::string> values;
 };
 
+/** @brief A code of at most three characters: `varchar(3)`. */
+struct Code {
+  std::string text;
+};
+
+/** @brief Initials of exactly two characters: `char(2)`. */
+struct Initials {
+  std::string text;
+};
+
+/** @brief A point in WGS 84, as hex EWKB: a `geometry(Point,4326)`, whose modifier is a geometry type and an SRID, not a size. */
+struct Spot {
+  std::string ewkb;
+};
+
 }  // namespace
+
+template <>
+struct schemacht::ColumnType<Code> {
+  static constexpr std::string_view SQL_TYPE = "varchar(3)";
+  static Code                       parse(std::string_view text) { return Code{std::string(text)}; }
+  static std::string                format(const Code& code) { return code.text; }
+};
+
+template <>
+struct schemacht::ColumnType<Initials> {
+  static constexpr std::string_view SQL_TYPE = "char(2)";
+  static Initials                   parse(std::string_view text) { return Initials{std::string(text)}; }
+  static std::string                format(const Initials& initials) { return initials.text; }
+};
+
+template <>
+struct schemacht::ColumnType<Spot> {
+  static constexpr std::string_view SQL_TYPE = "geometry(Point,4326)";
+  static Spot                       parse(std::string_view text) { return Spot{std::string(text)}; }
+  static std::string                format(const Spot& spot) { return spot.ewkb; }
+};
 
 template <>
 struct schemacht::ColumnType<OrderId> : schemacht::WrappedColumn<&OrderId::value> {};
@@ -269,4 +305,34 @@ TEST_CASE("a ConvertedColumn is stored as another type", "[column_type]") {
 
   using Wrong = decltype([](int number) { return number; });
   STATIC_REQUIRE_FALSE(schemacht::ConvertsThrough<std::chrono::milliseconds, std::int64_t, Wrong{}, Wrong{}>);
+}
+
+// A cast cuts a character or bit string to the type's length (`'abcdef'::varchar(3)` is `abc`), so an argument is cast to the
+// type's unlimited form, and a value too long fails where it is stored. `char` and `bit` alone mean a length of one: their
+// unlimited forms are `bpchar` and `varbit`. Any other type's modifier stays (a geometry's is its type and SRID).
+TEST_CASE("an argument is cast to a string column's type without its length, and to any other type as written", "[column_type][sql]") {
+  using Codes = sch::Schema<
+      "codes", sch::Field<OrderId, "id", sch::KeyRole::Primary>, sch::Field<Code, "code">, sch::Field<Initials, "initials">,
+      sch::Field<std::vector<Initials>, "aliases">>;
+  static constexpr auto CODE_IN = q::On<Codes>::col<"code">().in(q::arg<0>());
+
+  const std::vector<Codes::row_type> rows{Codes::make_row(OrderId{1}, Code{"abc"}, Initials{"rg"}, std::vector<Initials>{})};
+  CHECK(
+      pg::insert_statement<Codes>(rows).sql() ==
+      R"(INSERT INTO "codes" ("id", "code", "initials", "aliases") SELECT "id"::bigint, "code"::varchar, "initials"::bpchar, "aliases"::bpchar[] )"
+      R"(FROM unnest($1::text[], $2::text[], $3::text[], $4::text[]) AS u("id", "code", "initials", "aliases"))"
+  );
+  STATIC_REQUIRE(q::Prepared<CODE_IN>::SQL.ends_with(R"(WHERE "code" = ANY($1::text[]::varchar[]))"));
+
+  // A modifier other than a string's length stays: a number's precision, a geometry's type and SRID.
+  using Places = sch::Schema<"places", sch::Field<OrderId, "id", sch::KeyRole::Primary>, sch::Field<Cents, "price">, sch::Field<Spot, "spot">>;
+  static constexpr auto               SPOT_IN = q::On<Places>::col<"spot">().in(q::arg<0>());
+  const std::vector<Places::row_type> places{Places::make_row(OrderId{1}, Cents{100}, Spot{"0101000020E6100000"})};
+  CHECK(pg::insert_statement<Places>(places).sql().contains(R"(SELECT "id"::bigint, "price"::numeric(12,2), "spot"::geometry(Point,4326) FROM)"));
+  STATIC_REQUIRE(q::Prepared<SPOT_IN>::SQL.ends_with(R"(WHERE "spot" = ANY($1::text[]::geometry(Point,4326)[]))"));
+
+  // The table itself keeps the lengths.
+  CHECK(
+      pg::create_table_statement<Codes>().sql().contains(R"("code" varchar(3) NOT NULL, "initials" char(2) NOT NULL, "aliases" char(2)[] NOT NULL)")
+  );
 }

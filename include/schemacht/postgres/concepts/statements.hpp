@@ -49,6 +49,9 @@ concept MergeOperation = query::OperationOn<merge_t> && ! query::DeclaresArgumen
 template <util::CTString column, MergeOperation merge_t>
 struct MergeWith;  // postgres/statements.hpp
 
+template <util::CTString column>
+struct Keep;  // postgres/statements.hpp
+
 namespace detail {
 
 template <typename statement_t>
@@ -62,6 +65,12 @@ inline constexpr bool IS_MERGE_WITH = false;
 
 template <util::CTString column, MergeOperation merge_t>
 inline constexpr bool IS_MERGE_WITH<MergeWith<column, merge_t>> = true;
+
+template <typename rule_t>
+inline constexpr bool IS_KEEP = false;
+
+template <util::CTString column>
+inline constexpr bool IS_KEEP<Keep<column>> = true;
 
 }  // namespace detail
 
@@ -84,6 +93,14 @@ concept UncheckedSqlArgument = std::convertible_to<const argument_t&, std::strin
 /** @brief Whether `merge_t` is a `MergeWith`: how an upsert sets one column of a row already there. */
 template <typename merge_t>
 concept IsMergeWith = detail::IS_MERGE_WITH<merge_t>;
+
+/** @brief Whether `rule_t` is a `Keep`: a column an upsert leaves as it is in a row already there. */
+template <typename rule_t>
+concept IsKeep = detail::IS_KEEP<rule_t>;
+
+/** @brief Whether `rule_t` says how an upsert treats one column of a row already there: merged (`MergeWith`) or kept (`Keep`). */
+template <typename rule_t>
+concept UpsertRule = IsMergeWith<rule_t> || IsKeep<rule_t>;
 
 /**
  * @brief What a `Database` can send, with a `result_type` (a `TextRow`): a query or command (`Prepared::bind`) of a `TextSchema`, a

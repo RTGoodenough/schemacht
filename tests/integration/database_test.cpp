@@ -1277,6 +1277,14 @@ TEST_CASE("integration: the upsert convenience runs on the schema's own table", 
   CHECK(sch::get<"body">(rows.at(0)) == "b");
   CHECK(sch::get<"hits">(rows.at(0)) == 3);
 
+  // A kept column stays as it is in a row already there, and is written for a row inserted.
+  CHECK(database.upsert<Notes, pg::Keep<"body">>({Notes::make_row(1, "ignored", 9), Notes::make_row(3, "d", 4)}).get() == 2);
+  const auto kept = database.execute(q::Prepared<ALL_NOTES>::bind()).get();
+  REQUIRE(kept.size() == 3);
+  CHECK(sch::get<"body">(kept.at(0)) == "b");
+  CHECK(sch::get<"hits">(kept.at(0)) == 9);
+  CHECK(sch::get<"body">(kept.at(2)) == "d");
+
   database.drop_table<Notes>().get();
 }
 
@@ -1368,4 +1376,37 @@ TEST_CASE("integration: an upsert merges a type of one's own and an array, on a 
   CHECK(sch::get<"seen">(rows.at(1)).empty());
 
   database.execute(pg::unchecked_sql("DROP SCHEMA schemacht_it_upsert CASCADE")).get();
+}
+
+namespace {
+
+/** @brief A code of at most three characters, as a type of the test's own: `varchar(3)`. */
+struct ShortCode {
+  std::string text;
+};
+
+}  // namespace
+
+template <>
+struct schemacht::ColumnType<ShortCode> {
+  static constexpr std::string_view SQL_TYPE = "varchar(3)";
+  static ShortCode                  parse(std::string_view text) { return ShortCode{std::string(text)}; }
+  static std::string                format(const ShortCode& code) { return code.text; }
+};
+
+TEST_CASE("integration: a value too long for its column's size is refused, not cut to fit", "[integration][insert]") {
+  using Codes = sch::Schema<"schemacht_it_codes", Id, sch::Field<ShortCode, "code">>;
+  static constexpr auto CODE_IN = q::select(q::On<Codes>::col<"code">().in(q::arg<0>()));
+
+  pg::Database database(test_db());
+  database.drop_table<Codes>().get();
+  database.create_table<Codes>().get();
+
+  CHECK(database.insert<Codes>({Codes::make_row(1, ShortCode{"abc"})}).get() == 1);
+  CHECK_THROWS_AS(database.insert<Codes>({Codes::make_row(2, ShortCode{"abcdef"})}).get(), pg::QueryError);  // not stored as "abc"
+
+  CHECK(database.execute(q::Prepared<CODE_IN>::bind(std::vector{ShortCode{"abc"}})).get().size() == 1);
+  CHECK(database.execute(q::Prepared<CODE_IN>::bind(std::vector{ShortCode{"abcdef"}})).get().empty());  // not compared as "abc"
+
+  database.drop_table<Codes>().get();
 }
