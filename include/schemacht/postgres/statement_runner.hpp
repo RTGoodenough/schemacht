@@ -54,8 +54,8 @@ using rows_of = std::vector<typename std::remove_cvref_t<statement_t>::result_ty
 using ReadOptions = AsyncClient::StreamOptions;
 
 /**
- * @brief What a `Database` and a `Transaction` both run: queries, raw statements, commands, inserts and table changes, on the
- * pool (a `Database`) or on the one connection a transaction holds (a `Transaction`).
+ * @brief What a `Database` and a `Transaction` both run: queries, raw statements, commands, inserts, upserts, table changes and
+ * statements given as text (`unchecked_sql`), on the pool (a `Database`) or on the one connection a transaction holds (a `Transaction`).
  *
  * Every call starts the work and returns at once; it finishes in the background. Each takes, last, how to be told: by default
  * a `std::future` of the outcome, which the call returns (`db.execute(query).get()`), or else a completion, called once with
@@ -103,8 +103,9 @@ class StatementRunner {
   }
 
   /**
-   * @brief Runs `command`, a statement that returns no rows (an update, a delete, an insert, a `CREATE TABLE`, or a raw statement
-   * with no columns), for the count of rows it affected: those an `UPDATE` changed, say, or 0 for a `CREATE TABLE`.
+   * @brief Runs `command`, a statement that returns no rows (an update, a delete, an insert or upsert, a `CREATE TABLE`, a raw
+   * statement with no columns, or `unchecked_sql`), for the count of rows it affected: those an `UPDATE` changed, say, or 0 for
+   * a `CREATE TABLE`.
    * @param done none given (`util::UseFuture`): returns a `std::future` of the count. Else called with the count and the error.
    */
   template <CommandStatementRef statement_t, util::CompletionFor<std::uint64_t> done_t = util::UseFuture>
@@ -197,6 +198,22 @@ class StatementRunner {
     requires schema::HasGeneratedColumn<schema_t>
   auto insert_returning(const std::vector<typename schema_t::insert_row_type>& rows, done_t done = {}) {
     return execute(insert_returning_statement<schema_t>(rows), std::move(done));
+  }
+
+  /**
+   * @brief Writes `rows` of `schema_t`, updating the row already there for each key that is (see `upsert_statement`), for the
+   * count inserted or updated: `db.upsert<Tiles, pg::MergeWith<"rast", MergeRaster>>(rows)`. All of them, or none.
+   */
+  template <TextSchema schema_t, IsMergeWith... merge_ts, util::CompletionFor<std::uint64_t> done_t = util::UseFuture>
+  auto upsert(const std::vector<typename schema_t::row_type>& rows, done_t done = {}) {
+    return execute(upsert_statement<schema_t, merge_ts...>(rows), std::move(done));
+  }
+
+  /** @brief As above, for rows without the generated columns (`Schema::make_insert_row`). */
+  template <TextSchema schema_t, IsMergeWith... merge_ts, util::CompletionFor<std::uint64_t> done_t = util::UseFuture>
+    requires schema::HasGeneratedColumn<schema_t>
+  auto upsert(const std::vector<typename schema_t::insert_row_type>& rows, done_t done = {}) {
+    return execute(upsert_statement<schema_t, merge_ts...>(rows), std::move(done));
   }
 
  protected:

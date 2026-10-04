@@ -96,11 +96,15 @@ int main() {
     call throws only if it can't start at all (no memory to hand the statement on, say), and then its callback never runs.
 - **Changes:**
   - `update(...)` and `delete_where(...)` give the count of rows changed, or the rows themselves with `.returning(...)`;
-  - `insert` writes any number of rows atomically, in one statement: all of them or none.
+  - `insert` writes any number of rows atomically, in one statement: all of them or none;
+  - `upsert` does the same, updating the row already there for a key that is (`ON CONFLICT` on the primary key): each
+    column overwritten, or merged with the value already there by a SQL function or operator you name,
+    `database.upsert<Tiles, pg::MergeWith<"rast", MergeRaster>>(rows)`.
 - **Transactions:** `Database::begin` (with an isolation level, or read-only). A transaction that is dropped without a
   commit is rolled back.
 - **Raw SQL with types:** `q::RawStatement<"SELECT ...", q::RawArguments<...>, Fields...>` checks its `$n` placeholders
-  against its arguments while compiling.
+  against its arguments while compiling. For SQL that can only be written while the program runs (DDL on a table named
+  then, say), `pg::unchecked_sql(text, arguments...)` runs it with its arguments bound to `$1`, `$2`, ..., checking nothing.
 - **Column types:**
   - `bool`, integers, `float` and `double`, `std::string`, bytes (`bytea`), `std::vector` (arrays);
   - dates and times (`std::chrono`), `schemacht::Uuid`, `schemacht::json::Json` (`jsonb`);
@@ -138,8 +142,9 @@ ctest --test-dir build
 The tests and examples are built when schemacht is the top-level project (`SCHEMACHT_BUILD_TESTS`,
 `SCHEMACHT_BUILD_EXAMPLES`). The integration tests and the examples need a PostgreSQL database to run against. Point
 `SCHEMACHT_TEST_DB` at a throwaway one: they create and drop tables whose names start with `schemacht_it_` or
-`schemacht_example_`, and a schema `schemacht_it_schema`. One integration test and the extensions example also install
-pg_trgm if they can, and leave it installed; they create and drop a function, `similar_above`. Without
+`schemacht_example_`, and the schemas `schemacht_it_schema` and `schemacht_it_upsert`. One integration test and the extensions example also install
+pg_trgm if they can, and leave it installed; they create and drop the functions `similar_above` and
+`schemacht_it_keep_longer`. Without
 `SCHEMACHT_TEST_DB`, they are skipped.
 
 ```sh

@@ -225,6 +225,12 @@ template <typename operation_t>
   }
 }
 
+/** @return Whether `operation_t`'s SQL name is spelled as its kind must be: a single SQL operator, or a SQL function name. */
+template <typename operation_t>
+[[nodiscard]] constexpr bool spelled_validly() {
+  return NamesOperator<operation_t> ? util::is_sql_operator(spelling<operation_t>()) : util::is_sql_function_name(spelling<operation_t>());
+}
+
 /** @brief The `Operation` for `operation_t`: the one object every use of it shares. */
 template <typename operation_t>
 class BoundOperation {

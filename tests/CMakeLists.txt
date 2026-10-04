@@ -110,6 +110,18 @@ schemacht_compile_fail(OPERATION_ARGUMENT_NOT_COLUMN_TYPE "must be a column type
 schemacht_compile_fail(TABLE_WRONG_SCHEMA "a statement runs only on a table of its own schema's shape")
 schemacht_compile_fail(TABLE_WRONG_SCHEMA_INSERT "a statement runs only on a table of its own schema's shape")
 schemacht_compile_fail(TABLE_RAW_STATEMENT "no member named")
+schemacht_compile_fail(UPSERT_NO_KEY "upsert: the schema has no primary key")
+schemacht_compile_fail(UPSERT_GENERATED_KEY "upsert: the database numbers the primary key")
+schemacht_compile_fail(UPSERT_NOTHING_TO_SET "has nothing to update")
+schemacht_compile_fail(UPSERT_MERGE_KEY "upsert: a MergeWith names a primary key column")
+schemacht_compile_fail(UPSERT_MERGE_GENERATED "upsert: a MergeWith names a GENERATED column")
+schemacht_compile_fail(UPSERT_MERGE_UNKNOWN "the schema has no column with that name")
+schemacht_compile_fail(UPSERT_MERGE_TWICE "upsert: two MergeWith name the same column")
+schemacht_compile_fail(UPSERT_MERGE_BAD_FUNCTION "must be a SQL function name")
+schemacht_compile_fail(UPSERT_MERGE_BAD_OPERATOR "must be a single SQL operator")
+schemacht_compile_fail(UPSERT_MERGE_ARGUMENT_PREFIX "MergeOperation")
+schemacht_compile_fail(UPSERT_MERGE_BOTH "MergeOperation")
+schemacht_compile_fail(UNCHECKED_SQL_ARGUMENT_WITHOUT_TEXT_FORM "UncheckedSqlArgument")
 
 # With no case defined, cases.cpp must compile: the failures above are the cases', not the file's.
 add_test(NAME compile_fail.baseline COMMAND ${CMAKE_CXX_COMPILER} -std=c++23 -fsyntax-only -I${PROJECT_SOURCE_DIR}/include

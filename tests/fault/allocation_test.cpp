@@ -16,6 +16,7 @@
 #include <future>
 #include <memory>
 #include <new>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -238,6 +239,21 @@ TEST_CASE("integration: a failed allocation on the caller's thread reaches the c
   sweeps.push_back(sweep_transaction(*database, [](pg::Transaction& transaction, const Probe& probe) { transaction.commit(probe.done()); }));
   sweeps.push_back(sweep_transaction(*database, [](pg::Transaction& transaction, const Probe& probe) { transaction.rollback(probe.done()); }));
 
+  // An upsert, and a statement given as text with an argument.
+  const sch::Table<t::People> people("schemacht_it_fault_people");
+  database->execute(pg::drop_table_statement<t::People>().on(people)).get();
+  database->execute(pg::create_table_statement<t::People>().on(people)).get();
+  const std::vector<t::People::row_type> someone{t::People::make_row(1, "a", std::nullopt, 1.0, true)};
+  const std::string                      raise = "UPDATE " + people.name().quoted() + " SET score = score + $1";
+  sweeps.push_back(sweep_caller([&](const Probe& probe) { database->execute(pg::upsert_statement<t::People>(someone).on(people), probe.done()); }));
+  sweeps.push_back(sweep_caller([&](const Probe& probe) { database->execute(pg::unchecked_sql(raise, 1.0), probe.done()); }));
+  sweeps.push_back(sweep_transaction(*database, [&](pg::Transaction& transaction, const Probe& probe) {
+    transaction.execute(pg::upsert_statement<t::People>(someone).on(people), probe.done());
+  }));
+  sweeps.push_back(sweep_transaction(*database, [&](pg::Transaction& transaction, const Probe& probe) {
+    transaction.execute(pg::unchecked_sql(raise, 1.0), probe.done());
+  }));
+
   // Many rows of a schema with an array column: one statement all the same.
   database->drop_table<Lists>().get();
   database->create_table<Lists>().get();
@@ -245,6 +261,7 @@ TEST_CASE("integration: a failed allocation on the caller's thread reaches the c
   sweeps.push_back(sweep_caller([&](const Probe& probe) { database->insert<Lists>(many, probe.done()); }));
 
   database->execute(pg::drop_table_statement<t::Keyless>().on(keyless)).get();
+  database->execute(pg::drop_table_statement<t::People>().on(people)).get();
   database->drop_table<Lists>().get();
   database.reset();  // everything it still had finishes now: a completion called again would show below
 

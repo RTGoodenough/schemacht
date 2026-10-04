@@ -681,26 +681,42 @@ template <schema::IsSchema schema_t>
   return text;
 }
 
-/** @brief Writes `INSERT INTO <table> (<every insertable column>)`. */
+/** @brief What an upsert calls the row already in the table, in its `SET` clause. */
+inline constexpr std::string_view UPSERT_CURRENT = "current";
+
+/** @brief Writes `INSERT INTO <table> (<every insertable column>)`, naming the table `alias` (`<table> AS <alias>`) unless it is empty. */
 template <schema::IsSchema schema_t, std::size_t text_capacity>
-consteval void append_insert_into(Text<text_capacity>& text) {
+consteval void append_insert_into(Text<text_capacity>& text, std::string_view alias) {
   text.append("INSERT INTO ");
   text.append_table(schema_t::TABLE_NAME);
+  if ( ! alias.empty() ) {
+    text.append(" AS ");
+    text.append_identifier(alias);
+  }
   text.append(" (");
   text.append_identifier_list(schema_t::insertable_column_names());
   text.push(')');
 }
 
-/**
- * @return `INSERT INTO <table> (<columns>) SELECT <columns> FROM unnest($1::<type>[], ...) AS u(<columns>)`: one array argument per
- * insertable column, holding that column's value for every row, so any number of rows go in one statement. A column that is
- * itself an array, or of a type of your own, goes as a `text[]` of its values' text forms, cast back to its type in the select
- * list (`detail::sent_as_text`). Every insertable column's type needs an SQL type name (`sql::type_name`).
- */
-template <schema::IsSchema schema_t>
-[[nodiscard]] consteval Text<STATEMENT_CAPACITY> insert_unnest_statement() {
-  Text<STATEMENT_CAPACITY> text;
-  append_insert_into<schema_t>(text);
+/** @brief Appends `"current"."column"`: `column` of the row already in the table, in an upsert's `SET` clause. */
+template <std::size_t text_capacity>
+consteval void append_current(Text<text_capacity>& text, std::string_view column) {
+  text.append_identifier(UPSERT_CURRENT);
+  text.push('.');
+  text.append_identifier(column);
+}
+
+/** @brief Appends `excluded."column"`: `column` of the row that would have gone in, in an upsert's `SET` clause. */
+template <std::size_t text_capacity>
+consteval void append_excluded(Text<text_capacity>& text, std::string_view column) {
+  text.append("excluded.");
+  text.append_identifier(column);
+}
+
+/** @brief Appends `insert_unnest_statement`'s INSERT, naming the table `alias` unless it is empty (see `append_insert_into`). */
+template <schema::IsSchema schema_t, std::size_t text_capacity>
+consteval void append_insert_unnest(Text<text_capacity>& text, std::string_view alias) {
+  append_insert_into<schema_t>(text, alias);
 
   text.append(" SELECT ");
   bool first = true;
@@ -742,6 +758,82 @@ template <schema::IsSchema schema_t>
   text.append(") AS u(");
   text.append_identifier_list(schema_t::insertable_column_names());
   text.push(')');
+}
+
+/**
+ * @return `INSERT INTO <table> (<columns>) SELECT <columns> FROM unnest($1::<type>[], ...) AS u(<columns>)`: one array argument per
+ * insertable column, holding that column's value for every row, so any number of rows go in one statement. A column that is
+ * itself an array, or of a type of your own, goes as a `text[]` of its values' text forms, cast back to its type in the select
+ * list (`detail::sent_as_text`). Every insertable column's type needs an SQL type name (`sql::type_name`).
+ */
+template <schema::IsSchema schema_t>
+[[nodiscard]] consteval Text<STATEMENT_CAPACITY> insert_unnest_statement() {
+  Text<STATEMENT_CAPACITY> text;
+  append_insert_unnest<schema_t>(text, {});
+
+  return text;
+}
+
+/**
+ * @brief How an upsert sets one column of a row that is already there, by `operation`: `name("current"."column",
+ * excluded."column")` for a function, `"current"."column" name excluded."column"` for an operator (`infix`); "current" is the row
+ * there, `excluded` the row that would have gone in. Made by `postgres::MergeWith`.
+ */
+struct Merge {
+  std::size_t      column = 0;           ///< Index into the schema's fields.
+  const Operation* operation = nullptr;  ///< The SQL function, or, if `infix`, the SQL operator, that merges the two values.
+};
+
+/**
+ * @return `insert_unnest_statement`'s INSERT, with the table named `"current"`, ending `ON CONFLICT (<primary key>) DO UPDATE SET
+ * ...`: a row whose key is already there updates it instead. Each column that is neither key nor generated is set as its
+ * `Merge` in `merges` says, or else to the value that would have gone in (`"column" = excluded."column"`). The schema must
+ * have a primary key and a column to set (`postgres::upsert_statement` checks both).
+ */
+template <schema::IsSchema schema_t, std::size_t merge_count>
+[[nodiscard]] consteval Text<STATEMENT_CAPACITY> upsert_statement(const std::array<Merge, merge_count>& merges) {
+  Text<STATEMENT_CAPACITY> text;
+  append_insert_unnest<schema_t>(text, UPSERT_CURRENT);
+
+  text.append(" ON CONFLICT (");
+  text.append_identifier_list(schema_t::primary_key_column_names());
+  text.append(") DO UPDATE SET ");
+
+  bool first = true;
+  for ( std::size_t column = 0; column < schema_t::FIELD_COUNT; ++column ) {
+    if ( detail::COLUMN_GENERATED<schema_t>.at(column) || schema_t::KEY_ROLES.at(column) == schema::KeyRole::Primary ) {
+      continue;
+    }
+
+    if ( ! first ) {
+      text.append(", ");
+    }
+    first = false;
+
+    const std::string_view name = schema_t::column_names().at(column);
+    text.append_identifier(name);
+    text.append(" = ");
+
+    const auto merge = std::ranges::find(merges, column, &Merge::column);
+    if ( merge == merges.end() ) {
+      append_excluded(text, name);
+
+    } else if ( merge->operation->infix ) {
+      append_current(text, name);
+      text.push(' ');
+      text.append_operator(merge->operation->name);
+      text.push(' ');
+      append_excluded(text, name);
+
+    } else {
+      text.append_function(merge->operation->name);
+      text.push('(');
+      append_current(text, name);
+      text.append(", ");
+      append_excluded(text, name);
+      text.push(')');
+    }
+  }
 
   return text;
 }

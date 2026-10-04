@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -162,5 +163,76 @@ TEST_CASE("a statement made from a schema, sent as a temporary, gives up its arg
   const auto moved = pg::detail::wire(std::move(statement));
   CHECK(moved.params == copied.params);
   CHECK(moved.sql == copied.sql);
+  CHECK(statement.params().empty());  // NOLINT(bugprone-use-after-move,clang-analyzer-cplusplus.Move) -- what this checks
+}
+
+namespace {
+
+/** @brief A merge by a SQL function of the application's own: `keep_longer("current"."name", excluded."name")`. */
+struct KeepLonger {
+  static constexpr std::string_view FUNCTION = "keep_longer";
+};
+
+/** @brief A merge by a SQL operator: `"current"."score" + excluded."score"`. */
+struct Add {
+  static constexpr std::string_view OPERATOR = "+";
+};
+
+}  // namespace
+
+TEST_CASE("an upsert updates the row already there: merged as a MergeWith says, else overwritten", "[upsert]") {
+  const std::vector<t::People::row_type> people{{t::Id{1}, t::Name{"al"}, t::Nick{std::nullopt}, t::Score{1}, t::Active{true}}};
+  const auto statement = pg::upsert_statement<t::People, pg::MergeWith<"name", KeepLonger>, pg::MergeWith<"score", Add>>(people);
+
+  CHECK(
+      statement.sql() == R"(INSERT INTO "people" AS "current" ("id", "name", "nick", "score", "active") )"
+                         R"(SELECT "id", "name", "nick", "score", "active" )"
+                         R"(FROM unnest($1::bigint[], $2::text[], $3::text[], $4::double precision[], $5::boolean[]) )"
+                         R"(AS u("id", "name", "nick", "score", "active") )"
+                         R"(ON CONFLICT ("id") DO UPDATE SET "name" = keep_longer("current"."name", excluded."name"), )"
+                         R"("nick" = excluded."nick", "score" = "current"."score" + excluded."score", "active" = excluded."active")"
+  );
+  CHECK(params_of(statement) == params_of(pg::insert_statement<t::People>(people)));  // its arguments are the insert's
+
+  const sch::Table<t::People> archive("gis", "people_2026");
+  CHECK(pg::upsert_statement<t::People>(people).on(archive).sql().starts_with(R"(INSERT INTO "gis"."people_2026" AS "current" ("id", )"));
+}
+
+TEST_CASE("an upsert matches on the whole primary key, and never sets a key or generated column", "[upsert]") {
+  const std::vector<t::Pairs::row_type> pairs{t::Pairs::make_row(1, 2, 3)};
+  CHECK(pg::upsert_statement<t::Pairs>(pairs).sql().ends_with(R"( ON CONFLICT ("a", "b") DO UPDATE SET "v" = excluded."v")"));
+
+  const std::vector<t::WithGenerated::insert_row_type> generated{t::WithGenerated::make_insert_row(1, "a")};
+  CHECK(
+      pg::upsert_statement<t::WithGenerated>(generated).sql() ==
+      R"(INSERT INTO "with_generated" AS "current" ("id", "name") SELECT "id", "name" FROM unnest($1::bigint[], $2::text[]) )"
+      R"(AS u("id", "name") ON CONFLICT ("id") DO UPDATE SET "name" = excluded."name")"
+  );
+}
+
+TEST_CASE("a statement given as text is sent as it is, with its arguments' text", "[unchecked_sql]") {
+  const auto statement = pg::unchecked_sql(R"(UPDATE "people" SET "score" = $1 WHERE "name" = ANY($2))", 2.5, std::vector<std::string>{"a", "b,c"});
+  CHECK(statement.sql() == R"(UPDATE "people" SET "score" = $1 WHERE "name" = ANY($2))");
+  CHECK(params_of(statement) == std::vector<std::string>{"2.5", R"({"a","b,c"})"});
+  CHECK(! statement.error());
+
+  const auto plain = pg::unchecked_sql(R"(CREATE INDEX ON "people" ("name"))");
+  CHECK(plain.params().empty());
+
+  const std::string_view view = "a view";
+  CHECK(
+      params_of(pg::unchecked_sql("SELECT $1, $2, $3", "a literal", view, std::string("a string"))) ==
+      std::vector<std::string>{"a literal", "a view", "a string"}
+  );
+}
+
+TEST_CASE("a statement given as text, sent as a temporary, gives up its arguments rather than copying them", "[unchecked_sql]") {
+  auto       statement = pg::unchecked_sql("SELECT $1", std::string("a"));
+  const auto copied = pg::detail::wire(statement);
+
+  const auto moved = pg::detail::wire(std::move(statement));
+  CHECK(moved.params == copied.params);
+  CHECK(moved.sql == copied.sql);
+  CHECK(moved.column_names.empty());
   CHECK(statement.params().empty());  // NOLINT(bugprone-use-after-move,clang-analyzer-cplusplus.Move) -- what this checks
 }

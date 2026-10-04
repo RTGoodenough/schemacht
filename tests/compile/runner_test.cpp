@@ -9,11 +9,13 @@
 #include <future>
 #include <span>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
 #include "schemacht/postgres/database.hpp"
 #include "schemacht/postgres/statement_runner.hpp"
+#include "schemacht/postgres/statements.hpp"
 #include "schemacht/postgres/transaction.hpp"
 #include "schemacht/query/command.hpp"
 #include "schemacht/query/prepared.hpp"
@@ -47,6 +49,10 @@ struct ErrorDone {
   void operator()(const std::exception_ptr& /*error*/) const {}
 };
 
+struct Add {
+  static constexpr std::string_view OPERATOR = "+";
+};
+
 struct OnRow {
   void operator()(const t::People::row_type& /*row*/) const {}
 };
@@ -75,6 +81,18 @@ TEST_CASE("a call returns a future of its outcome, or nothing when given a compl
   STATIC_REQUIRE(std::same_as<decltype(std::declval<pg::Database&>().stream(std::declval<const Query&>(), OnRow{})), std::future<void>>);
   STATIC_REQUIRE(std::same_as<decltype(std::declval<pg::Database&>().stream(std::declval<const Query&>(), OnRow{}, ErrorDone{})), void>);
   STATIC_REQUIRE(std::same_as<decltype(std::declval<pg::Database&>().insert<t::People>(std::declval<const Rows&>())), std::future<std::uint64_t>>);
+  STATIC_REQUIRE(std::same_as<decltype(std::declval<pg::Database&>().upsert<t::People>(std::declval<const Rows&>())), std::future<std::uint64_t>>);
+  STATIC_REQUIRE(
+      std::same_as<
+          decltype(std::declval<pg::Transaction&>().upsert<t::People, pg::MergeWith<"score", Add>>(std::declval<const Rows&>(), CountDone{})), void>
+  );
+  STATIC_REQUIRE(
+      std::same_as<
+          decltype(std::declval<pg::Database&>().upsert<t::WithGenerated>(std::declval<const std::vector<t::WithGenerated::insert_row_type>&>())),
+          std::future<std::uint64_t>>
+  );  // rows without their generated columns
+  STATIC_REQUIRE(std::same_as<decltype(std::declval<pg::Database&>().execute(pg::unchecked_sql("VACUUM"))), std::future<std::uint64_t>>);
+  STATIC_REQUIRE(std::same_as<decltype(std::declval<pg::Transaction&>().execute(pg::unchecked_sql("VACUUM"), CountDone{})), void>);
   STATIC_REQUIRE(std::same_as<decltype(std::declval<pg::Database&>().begin()), std::future<pg::Transaction>>);
   STATIC_REQUIRE(std::same_as<decltype(std::declval<pg::Transaction&>().commit()), std::future<void>>);
   STATIC_REQUIRE(std::same_as<decltype(std::declval<pg::Transaction&>().rollback(ErrorDone{})), void>);

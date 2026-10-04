@@ -1,5 +1,7 @@
 #pragma once
 
+#include <algorithm>
+#include <array>
 #include <concepts>
 #include <cstddef>
 #include <exception>
@@ -22,6 +24,8 @@
 #include "schemacht/schema/schema.hpp"
 #include "schemacht/schema/table.hpp"
 #include "schemacht/schema/table_name.hpp"
+#include "schemacht/util/compile_time.hpp"
+#include "schemacht/util/identifier.hpp"
 
 /**
  * Turning bound queries and rows into what is sent to Postgres: statement text plus each argument's text. Free of libpq.
@@ -82,6 +86,75 @@ template <schema::IsSchema schema_t>
 class UnnestSql {
   static constexpr auto PARTS = [] {
     constexpr auto TEXT = query::sql::insert_unnest_statement<schema_t>();
+    return std::pair{query::sql::terminated<TEXT.size()>(TEXT), TEXT.table_slot()};
+  }();
+
+ public:
+  static constexpr std::string_view      VALUE{PARTS.first.data(), PARTS.first.size() - 1};
+  static constexpr query::sql::TableSlot TABLE_SLOT = PARTS.second;  ///< Where `VALUE` names the table (see `query::sql::on_table`).
+};
+
+/** @brief The upsert for `schema_t` that merges as `merge_ts` say (see `query::sql::upsert_statement`), as a static string. */
+template <schema::IsSchema schema_t, IsMergeWith... merge_ts>
+class UpsertSql {
+  static constexpr std::array<query::sql::Merge, sizeof...(merge_ts)> MERGES{query::sql::Merge{
+      .column = schema_t::template checked_field_index<merge_ts::COLUMN>(),
+      .operation = &query::detail::BoundOperation<typename merge_ts::merge_type>::VALUE,  // which checks its spelling
+  }...};
+
+  [[nodiscard]] static constexpr bool is_key(std::size_t column) { return schema_t::KEY_ROLES.at(column) == schema::KeyRole::Primary; }
+
+  [[nodiscard]] static constexpr bool is_generated(std::size_t column) { return query::sql::detail::COLUMN_GENERATED<schema_t>.at(column); }
+
+  [[nodiscard]] static consteval bool key_generated() {
+    for ( std::size_t column = 0; column < schema_t::FIELD_COUNT; ++column ) {
+      if ( is_key(column) && is_generated(column) ) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  [[nodiscard]] static consteval bool merges_distinct_columns() {
+    std::array<std::size_t, sizeof...(merge_ts)> columns{};
+    std::ranges::transform(MERGES, columns.begin(), &query::sql::Merge::column);
+    std::ranges::sort(columns);
+
+    return std::ranges::adjacent_find(columns) == columns.end();
+  }
+
+  // A MergeWith of a column the schema doesn't have, or of a misspelt function or operator, fails on its own
+  // (`checked_field_index`, `BoundOperation`); no second error follows.
+  static constexpr bool KNOWN_COLUMNS = (schema_t::template has_column<merge_ts::COLUMN>() && ...);
+  static constexpr bool SPELLED = (query::detail::spelled_validly<typename merge_ts::merge_type>() && ...);
+  static constexpr bool CHECKED = KNOWN_COLUMNS && SPELLED;  // the merges themselves are then checked
+
+  static_assert(schema_t::HAS_PRIMARY_KEY, "upsert: the schema has no primary key, which is what a row is matched on to the one already there");
+  static_assert(! key_generated(), "upsert: the database numbers the primary key, so a row inserted never carries one to match");
+  static_assert(
+      key_generated() || schema_t::INSERTABLE_FIELD_COUNT > schema_t::PRIMARY_KEY_FIELD_COUNT,
+      "upsert: every column is part of the primary key or generated, so a row already there has nothing to update"
+  );
+  static_assert(
+      ! CHECKED || std::ranges::none_of(MERGES, [](const query::sql::Merge& merge) { return is_key(merge.column); }),
+      "upsert: a MergeWith names a primary key column, which rows are matched on and is never updated"
+  );
+  static_assert(
+      ! CHECKED || std::ranges::none_of(MERGES, [](const query::sql::Merge& merge) { return is_generated(merge.column); }),
+      "upsert: a MergeWith names a GENERATED column, which the database computes"
+  );
+  static_assert(! CHECKED || merges_distinct_columns(), "upsert: two MergeWith name the same column");
+
+  [[nodiscard]] static consteval auto text() {
+    if constexpr ( SPELLED ) {
+      return query::sql::upsert_statement<schema_t>(MERGES);
+    } else {
+      return query::sql::upsert_statement<schema_t>(std::array<query::sql::Merge, 0>{});  // after the spelling's error
+    }
+  }
+
+  static constexpr auto PARTS = [] {
+    constexpr auto TEXT = text();
     return std::pair{query::sql::terminated<TEXT.size()>(TEXT), TEXT.table_slot()};
   }();
 
@@ -178,9 +251,9 @@ class DropTableSql {
 namespace schemacht::postgres {
 
 /**
- * @brief A statement made from a schema rather than written as a query: its `CREATE TABLE`, `DROP TABLE` or `INSERT` (see
- * `create_table_statement`, `drop_table_statement`, `insert_statement`). It runs as a query does (`execute`), on the schema's
- * own table or, aimed with `on`, on another of its shape.
+ * @brief A statement made from a schema rather than written as a query: its `CREATE TABLE`, `DROP TABLE`, `INSERT` or upsert
+ * (see `create_table_statement`, `drop_table_statement`, `insert_statement`, `upsert_statement`). It runs as a query does
+ * (`execute`), on the schema's own table or, aimed with `on`, on another of its shape.
  *
  * One that could not be made (a value of an insert that its codec refused) holds why, and fails with that when it runs: the
  * error reaches the completion, or the future, as any error of a statement does.
@@ -270,19 +343,20 @@ template <TextSchema schema_t, std::ranges::contiguous_range rows_t>
 namespace insert_detail {
 
 /**
- * @return The insert `sql` of `rows`; or, if their arguments could not be made (a value its codec refused), a statement that
- * fails with that when it runs. The arguments are made first, so that `sql` is still whole for the one that fails.
+ * @return The insert `sql` of `rows`, which names its table at `table_slot`; or, if their arguments could not be made (a value its
+ * codec refused), a statement that fails with that when it runs. The arguments are made first, so that `sql` is still whole for
+ * the one that fails.
  */
 template <TextSchema schema_t, typename result_t, std::ranges::contiguous_range rows_t>
-[[nodiscard]] SchemaStatement<schema_t, result_t> made(std::string sql, const rows_t& rows) {
+[[nodiscard]] SchemaStatement<schema_t, result_t> made(std::string sql, query::sql::TableSlot table_slot, const rows_t& rows) {
   std::vector<std::string> params;
   try {
     params = insert_params<schema_t>(rows);
   } catch ( ... ) {
-    return {std::move(sql), UnnestSql<schema_t>::TABLE_SLOT, std::current_exception()};
+    return {std::move(sql), table_slot, std::current_exception()};
   }
 
-  return {std::move(sql), UnnestSql<schema_t>::TABLE_SLOT, std::move(params)};
+  return {std::move(sql), table_slot, std::move(params)};
 }
 
 }  // namespace insert_detail
@@ -298,7 +372,7 @@ template <TextSchema schema_t, std::ranges::contiguous_range rows_t>
   requires schema::InsertRowOf<std::ranges::range_value_t<rows_t>, schema_t>
 [[nodiscard]] SchemaStatement<schema_t, std::tuple<>> insert_statement(const rows_t& rows) {
   using sql_t = detail::insert_detail::UnnestSql<schema_t>;
-  return detail::insert_detail::made<schema_t, std::tuple<>>(std::string(sql_t::VALUE), rows);
+  return detail::insert_detail::made<schema_t, std::tuple<>>(std::string(sql_t::VALUE), sql_t::TABLE_SLOT, rows);
 }
 
 /**
@@ -311,8 +385,52 @@ template <TextSchema schema_t, std::ranges::contiguous_range rows_t>
 [[nodiscard]] SchemaStatement<schema_t, typename schema_t::row_type> insert_returning_statement(const rows_t& rows) {
   using sql_t = detail::insert_detail::UnnestSql<schema_t>;
   return detail::insert_detail::made<schema_t, typename schema_t::row_type>(
-      std::string(sql_t::VALUE) + std::string(detail::ReturningSql<schema_t>::VALUE), rows
+      std::string(sql_t::VALUE) + std::string(detail::ReturningSql<schema_t>::VALUE), sql_t::TABLE_SLOT, rows
   );
+}
+
+/**
+ * @brief How `upsert_statement` sets the column `column` of a row already in the table: merged with the value that would have
+ * gone in, by the SQL function or operator `merge_t` names (`FUNCTION` or `OPERATOR`, one of the two, as an operation names its
+ * test). A function is called `FUNCTION("current"."column", excluded."column")`, the row there first; an operator is written
+ * `"current"."column" OPERATOR excluded."column"`. The function may be the application's own (`CREATE FUNCTION`), and must
+ * give the column's type. Its name is checked as an operation's is: a name on the search path, not one with its schema
+ * (`gis.merge`).
+ *
+ * In a column that can be NULL, a NULL on either side makes an operator's result NULL, and a function's if it is `STRICT`; a
+ * function that keeps the value that isn't NULL handles it (`coalesce`, or a `CASE`).
+ *
+ * @code
+ * struct KeepLonger {
+ *   static constexpr std::string_view FUNCTION = "keep_longer";  // keep_longer(current text, incoming text) returns text
+ * };
+ * struct Add {
+ *   static constexpr std::string_view OPERATOR = "+";
+ * };
+ * db.execute(pg::upsert_statement<Notes, pg::MergeWith<"body", KeepLonger>, pg::MergeWith<"hits", Add>>(rows));
+ * @endcode
+ */
+template <util::CTString column, MergeOperation merge_t>
+struct MergeWith {
+  static constexpr util::CTString COLUMN = column;  ///< The column merged.
+  using merge_type = merge_t;                       ///< What merges it.
+};
+
+/**
+ * @return The statement that inserts `rows` as `insert_statement` does, and, for a row whose primary key is already in the table,
+ * updates that row instead (`ON CONFLICT (<key>) DO UPDATE`): each column a `MergeWith` in `merge_ts` names is merged as it
+ * says, and every other column that is neither key nor generated takes the value that would have gone in. One statement,
+ * atomic; `execute` gives the count of rows inserted or updated.
+ *
+ * The schema must have a primary key that the database does not number (a row is matched on it), and a column besides the key
+ * to update. Two rows with the same key in one statement fail it (PostgreSQL updates a row once per statement): the error is
+ * the database's, through the completion or future.
+ */
+template <TextSchema schema_t, IsMergeWith... merge_ts, std::ranges::contiguous_range rows_t>
+  requires schema::InsertRowOf<std::ranges::range_value_t<rows_t>, schema_t>
+[[nodiscard]] SchemaStatement<schema_t, std::tuple<>> upsert_statement(const rows_t& rows) {
+  using sql_t = detail::insert_detail::UpsertSql<schema_t, merge_ts...>;
+  return detail::insert_detail::made<schema_t, std::tuple<>>(std::string(sql_t::VALUE), sql_t::TABLE_SLOT, rows);
 }
 
 /**
@@ -332,6 +450,76 @@ template <schema::IsSchema schema_t>
   return {std::string(detail::DropTableSql<schema_t>::VALUE), detail::DropTableSql<schema_t>::TABLE_SLOT, std::vector<std::string>{}};
 }
 
+/**
+ * @brief A statement given as text while the program runs, with its arguments (see `unchecked_sql`). It returns no rows: `execute`
+ * gives the count of rows it affected.
+ *
+ * One whose arguments could not be made (a value its codec refused) holds why, and fails with that when it runs, as a
+ * `SchemaStatement` does.
+ */
+class UncheckedSql {
+ public:
+  using result_type = std::tuple<>;
+
+  /**
+   * @param sql    The statement, with `$n` placeholders for `params`.
+   * @param params The text of each argument, in placeholder order.
+   */
+  UncheckedSql(std::string sql, std::vector<std::string> params) : _sql(std::move(sql)), _params(std::move(params)) {}
+
+  /** @brief A statement whose arguments could not be made, for `error`: running it fails with that. */
+  UncheckedSql(std::string sql, std::exception_ptr error) : _sql(std::move(sql)), _error(std::move(error)) {}
+
+  [[nodiscard]] std::string_view sql() const noexcept { return _sql; }
+
+  /** @return The text of each argument, in placeholder order: `params().front()` is `$1`. */
+  [[nodiscard]] std::span<const std::string> params() const noexcept { return _params; }
+
+  /** @return The arguments, taken out of this statement (which is then left without them): to send them without a copy. */
+  [[nodiscard]] std::vector<std::string> take_params() && noexcept { return std::move(_params); }
+
+  /** @return Why the arguments could not be made, or null. */
+  [[nodiscard]] const std::exception_ptr& error() const noexcept { return _error; }
+
+ private:
+  std::string              _sql;
+  std::vector<std::string> _params;
+  std::exception_ptr       _error;
+};
+
+/**
+ * @return `sql`, a statement written while the program runs, with `arguments` bound to `$1`, `$2`, ...: for what can't be written
+ * when compiling (a `RawStatement`), such as a `CREATE INDEX` on a table named at run time. It returns no rows; `execute` gives
+ * the count of rows it affected, on a `Database` or in a `Transaction`.
+ *
+ * Nothing about it is checked: not its SQL, nor that it uses each argument, nor that it returns no rows. A value goes as an
+ * argument, never spliced into the text; a name spliced in is quoted first (`TableName::quoted()`). It is one statement: text
+ * holding two (`...; ...`) fails, since it is sent with arguments (a function body's semicolons are inside one statement). An
+ * argument is text (a `std::string`, `std::string_view` or literal, sent as it is) or any type with a text form, and is never
+ * NULL. An argument its codec refuses fails the statement when it runs, through its completion or future.
+ */
+template <UncheckedSqlArgument... argument_ts>
+[[nodiscard]] UncheckedSql unchecked_sql(std::string sql, const argument_ts&... arguments) {
+  std::vector<std::string> params;
+  try {
+    params.reserve(sizeof...(argument_ts));
+    const detail::TextBinder bind(&params);
+    const auto               bind_one = [&bind]<typename argument_t>(const argument_t& argument) {
+      if constexpr ( std::convertible_to<const argument_t&, std::string_view> ) {
+        // NOLINTNEXTLINE(cppcoreguidelines-pro-bounds-array-to-pointer-decay) -- a string literal, read up to its terminating null
+        bind(std::string(std::string_view(argument)));  // text, as it is
+      } else {
+        bind(argument);
+      }
+    };
+    (bind_one(arguments), ...);
+  } catch ( ... ) {
+    return {std::move(sql), std::current_exception()};
+  }
+
+  return {std::move(sql), std::move(params)};
+}
+
 }  // namespace schemacht::postgres
 
 namespace schemacht::postgres::detail {
@@ -345,14 +533,14 @@ struct WireStatement {
 
 /**
  * @return `statement` as it goes to the database: a `CompiledQuery` (with the names of the columns it returns, from its schema), a
- * `SchemaStatement`, or a `BoundRawStatement` (which is about no table). The column names point at static storage.
+ * `SchemaStatement`, an `UncheckedSql`, or a `BoundRawStatement` (which is about no table). The column names point at static storage.
  */
 template <SendableStatement statement_t>
 [[nodiscard]] WireStatement wire(const statement_t& statement) {
   WireStatement wired;
   wired.sql = statement.sql();
 
-  if constexpr ( IsSchemaStatement<statement_t> ) {
+  if constexpr ( IsSchemaStatement<statement_t> || IsUncheckedSql<statement_t> ) {
     if ( statement.error() ) {
       std::rethrow_exception(statement.error());  // it could not be made
     }
@@ -384,11 +572,15 @@ template <SendableStatement statement_t>
   return wired;
 }
 
-/** @brief As above, for a statement made from a schema given as a temporary: its arguments (an insert's rows) are moved, not copied. */
-template <schema::IsSchema schema_t, typename result_t>
-[[nodiscard]] WireStatement wire(SchemaStatement<schema_t, result_t>&& statement) {
-  std::vector<std::string> params = std::move(statement).take_params();
-  WireStatement            wired = wire(std::as_const(statement));  // its error, its text and columns; no arguments left to copy
+/**
+ * @brief As above, for a statement that holds its arguments as text (a `SchemaStatement`, an `UncheckedSql`) given as a temporary:
+ * its arguments (an insert's rows, say) are moved, not copied.
+ */
+template <typename statement_t>
+  requires(IsSchemaStatement<statement_t> || IsUncheckedSql<statement_t>)
+[[nodiscard]] WireStatement wire(statement_t&& statement) {
+  std::vector<std::string> params = std::forward<statement_t>(statement).take_params();  // an rvalue: `statement_t` is no reference
+  WireStatement            wired = wire(std::as_const(statement));                       // its error, its text and columns; no arguments left to copy
   wired.params = std::move(params);
 
   return wired;

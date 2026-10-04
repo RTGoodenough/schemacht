@@ -1,8 +1,8 @@
 // Against a real PostgreSQL: run with SCHEMACHT_TEST_DB set to a libpq connection string, e.g.
 //   SCHEMACHT_TEST_DB="host=localhost dbname=test user=test" ctest --test-dir build -R integration
 // Without it, every test here is skipped. The tests create (and drop) tables whose names start with `schemacht_it_`, and the
-// schema `schemacht_it_schema`; the extension test also installs pg_trgm (and leaves it) and creates and drops the function
-// `similar_above`.
+// schemas `schemacht_it_schema` and `schemacht_it_upsert`; the extension test also installs pg_trgm (and leaves it), and the tests
+// create and drop the functions `similar_above` and `schemacht_it_keep_longer`.
 
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/matchers/catch_matchers.hpp>
@@ -28,6 +28,7 @@
 #include <string>
 #include <string_view>
 #include <thread>
+#include <tuple>
 #include <utility>
 #include <vector>
 
@@ -1188,4 +1189,167 @@ TEST_CASE("integration: a call with a completion calls it once, on a worker, wha
 
   drop(database, keyless);
   drop(database, refusals);
+}
+
+namespace {
+
+using Body = sch::Field<std::string, "body">;
+using Hits = sch::Field<std::int64_t, "hits">;
+using Notes = sch::Schema<"schemacht_it_notes", Id, Body, Hits>;
+
+/** @brief Merges by a SQL function of the test's own, which `unchecked_sql` creates: the longer text wins. */
+struct KeepLonger {
+  static constexpr std::string_view FUNCTION = "schemacht_it_keep_longer";
+};
+
+/** @brief Merges by a SQL operator: the counts add up. */
+struct Add {
+  static constexpr std::string_view OPERATOR = "+";
+};
+
+constexpr auto ALL_NOTES = q::select<Notes>().order_by(q::On<Notes>::col<"id">().asc());
+
+/** @return Each note as (id, body, hits), in key order. */
+std::vector<std::tuple<std::int64_t, std::string, std::int64_t>> notes_in(pg::StatementRunner& runner, const sch::Table<Notes>& table) {
+  std::vector<std::tuple<std::int64_t, std::string, std::int64_t>> notes;
+  for ( const auto& row : runner.execute(q::Prepared<ALL_NOTES>::bind().on(table)).get() ) {
+    notes.emplace_back(sch::get<"id">(row), sch::get<"body">(row), sch::get<"hits">(row));
+  }
+  return notes;
+}
+
+}  // namespace
+
+TEST_CASE("integration: an upsert inserts new keys and merges into the rows already there", "[integration][upsert]") {
+  using Note = std::tuple<std::int64_t, std::string, std::int64_t>;
+  pg::Database            database(test_db());
+  const sch::Table<Notes> notes("schemacht_it_notes_merged");
+  recreate(database, notes);
+  database
+      .execute(
+          pg::unchecked_sql(
+              "CREATE OR REPLACE FUNCTION schemacht_it_keep_longer(current_body text, incoming text) RETURNS text LANGUAGE sql IMMUTABLE "
+              "AS $$ SELECT CASE WHEN length(incoming) > length(current_body) THEN incoming ELSE current_body END $$"
+          )
+      )
+      .get();
+
+  CHECK(database.execute(pg::insert_statement<Notes>(std::vector{Notes::make_row(1, "short", 1), Notes::make_row(2, "bb", 5)}).on(notes)).get() == 2);
+
+  // Key 1 is there (merged: the longer body, the hits added), key 3 is not (inserted); key 2 is left alone.
+  const std::vector incoming{Notes::make_row(1, "much longer", 2), Notes::make_row(3, "new", 1)};
+  CHECK(database.execute(pg::upsert_statement<Notes, pg::MergeWith<"body", KeepLonger>, pg::MergeWith<"hits", Add>>(incoming).on(notes)).get() == 2);
+  CHECK(notes_in(database, notes) == std::vector<Note>{{1, "much longer", 3}, {2, "bb", 5}, {3, "new", 1}});
+
+  // Without a MergeWith, the row already there takes the incoming values: a shorter body too.
+  CHECK(database.execute(pg::upsert_statement<Notes>(std::vector{Notes::make_row(1, "x", 10)}).on(notes)).get() == 1);
+  CHECK(notes_in(database, notes).front() == Note{1, "x", 10});
+
+  // Two rows with one key in one statement: the database refuses the whole of it.
+  CHECK_THROWS_AS(
+      database.execute(pg::upsert_statement<Notes>(std::vector{Notes::make_row(4, "a", 1), Notes::make_row(4, "b", 1)}).on(notes)).get(),
+      pg::QueryError
+  );
+  CHECK(notes_in(database, notes).size() == 3);
+
+  // In a transaction rolled back, the merge is undone.
+  pg::Transaction transaction = database.begin().get();
+  CHECK(
+      transaction.execute(pg::upsert_statement<Notes, pg::MergeWith<"hits", Add>>(std::vector{Notes::make_row(2, "bb", 100)}).on(notes)).get() == 1
+  );
+  CHECK(std::get<2>(notes_in(transaction, notes).at(1)) == 105);
+  transaction.rollback().get();
+  CHECK(std::get<2>(notes_in(database, notes).at(1)) == 5);
+
+  drop(database, notes);
+  database.execute(pg::unchecked_sql("DROP FUNCTION schemacht_it_keep_longer(text, text)")).get();
+}
+
+TEST_CASE("integration: the upsert convenience runs on the schema's own table", "[integration][upsert]") {
+  pg::Database database(test_db());
+  database.drop_table<Notes>().get();
+  database.create_table<Notes>().get();
+
+  CHECK(database.upsert<Notes>({Notes::make_row(1, "a", 1)}).get() == 1);
+  CHECK(database.upsert<Notes, pg::MergeWith<"hits", Add>>({Notes::make_row(1, "b", 2), Notes::make_row(2, "c", 3)}).get() == 2);
+  const auto rows = database.execute(q::Prepared<ALL_NOTES>::bind()).get();
+  REQUIRE(rows.size() == 2);
+  CHECK(sch::get<"body">(rows.at(0)) == "b");
+  CHECK(sch::get<"hits">(rows.at(0)) == 3);
+
+  database.drop_table<Notes>().get();
+}
+
+TEST_CASE("integration: a statement given as text runs with its arguments, on the pool or in a transaction", "[integration][unchecked_sql]") {
+  pg::Database            database(test_db());
+  const sch::Table<Notes> notes("schemacht_it_notes_text");
+  recreate(database, notes);
+  database
+      .execute(pg::insert_statement<Notes>(std::vector{Notes::make_row(1, "a", 1), Notes::make_row(2, "b", 2), Notes::make_row(3, "c", 3)}).on(notes))
+      .get();
+
+  const std::string table = notes.name().quoted();
+  CHECK(database.execute(pg::unchecked_sql("CREATE INDEX ON " + table + " (body)")).get() == 0);
+  CHECK(
+      database.execute(pg::unchecked_sql("UPDATE " + table + " SET hits = $1 WHERE id = ANY($2)", std::int64_t{7}, std::vector<std::int64_t>{1, 3}))
+          .get() == 2
+  );
+  CHECK(std::get<2>(notes_in(database, notes).at(2)) == 7);
+
+  pg::Transaction transaction = database.begin().get();
+  CHECK(transaction.execute(pg::unchecked_sql("DELETE FROM " + table + " WHERE body = $1", std::string("b"))).get() == 1);
+  CHECK(notes_in(transaction, notes).size() == 2);
+  transaction.rollback().get();
+  CHECK(notes_in(database, notes).size() == 3);
+
+  // Its errors arrive as any statement's: the server's, and an argument its codec refuses, never from the call.
+  CHECK_THROWS_AS(database.execute(pg::unchecked_sql("NOT SQL")).get(), pg::QueryError);
+  CHECK_THROWS_AS(database.execute(pg::unchecked_sql("SELECT 1; SELECT 2")).get(), pg::QueryError);  // one statement only
+  std::future<std::uint64_t> refused;
+  CHECK_NOTHROW(refused = database.execute(pg::unchecked_sql("SELECT $1::text", Unwritable{})));
+  CHECK_THROWS_WITH(refused.get(), "this argument has no text form");
+
+  drop(database, notes);
+}
+
+namespace {
+
+using Region = sch::Field<std::int32_t, "region", sch::KeyRole::Primary>;
+using TallyDay = sch::Field<std::int32_t, "day", sch::KeyRole::Primary>;
+using Total = sch::Field<Cents, "total">;  // a type of the test's own: sent as text, cast back
+using Seen = sch::Field<std::vector<std::string>, "seen">;
+using Tallies = sch::Schema<"schemacht_it_tallies", Region, TallyDay, Total, Seen>;
+
+/** @brief Merges arrays by appending: `"current"."seen" || excluded."seen"`. */
+struct Append {
+  static constexpr std::string_view OPERATOR = "||";
+};
+
+constexpr auto ALL_TALLIES = q::select<Tallies>().order_by(q::On<Tallies>::col<"region">().asc()).order_by(q::On<Tallies>::col<"day">().asc());
+
+}  // namespace
+
+TEST_CASE("integration: an upsert merges a type of one's own and an array, on a two-column key, in a schema of its own", "[integration][upsert]") {
+  pg::Database database(test_db());
+  database.execute(pg::unchecked_sql("DROP SCHEMA IF EXISTS schemacht_it_upsert CASCADE")).get();
+  database.execute(pg::unchecked_sql("CREATE SCHEMA schemacht_it_upsert")).get();
+  const sch::Table<Tallies> tallies("schemacht_it_upsert", "tallies");
+  database.execute(pg::create_table_statement<Tallies>().on(tallies)).get();
+
+  database.execute(pg::insert_statement<Tallies>(std::vector{Tallies::make_row(1, 1, Cents{100}, std::vector<std::string>{"a"})}).on(tallies)).get();
+
+  // (1, 1) is there: its total adds up and its array grows. (1, 2) shares only half the key, so it is a row of its own.
+  const std::vector incoming{
+      Tallies::make_row(1, 1, Cents{250}, std::vector<std::string>{"b", "c,d"}), Tallies::make_row(1, 2, Cents{5}, std::vector<std::string>{})
+  };
+  CHECK(database.execute(pg::upsert_statement<Tallies, pg::MergeWith<"total", Add>, pg::MergeWith<"seen", Append>>(incoming).on(tallies)).get() == 2);
+
+  const auto rows = database.execute(q::Prepared<ALL_TALLIES>::bind().on(tallies)).get();
+  REQUIRE(rows.size() == 2);
+  CHECK(sch::get<"total">(rows.at(0)) == Cents{350});
+  CHECK(sch::get<"seen">(rows.at(0)) == std::vector<std::string>{"a", "b", "c,d"});
+  CHECK(sch::get<"total">(rows.at(1)) == Cents{5});
+  CHECK(sch::get<"seen">(rows.at(1)).empty());
+
+  database.execute(pg::unchecked_sql("DROP SCHEMA schemacht_it_upsert CASCADE")).get();
 }

@@ -261,4 +261,90 @@ using Others = sch::Schema<"others", Id, Name>;
 }
 #endif
 
+#if defined(CASE_UPSERT_NO_KEY)
+using Unkeyed = sch::Schema<"unkeyed", Name, Count>;
+[[maybe_unused]] void run(const std::vector<Unkeyed::row_type>& rows) { (void)pg::upsert_statement<Unkeyed>(rows); }
+#endif
+
+#if defined(CASE_UPSERT_GENERATED_KEY)
+using Numbered = sch::Schema<"numbered", sch::Field<std::int32_t, "id", sch::KeyRole::Primary, true>, Name>;
+[[maybe_unused]] void run(const std::vector<Numbered::insert_row_type>& rows) { (void)pg::upsert_statement<Numbered>(rows); }
+#endif
+
+#if defined(CASE_UPSERT_NOTHING_TO_SET)
+using KeysOnly = sch::Schema<"keys_only", Id>;
+[[maybe_unused]] void run(const std::vector<KeysOnly::row_type>& rows) { (void)pg::upsert_statement<KeysOnly>(rows); }
+#endif
+
+#if defined(CASE_UPSERT_MERGE_KEY)
+struct Add {
+  static constexpr std::string_view OPERATOR = "+";
+};
+[[maybe_unused]] void run(const std::vector<Things::row_type>& rows) { (void)pg::upsert_statement<Things, pg::MergeWith<"id", Add>>(rows); }
+#endif
+
+#if defined(CASE_UPSERT_MERGE_GENERATED)
+struct Add {
+  static constexpr std::string_view OPERATOR = "+";
+};
+using Doubled = sch::Schema<"doubled", Id, sch::Field<std::int64_t, "twice", sch::KeyRole::None, true>, Name>;
+[[maybe_unused]] void run(const std::vector<Doubled::insert_row_type>& rows) {
+  (void)pg::upsert_statement<Doubled, pg::MergeWith<"twice", Add>>(rows);
+}
+#endif
+
+#if defined(CASE_UPSERT_MERGE_UNKNOWN)
+struct Add {
+  static constexpr std::string_view OPERATOR = "+";
+};
+[[maybe_unused]] void run(const std::vector<Things::row_type>& rows) { (void)pg::upsert_statement<Things, pg::MergeWith<"total", Add>>(rows); }
+#endif
+
+#if defined(CASE_UPSERT_MERGE_TWICE)
+struct Add {
+  static constexpr std::string_view OPERATOR = "+";
+};
+[[maybe_unused]] void run(const std::vector<Things::row_type>& rows) {
+  (void)pg::upsert_statement<Things, pg::MergeWith<"count", Add>, pg::MergeWith<"count", Add>>(rows);
+}
+#endif
+
+#if defined(CASE_UPSERT_MERGE_BAD_FUNCTION)
+struct Dropping {
+  static constexpr std::string_view FUNCTION = "f(); DROP TABLE things; --";
+};
+[[maybe_unused]] void run(const std::vector<Things::row_type>& rows) { (void)pg::upsert_statement<Things, pg::MergeWith<"name", Dropping>>(rows); }
+#endif
+
+#if defined(CASE_UPSERT_MERGE_BAD_OPERATOR)
+struct Commented {
+  static constexpr std::string_view OPERATOR = "+--";
+};
+[[maybe_unused]] void run(const std::vector<Things::row_type>& rows) { (void)pg::upsert_statement<Things, pg::MergeWith<"count", Commented>>(rows); }
+#endif
+
+#if defined(CASE_UPSERT_MERGE_ARGUMENT_PREFIX)
+struct Wrapped {
+  static constexpr std::string_view OPERATOR = "+";
+  static constexpr std::string_view ARGUMENT_PREFIX = "abs(";
+  static constexpr std::string_view ARGUMENT_SUFFIX = ")";
+};
+using Bad = pg::MergeWith<"count", Wrapped>;
+[[maybe_unused]] Bad merge;
+#endif
+
+#if defined(CASE_UPSERT_MERGE_BOTH)
+struct Both {
+  static constexpr std::string_view FUNCTION = "greatest";
+  static constexpr std::string_view OPERATOR = "+";
+};
+using Bad = pg::MergeWith<"count", Both>;
+[[maybe_unused]] Bad merge;
+#endif
+
+#if defined(CASE_UNCHECKED_SQL_ARGUMENT_WITHOUT_TEXT_FORM)
+struct Opaque {};
+[[maybe_unused]] void run() { (void)pg::unchecked_sql("SELECT $1", Opaque{}); }
+#endif
+
 int main() {}
