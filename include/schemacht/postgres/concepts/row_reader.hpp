@@ -8,6 +8,7 @@
 #include <tuple>
 #include <type_traits>
 #include <utility>
+#include <vector>
 
 #include "schemacht/postgres/concepts/field_codec.hpp"
 #include "schemacht/schema/concepts/field.hpp"
@@ -66,5 +67,14 @@ template <typename handler_t, typename result_t>
 concept RowCallback =
     schema::FieldTuple<result_t> && std::invocable<handler_t&, result_t&&> &&
     (std::same_as<std::invoke_result_t<handler_t&, result_t&&>, void> || std::same_as<std::invoke_result_t<handler_t&, result_t&&>, bool>);
+
+/**
+ * @brief A function a result is handed to a chunk at a time (by `Database::stream_chunks`): invocable with a
+ * `std::vector<result_t>&&`, the rows of one chunk, returning `void`, or a `bool` where `false` means it wants no more.
+ */
+template <typename handler_t, typename result_t>
+concept ChunkCallback = schema::FieldTuple<result_t> && std::invocable<handler_t&, std::vector<result_t>&&> &&
+                        (std::same_as<std::invoke_result_t<handler_t&, std::vector<result_t>&&>, void> ||
+                         std::same_as<std::invoke_result_t<handler_t&, std::vector<result_t>&&>, bool>);
 
 }  // namespace schemacht::postgres

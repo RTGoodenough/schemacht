@@ -3,6 +3,7 @@
 #include <span>
 #include <vector>
 
+#include "schemacht/query/predicate.hpp"
 #include "schemacht/query/prepared.hpp"
 #include "schemacht/schema/schema.hpp"
 #include "schemacht/util/compile_time.hpp"
@@ -25,6 +26,12 @@ template <schema::IsSchema schema_t, util::CTString key_col>
 [[nodiscard]] auto by_key_values(std::span<const key_type<schema_t, key_col>> keys) {
   static constexpr auto BY_KEYS = query::On<schema_t>::template col<key_col>().in(query::arg<0>());
   return query::Prepared<BY_KEYS>::bind(std::vector<key_type<schema_t, key_col>>(keys.begin(), keys.end()));
+}
+
+/** @return The query for every row whose primary key (one column) is one of `keys`: what `Database::select_by_key` runs. */
+template <schema::HasSingleColumnKey schema_t>
+[[nodiscard]] auto by_key(std::span<const primary_key_type<schema_t>> keys) {
+  return by_key_values<schema_t, schema::primary_key_field<schema_t>::COLUMN_NAME>(keys);
 }
 
 }  // namespace schemacht::postgres

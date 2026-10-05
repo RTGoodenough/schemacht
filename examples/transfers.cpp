@@ -6,13 +6,15 @@
 // - A transaction: a transfer takes from one account, gives to another and records itself, all of it or none. One that
 //   would overdraw is rolled back.
 // - RETURNING on an update and a delete: `execute` gives the rows as changed, instead of a count.
-// - Steps chained by completions: the day's closing balances are read (`execute_into`) and, from that completion, written to
-//   a table of their own (`insert_into`); the caller waits once, at the end. No worker waits on a future in between, which
-//   could leave none free to finish it.
+// - An upsert: each transfer adds to both accounts' activity, a row per account made by its first transfer and updated by the
+//   rest. The counts add up (`MergeWith` an operator), and the first transfer's id is kept (`Keep`).
+// - Steps chained by completions: the day's closing balances are read (`execute` with a completion) and, from that completion,
+//   written to a table of their own (`insert`, with one too); the caller waits once, at the end. No worker waits on a future
+//   in between, which could leave none free to finish it.
 //
 // Run with a libpq connection string: schemacht_example_transfers "host=localhost dbname=app user=app"
-// It creates the tables schemacht_example_accounts, schemacht_example_transfers and schemacht_example_closing_balances, and
-// drops them when it is done.
+// It creates the tables schemacht_example_accounts, schemacht_example_transfers, schemacht_example_activity and
+// schemacht_example_closing_balances, and drops them when it is done.
 
 #include <algorithm>
 #include <cstddef>
@@ -49,6 +51,18 @@ using To = sch::Field<std::int64_t, "to_account">;
 using Amount = sch::Field<std::int64_t, "amount">;
 using Transfers = sch::Schema<"schemacht_example_transfers", TransferId, From, To, Amount>;
 
+// Each account's activity: how many transfers it took part in, how much they moved, and the first of them.
+using ActiveAccount = sch::Field<std::int64_t, "account", sch::KeyRole::Primary>;
+using TransferCount = sch::Field<std::int64_t, "transfers">;
+using Moved = sch::Field<std::int64_t, "moved">;  // in cents, in and out
+using FirstTransfer = sch::Field<std::int64_t, "first_transfer">;
+using Activity = sch::Schema<"schemacht_example_activity", ActiveAccount, TransferCount, Moved, FirstTransfer>;
+
+/** @brief Merges a count by adding the new one to the one there: `"current"."transfers" + excluded."transfers"`. */
+struct Add {
+  static constexpr std::string_view OPERATOR = "+";
+};
+
 // Each account's balance when the day closed.
 using ClosedAccount = sch::Field<std::int64_t, "account", sch::KeyRole::Primary>;
 using ClosedBalance = sch::Field<std::int64_t, "balance">;  // in cents
@@ -64,6 +78,8 @@ constexpr auto SET_BALANCE = q::update<Accounts>()
 constexpr auto CLOSE = q::delete_where(AccountColumns::col<"owner">() == q::arg<0>()).returning();
 
 constexpr auto ALL_ACCOUNTS = q::select<Accounts>().order_by(AccountColumns::col<"owner">().asc());
+
+constexpr auto ALL_ACTIVITY = q::select<Activity>().order_by(q::On<Activity>::col<"account">().asc());
 
 namespace {
 
@@ -98,21 +114,29 @@ void transfer(pg::Database& database, std::int64_t from, std::int64_t to, std::i
     std::cout << "  " << sch::get<"owner">(changed.at(0)) << ": " << dollars(sch::get<"balance">(changed.at(0))) << '\n';
   }
 
-  const auto recorded = transaction.insert_returning<Transfers>({Transfers::make_insert_row(from, to, amount)}).get();
+  const auto         recorded = transaction.insert_returning<Transfers>({Transfers::make_insert_row(from, to, amount)}).get();
+  const std::int64_t transfer_id = sch::get<"id">(recorded.at(0));
+
+  // Both accounts' activity: a row made for an account's first transfer, and added to by each one after; its first stays.
+  transaction
+      .upsert<Activity, pg::MergeWith<"transfers", Add>, pg::MergeWith<"moved", Add>, pg::Keep<"first_transfer">>(
+          {Activity::make_row(from, 1, amount, transfer_id), Activity::make_row(to, 1, amount, transfer_id)}
+      )
+      .get();
   transaction.commit().get();
 
-  std::cout << "  committed as transfer #" << sch::get<"id">(recorded.at(0)) << '\n';
+  std::cout << "  committed as transfer #" << transfer_id << '\n';
 }
 
 /**
  * @brief Records every account's balance at the end of the day: reads the accounts, and from that completion inserts the
  * snapshot. @return How many balances were recorded.
  */
-std::size_t record_closing_balances(pg::Database& database) {
-  std::promise<std::size_t> recorded;
-  std::future<std::size_t>  done = recorded.get_future();
+std::uint64_t record_closing_balances(pg::Database& database) {
+  std::promise<std::uint64_t> recorded;
+  std::future<std::uint64_t>  done = recorded.get_future();
 
-  database.execute_into(
+  database.execute(
       q::Prepared<ALL_ACCOUNTS>::bind(), [&database, &recorded](const std::vector<Accounts::row_type>& accounts, const std::exception_ptr& error) {
         if ( error ) {
           recorded.set_exception(error);
@@ -127,10 +151,10 @@ std::size_t record_closing_balances(pg::Database& database) {
           }
 
           // From a worker, so no `.get()` here: the insert takes a completion too.
-          database.insert_into<ClosingBalances>(snapshot, [&recorded, count = snapshot.size()](const std::exception_ptr& insert_error) {
-            schemacht::util::settle(recorded, insert_error, count);
+          database.insert<ClosingBalances>(snapshot, [&recorded](std::uint64_t inserted, const std::exception_ptr& insert_error) {
+            schemacht::util::settle(recorded, insert_error, inserted);
           });
-        } catch ( ... ) {  // a worker drops what a completion throws: without this, the wait below would never end
+        } catch ( ... ) {  // no memory to start the insert: a worker drops what a completion throws, and the wait below would never end
           recorded.set_exception(std::current_exception());
         }
       }
@@ -141,6 +165,7 @@ std::size_t record_closing_balances(pg::Database& database) {
 
 void drop_everything(pg::Database& database) {
   database.drop_table<ClosingBalances>().get();
+  database.drop_table<Activity>().get();
   database.drop_table<Transfers>().get();
   database.drop_table<Accounts>().get();
 }
@@ -157,6 +182,7 @@ int main(int argc, char** argv) {
     drop_everything(database);
     database.create_table<Accounts>().get();  // "id" bigint NOT NULL GENERATED ALWAYS AS IDENTITY, ..., UNIQUE ("owner")
     database.create_table<Transfers>().get();
+    database.create_table<Activity>().get();
     database.create_table<ClosingBalances>().get();
 
     // Rows without their ids; the database numbers them. The rows may come back in any order: find each by its owner.
@@ -176,6 +202,15 @@ int main(int argc, char** argv) {
 
     std::cout << "bob sends ann " << dollars(100000) << ":\n";
     transfer(database, bob, ann, 100000);
+
+    std::cout << "bob sends ann " << dollars(500) << ":\n";
+    transfer(database, bob, ann, 500);
+
+    std::cout << "Activity:\n";
+    for ( const Activity::row_type& active : database.execute(q::Prepared<ALL_ACTIVITY>::bind()).get() ) {
+      std::cout << "  #" << sch::get<"account">(active) << "  " << sch::get<"transfers">(active) << " transfers, "
+                << dollars(sch::get<"moved">(active)) << " moved, the first #" << sch::get<"first_transfer">(active) << '\n';
+    }
 
     const auto closed = database.execute(q::Prepared<CLOSE>::bind("bob")).get();
     std::cout << "Closed bob's account #" << sch::get<"id">(closed.at(0)) << ", paying out " << dollars(sch::get<"balance">(closed.at(0))) << ".\n";

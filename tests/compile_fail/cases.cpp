@@ -7,8 +7,8 @@
 
 #include "schemacht/column_type.hpp"
 #include "schemacht/postgres/database.hpp"
-#include "schemacht/postgres/table.hpp"
 #include "schemacht/query.hpp"
+#include "schemacht/schema/table.hpp"
 
 namespace sch = schemacht::schema;
 namespace q = schemacht::query;
@@ -241,19 +241,136 @@ constexpr auto BAD = q::On<Things>::col<"name">().apply<Counts>(q::arg<0>());
 
 #if defined(CASE_TABLE_RAW_STATEMENT)
 using EveryThing = q::RawStatement<"SELECT id FROM things", q::RawArguments<>, Id>;
-[[maybe_unused]] void run(pg::Database& database) {
-  pg::Table<Things> table(database, sch::TableName("archive"));
-  (void)table.execute(EveryThing::bind());  // a raw statement names its own table
+[[maybe_unused]] void run() {
+  (void)EveryThing::bind().on(sch::Table<Things>("archive"));  // a raw statement names its own table
 }
 #endif
 
 #if defined(CASE_TABLE_WRONG_SCHEMA)
 using Others = sch::Schema<"others", Id, Name>;
 constexpr auto        ALL_OTHERS = q::select<Others>();
-[[maybe_unused]] void run(pg::Database& database) {
-  pg::Table<Things> table(database, sch::TableName("archive"));
-  (void)table.execute(q::Prepared<ALL_OTHERS>::bind());  // a query over another schema
+[[maybe_unused]] void run() {
+  (void)q::Prepared<ALL_OTHERS>::bind().on(sch::Table<Things>("archive"));  // a query over another schema
 }
+#endif
+
+#if defined(CASE_TABLE_WRONG_SCHEMA_INSERT)
+using Others = sch::Schema<"others", Id, Name>;
+[[maybe_unused]] void run(const std::vector<Others::row_type>& rows) {
+  (void)pg::insert_statement<Others>(rows).on(sch::Table<Things>("archive"));  // rows of another schema
+}
+#endif
+
+#if defined(CASE_UPSERT_NO_KEY)
+using Unkeyed = sch::Schema<"unkeyed", Name, Count>;
+[[maybe_unused]] void run(const std::vector<Unkeyed::row_type>& rows) { (void)pg::upsert_statement<Unkeyed>(rows); }
+#endif
+
+#if defined(CASE_UPSERT_GENERATED_KEY)
+using Numbered = sch::Schema<"numbered", sch::Field<std::int32_t, "id", sch::KeyRole::Primary, true>, Name>;
+[[maybe_unused]] void run(const std::vector<Numbered::insert_row_type>& rows) { (void)pg::upsert_statement<Numbered>(rows); }
+#endif
+
+#if defined(CASE_UPSERT_NOTHING_TO_SET)
+using KeysOnly = sch::Schema<"keys_only", Id>;
+[[maybe_unused]] void run(const std::vector<KeysOnly::row_type>& rows) { (void)pg::upsert_statement<KeysOnly>(rows); }
+#endif
+
+#if defined(CASE_UPSERT_MERGE_KEY)
+struct Add {
+  static constexpr std::string_view OPERATOR = "+";
+};
+[[maybe_unused]] void run(const std::vector<Things::row_type>& rows) { (void)pg::upsert_statement<Things, pg::MergeWith<"id", Add>>(rows); }
+#endif
+
+#if defined(CASE_UPSERT_MERGE_GENERATED)
+struct Add {
+  static constexpr std::string_view OPERATOR = "+";
+};
+using Doubled = sch::Schema<"doubled", Id, sch::Field<std::int64_t, "twice", sch::KeyRole::None, true>, Name>;
+[[maybe_unused]] void run(const std::vector<Doubled::insert_row_type>& rows) {
+  (void)pg::upsert_statement<Doubled, pg::MergeWith<"twice", Add>>(rows);
+}
+#endif
+
+#if defined(CASE_UPSERT_MERGE_UNKNOWN)
+struct Add {
+  static constexpr std::string_view OPERATOR = "+";
+};
+[[maybe_unused]] void run(const std::vector<Things::row_type>& rows) { (void)pg::upsert_statement<Things, pg::MergeWith<"total", Add>>(rows); }
+#endif
+
+#if defined(CASE_UPSERT_MERGE_TWICE)
+struct Add {
+  static constexpr std::string_view OPERATOR = "+";
+};
+[[maybe_unused]] void run(const std::vector<Things::row_type>& rows) {
+  (void)pg::upsert_statement<Things, pg::MergeWith<"count", Add>, pg::MergeWith<"count", Add>>(rows);
+}
+#endif
+
+#if defined(CASE_UPSERT_MERGE_BAD_FUNCTION)
+struct Dropping {
+  static constexpr std::string_view FUNCTION = "f(); DROP TABLE things; --";
+};
+[[maybe_unused]] void run(const std::vector<Things::row_type>& rows) { (void)pg::upsert_statement<Things, pg::MergeWith<"name", Dropping>>(rows); }
+#endif
+
+#if defined(CASE_UPSERT_MERGE_BAD_OPERATOR)
+struct Commented {
+  static constexpr std::string_view OPERATOR = "+--";
+};
+[[maybe_unused]] void run(const std::vector<Things::row_type>& rows) { (void)pg::upsert_statement<Things, pg::MergeWith<"count", Commented>>(rows); }
+#endif
+
+#if defined(CASE_UPSERT_MERGE_ARGUMENT_PREFIX)
+struct Wrapped {
+  static constexpr std::string_view OPERATOR = "+";
+  static constexpr std::string_view ARGUMENT_PREFIX = "abs(";
+  static constexpr std::string_view ARGUMENT_SUFFIX = ")";
+};
+using Bad = pg::MergeWith<"count", Wrapped>;
+[[maybe_unused]] Bad merge;
+#endif
+
+#if defined(CASE_UPSERT_KEEP_KEY)
+[[maybe_unused]] void run(const std::vector<Things::row_type>& rows) { (void)pg::upsert_statement<Things, pg::Keep<"id">>(rows); }
+#endif
+
+#if defined(CASE_UPSERT_KEEP_EVERYTHING)
+[[maybe_unused]] void run(const std::vector<Things::row_type>& rows) {
+  (void)pg::upsert_statement<Things, pg::Keep<"name">, pg::Keep<"count">, pg::Keep<"ratio">>(rows);
+}
+#endif
+
+#if defined(CASE_UPSERT_KEEP_AND_MERGE)
+struct Add {
+  static constexpr std::string_view OPERATOR = "+";
+};
+[[maybe_unused]] void run(const std::vector<Things::row_type>& rows) {
+  (void)pg::upsert_statement<Things, pg::Keep<"count">, pg::MergeWith<"count", Add>>(rows);
+}
+#endif
+
+#if defined(CASE_UPSERT_MERGE_BOTH)
+struct Both {
+  static constexpr std::string_view FUNCTION = "greatest";
+  static constexpr std::string_view OPERATOR = "+";
+};
+using Bad = pg::MergeWith<"count", Both>;
+[[maybe_unused]] Bad merge;
+#endif
+
+#if defined(CASE_STREAM_CHUNKS_ROW_HANDLER)
+constexpr auto        ALL_THINGS = q::select<Things>();
+[[maybe_unused]] void run(pg::Database& database) {
+  database.stream_chunks(q::Prepared<ALL_THINGS>::bind(), [](const Things::row_type& /*row*/) {});  // a row, where it gets a chunk's rows
+}
+#endif
+
+#if defined(CASE_UNCHECKED_SQL_ARGUMENT_WITHOUT_TEXT_FORM)
+struct Opaque {};
+[[maybe_unused]] void run() { (void)pg::unchecked_sql("SELECT $1", Opaque{}); }
 #endif
 
 int main() {}

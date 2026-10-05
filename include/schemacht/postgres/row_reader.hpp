@@ -12,6 +12,7 @@
 #include <tuple>
 #include <type_traits>
 #include <utility>
+#include <vector>
 
 #include "schemacht/postgres/async_client.hpp"
 #include "schemacht/postgres/concepts/row_reader.hpp"  // IWYU pragma: export
@@ -117,6 +118,22 @@ bool read_rows(const chunk_t& chunk, handler_t& on_row) {
   } else {
     throw std::logic_error("read_rows: a binary result for a row with a column that has no binary form (it should have been asked for as text)");
   }
+}
+
+/**
+ * @return Every row of `chunk`, read as a `result_t`, in order: what `Database::stream_chunks` hands its handler.
+ * @pre The chunk has `result_t`'s columns (see `check_result_columns`).
+ * @throws as `read_rows`.
+ */
+template <TextRow result_t, ResultChunk chunk_t>
+[[nodiscard]] std::vector<result_t> read_chunk(const chunk_t& chunk) {
+  std::vector<result_t> rows;
+  rows.reserve(chunk.row_count());
+
+  const auto keep = [&rows](result_t&& row) { rows.push_back(std::move(row)); };
+  read_rows<result_t>(chunk, keep);
+
+  return rows;
 }
 
 }  // namespace schemacht::postgres

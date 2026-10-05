@@ -136,7 +136,7 @@ inline constexpr std::size_t DEFAULT_STREAM_CHUNK_ROWS = 1000;
  *
  * @warning A completion or chunk handler must not wait on the result of another statement of the same client (a
  * `future::get()` on it, say): that statement's completion needs a worker, and with every worker waiting, none is left to
- * run it. Chain the next step from the completion instead (`Database::execute_into`, `stream_into`, `insert_into`).
+ * run it. Chain the next step from the completion instead (`Database::execute` with a completion, say).
  *
  * Thread-safe: `run` may be called from any thread. Statements run in autocommit mode, one round trip each, unless they run on
  * a lease.

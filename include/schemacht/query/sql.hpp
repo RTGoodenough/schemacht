@@ -200,9 +200,43 @@ consteval std::array<bool, schema_t::FIELD_COUNT> identity_flags(std::index_sequ
   };
 }
 
+/** @return Whether each column's SQL type is an array (`text[]`, say): a `std::vector`, or a column type of your own around one. */
+template <schema::IsSchema schema_t, std::size_t... idx>
+consteval std::array<bool, schema_t::FIELD_COUNT> array_flags(std::index_sequence<idx...> /*indices*/) {
+  return {type_name<typename schema_t::template field_at<idx>::value_type>().ends_with("[]")...};
+}
+
+/** @return Whether each column's type is one of your own (a `ColumnType`, or a `SqlType` specialization), not one schemacht names. */
+template <schema::IsSchema schema_t, std::size_t... idx>
+consteval std::array<bool, schema_t::FIELD_COUNT> own_type_flags(std::index_sequence<idx...> /*indices*/) {
+  return {builtin_type_name<typename schema_t::template field_at<idx>::value_type>().empty()...};
+}
+
 template <schema::IsSchema schema_t, std::size_t... idx>
 consteval std::array<bool, schema_t::FIELD_COUNT> nullable_flags(std::index_sequence<idx...> /*indices*/) {
   return {schema_t::template field_at<idx>::NULLABLE...};
+}
+
+/** @brief Whether each column of `schema_t` is itself an array: its SQL type ends in `[]`. */
+template <schema::IsSchema schema_t>
+inline constexpr std::array<bool, schema_t::FIELD_COUNT> COLUMN_ARRAY = array_flags<schema_t>(std::make_index_sequence<schema_t::FIELD_COUNT>{});
+
+/**
+ * @brief Whether each column of `schema_t` is of a type of your own. Its values in an array argument go as a `text[]` and are
+ * cast to the type one by one: an array literal is split on its element type's own delimiter, which schemacht knows only for
+ * the types it names (PostGIS's `geometry` uses `:`, not `,`).
+ */
+template <schema::IsSchema schema_t>
+inline constexpr std::array<bool, schema_t::FIELD_COUNT> COLUMN_OWN_TYPE =
+    own_type_flags<schema_t>(std::make_index_sequence<schema_t::FIELD_COUNT>{});
+
+/**
+ * @brief Whether the column `column` of `schema_t` goes in an `unnest` insert as a `text[]`, cast back in the select list: an
+ * array (`unnest` would flatten an array of arrays), or a type of your own (`COLUMN_OWN_TYPE`).
+ */
+template <schema::IsSchema schema_t>
+[[nodiscard]] consteval bool sent_as_text(std::size_t column) {
+  return COLUMN_ARRAY<schema_t>.at(column) || COLUMN_OWN_TYPE<schema_t>.at(column);
 }
 
 /** @brief Whether each column of `schema_t` can be NULL (its field is a `std::optional`). */
@@ -251,6 +285,94 @@ consteval std::string_view comparison_symbol(Comparison comparison) {
       return ">=";
   }
   return "";  // unreachable: every Comparison is handled above
+}
+
+/** @brief The longest SQL type name a value can be cast to (`append_cast_type`). */
+inline constexpr std::size_t MAX_CAST_TYPE_LENGTH = 128;
+
+/** @return Whether `left` and `right` are the same apart from the case of ASCII letters, as SQL reads an unquoted name. */
+[[nodiscard]] constexpr bool same_name(std::string_view left, std::string_view right) {
+  return std::ranges::equal(left, right, [](char lhs, char rhs) {
+    const auto lower = [](char chr) { return chr >= 'A' && chr <= 'Z' ? static_cast<char>(chr - 'A' + 'a') : chr; };
+    return lower(lhs) == lower(rhs);
+  });
+}
+
+/**
+ * @return The unlimited form of `type` if it is a character or bit string type of limited length (`varchar`, `char`, `bit` and
+ * their other spellings, without the length), else empty: `bpchar` for the blank-padded ones and `char` (which alone means a
+ * length of one), `varchar` for the varying ones, `varbit` for the bit strings.
+ */
+[[nodiscard]] consteval std::string_view unlimited_string_type(std::string_view type) {
+  constexpr std::string_view                NATIONAL = "national ";  // `national character varying` is `character varying`
+  constexpr std::array<std::string_view, 4> PADDED{"char", "character", "nchar", "bpchar"};
+  constexpr std::array<std::string_view, 4> VARYING{"varchar", "character varying", "char varying", "nchar varying"};
+  constexpr std::array<std::string_view, 3> BITS{"bit", "bit varying", "varbit"};
+
+  constexpr std::string_view CHAR = "char";
+  if ( type.size() >= NATIONAL.size() + CHAR.size() && same_name(type.substr(0, NATIONAL.size()), NATIONAL) &&
+       same_name(type.substr(NATIONAL.size(), CHAR.size()), CHAR) ) {  // `national char...` only: there is no `national varchar` or `national bit`
+    type.remove_prefix(NATIONAL.size());
+  }
+
+  const auto named = [type](std::string_view name) { return same_name(type, name); };
+  if ( std::ranges::any_of(PADDED, named) ) {
+    return "bpchar";
+  }
+
+  if ( std::ranges::any_of(VARYING, named) ) {
+    return "varchar";
+  }
+
+  if ( std::ranges::any_of(BITS, named) ) {
+    return "varbit";
+  }
+
+  return {};
+}
+
+/**
+ * @brief Appends `type` as an argument is cast to it (`$1::<type>`). A character or bit string type of limited length is cast to
+ * its unlimited form (`varchar(3)` to `varchar`, `char(2)` to `bpchar`; see `unlimited_string_type`): a cast cuts such a value to
+ * fit, where storing it fails, so a value too long fails where it is stored (or matches nothing it is compared with) instead of
+ * being cut. Any other type is cast to as it is written: its modifier may be more than a size (`geometry(Point,4326)`'s is a
+ * geometry type and an SRID, which the cast checks and applies), and a number's precision rounds alike either way. An array's
+ * `[]` stays.
+ */
+template <std::size_t text_capacity>
+consteval void append_cast_type(Text<text_capacity>& text, std::string_view type) {
+  if ( type.size() > MAX_CAST_TYPE_LENGTH ) {
+    sql_statement_capacity_exceeded();
+  }
+
+  std::array<char, MAX_CAST_TYPE_LENGTH> chars{};  // `type` without its modifier: `varchar (3)[]` is `varchar[]`
+  std::size_t                            size = 0;
+  std::size_t                            depth = 0;
+  for ( const char chr : type ) {
+    if ( chr == '(' ) {
+      while ( size > 0 && chars.at(size - 1) == ' ' ) {
+        --size;
+      }
+      ++depth;
+
+    } else if ( chr == ')' ) {
+      --depth;
+
+    } else if ( depth == 0 ) {
+      chars.at(size++) = chr;
+    }
+  }
+
+  const std::string_view unmodified(chars.data(), size);
+  const std::size_t      dims = unmodified.find("[]");
+  const std::string_view unlimited = unlimited_string_type(unmodified.substr(0, dims));
+  if ( unlimited.empty() ) {
+    text.append(type);
+    return;
+  }
+
+  text.append(unlimited);
+  text.append(dims == std::string_view::npos ? std::string_view() : unmodified.substr(dims));
 }
 
 /** @brief Writes an operand: `$n` for a bound argument (`arg<N>()` is `$N+1`), or the literal itself. */
@@ -315,7 +437,7 @@ class Emitter {
         _text->append_identifier(schema_t::column_names().at(current.column));
         _text->append(" = ANY(");
         operand(current.operand);
-        cast_array(column_type_name<schema_t>(current.column));
+        list_cast(current.column);
         _text->push(')');
         return;
       case NodeKind::Call:
@@ -401,15 +523,22 @@ class Emitter {
   consteval void cast(std::string_view type) {
     if ( ! type.empty() ) {
       _text->append("::");
-      _text->append(type);
+      append_cast_type(*_text, type);
     }
   }
 
-  consteval void cast_array(std::string_view type) {
-    if ( ! type.empty() ) {
-      cast(type);
-      _text->append("[]");
+  /** @brief `::<type>[]` on a list argument, or `::text[]::<type>[]` for a type of your own (see `COLUMN_OWN_TYPE`). */
+  consteval void list_cast(std::size_t column) {
+    const std::string_view type = column_type_name<schema_t>(column);
+    if ( type.empty() ) {
+      return;
     }
+
+    if ( COLUMN_OWN_TYPE<schema_t>.at(column) ) {
+      _text->append("::text[]");
+    }
+    cast(type);
+    _text->append("[]");
   }
 
   consteval void operand(const Operand& value) { append_operand(*_text, value); }
@@ -491,7 +620,7 @@ template <schema::IsSchema schema_t, std::size_t predicate_capacity, std::size_t
       const std::string_view type = own != nullptr ? own->sql_type : detail::column_type_name<schema_t>(term.column);
       if ( ! type.empty() ) {
         text.append("::");
-        text.append(type);
+        detail::append_cast_type(text, type);
       }
     }
 
@@ -630,6 +759,138 @@ template <schema::IsSchema schema_t>
   return text;
 }
 
+/** @brief The longest a table check can be (`table_differences_statement`): it lists every column, so it outgrows other statements. */
+inline constexpr std::size_t TABLE_CHECK_CAPACITY = 4 * STATEMENT_CAPACITY;
+
+/** @brief Appends `value` as a SQL string literal: between single quotes, each one inside it doubled. */
+template <std::size_t text_capacity>
+consteval void append_literal(Text<text_capacity>& text, std::string_view value) {
+  text.push('\'');
+  for ( const char chr : value ) {
+    if ( chr == '\'' ) {
+      text.push('\'');
+    }
+    text.push(chr);
+  }
+  text.push('\'');
+}
+
+/**
+ * @return The query that says how the table in the database differs from `schema_t`: a row per difference, of the columns
+ * `problem`, `column`, `expected` and `found`, and none if the table is as the schema says (see
+ * `postgres::table_differences_statement`, which says what counts as one). It is written from what `create_table_statement` is
+ * written from (each column's name, type, `NOT NULL`, key and `GENERATED`), so a table that statement made has no differences.
+ *
+ * It reads the catalogs, and compares types in the server's own spelling (`format_type`), so `int8` is `bigint` and
+ * `geometry(linestring,4326)` is `geometry(LineString,4326)`. That needs `to_regtypemod`: PostgreSQL 17 or newer. What it
+ * calls is named in `pg_catalog`, so nothing on the search path can stand in for it. The rows come by kind of problem, as
+ * `postgres::TableProblem` lists them, and within a kind in the schema's column order.
+ */
+template <schema::IsSchema schema_t>
+[[nodiscard]] consteval Text<TABLE_CHECK_CAPACITY> table_differences_statement() {
+  static_assert(
+      ! std::ranges::any_of(detail::COLUMN_TYPE_NAMES<schema_t>, &std::string_view::empty),
+      "table_differences: a column's type has no SQL name; give it one (ColumnType::SQL_TYPE, or a query::sql::SqlType specialization)"
+  );
+
+  Text<TABLE_CHECK_CAPACITY> text;
+
+  // The table, by name: one that isn't there has no oid, nor has a name that is something else's (an index, a sequence, a type).
+  // "is_table" is false for a view, a materialized view and a foreign table, which have columns but no constraints to compare.
+  text.append(R"(WITH RECURSIVE "target" AS (SELECT "t"."name", "c"."oid", "c"."relkind" IN ('r', 'p') AS "is_table" FROM (VALUES (')");
+  text.append_table(schema_t::TABLE_NAME);
+  text.append(
+      R"(')) AS "t" ("name") LEFT JOIN "pg_catalog"."pg_class" AS "c" )"
+      R"(ON "c"."oid" = pg_catalog.to_regclass("t"."name") AND "c"."relkind" IN ('r', 'p', 'v', 'm', 'f')), )"
+  );
+
+  // What the schema says of each column.
+  text.append(R"("want" ("ordinal", "name", "type", "not_null", "is_key", "generated") AS (VALUES )");
+  for ( std::size_t column = 0; column < schema_t::FIELD_COUNT; ++column ) {
+    if ( column != 0 ) {
+      text.append(", ");
+    }
+
+    text.push('(');
+    text.append_unsigned(column + 1);
+    text.append(", ");
+    append_literal(text, schema_t::column_names().at(column));
+    text.append(", ");
+    append_literal(text, detail::COLUMN_TYPE_NAMES<schema_t>.at(column));
+    text.append(detail::COLUMN_NULLABLE<schema_t>.at(column) ? ", FALSE" : ", TRUE");
+    text.append(schema_t::KEY_ROLES.at(column) == schema::KeyRole::Primary ? ", TRUE" : ", FALSE");
+    text.append(detail::COLUMN_GENERATED<schema_t>.at(column) ? ", TRUE" : ", FALSE");
+    text.push(')');
+  }
+  text.append("), ");
+
+  // Each column's type, a domain followed down to the type it is over, gathering each domain's NOT NULL and default on the way:
+  // "has_default" if the database gives the column a value when an insert leaves it out.
+  text.append(
+      R"("types" ("attnum", "typid", "typmod", "not_null", "has_default") AS ()"
+      R"(SELECT "a"."attnum", "a"."atttypid", "a"."atttypmod", "a"."attnotnull", )"
+      R"(("a"."atthasdef" OR "a"."attidentity" <> '' OR "a"."attgenerated" <> '') )"
+      R"(FROM "target" JOIN "pg_catalog"."pg_attribute" AS "a" ON "a"."attrelid" = "target"."oid" )"
+      R"(WHERE "a"."attnum" > 0 AND NOT "a"."attisdropped" )"
+      R"(UNION ALL SELECT "types"."attnum", "d"."typbasetype", "d"."typtypmod", "types"."not_null" OR "d"."typnotnull", )"
+      R"("types"."has_default" OR "d"."typdefault" IS NOT NULL )"
+      R"(FROM "types" JOIN "pg_catalog"."pg_type" AS "d" ON "d"."oid" = "types"."typid" WHERE "d"."typtype" = 'd'), )"
+  );
+
+  // What the table has: "refuses_value" if an insert may not give the column a value.
+  text.append(
+      R"("have" AS (SELECT "a"."attname"::text AS "name", pg_catalog.format_type("types"."typid", "types"."typmod") AS "type", )"
+      R"("types"."not_null", "types"."has_default" AS "fills_in", ("a"."attidentity" = 'a' OR "a"."attgenerated" <> '') AS "refuses_value" )"
+      R"(FROM "target" JOIN "pg_catalog"."pg_attribute" AS "a" ON "a"."attrelid" = "target"."oid" )"
+      R"(JOIN "types" ON "types"."attnum" = "a"."attnum" )"
+      R"(JOIN "pg_catalog"."pg_type" AS "b" ON "b"."oid" = "types"."typid" AND "b"."typtype" <> 'd'), )"
+      R"("want_key" AS (SELECT ARRAY(SELECT "name" FROM "want" WHERE "is_key" ORDER BY 1) AS "names"), )"
+      R"("have_key" AS (SELECT ARRAY(SELECT "a"."attname"::text FROM "target" )"
+      R"(JOIN "pg_catalog"."pg_index" AS "i" ON "i"."indrelid" = "target"."oid" AND "i"."indisprimary" )"
+      R"(JOIN "pg_catalog"."pg_attribute" AS "a" ON "a"."attrelid" = "i"."indrelid" )"
+      R"(AND "a"."attnum" = ANY (("i"."indkey"::int2[])[0:"i"."indnkeyatts" - 1]) ORDER BY 1) AS "names"), )"  // not its INCLUDE columns
+  );
+
+  text.append(
+      R"("differences" ("position", "ordinal", "problem", "column", "expected", "found") AS ()"
+      R"(SELECT 0, 0, 'missing_table', '', "target"."name", '' FROM "target" WHERE "target"."oid" IS NULL )"
+      R"(UNION ALL SELECT 1, "want"."ordinal", 'missing_column', "want"."name", "want"."type", '' )"
+      R"(FROM "target", "want" LEFT JOIN "have" ON "have"."name" = "want"."name" )"
+      R"(WHERE "target"."oid" IS NOT NULL AND "have"."name" IS NULL )"
+      R"(UNION ALL SELECT 2, "want"."ordinal", 'unknown_type', "want"."name", "want"."type", "have"."type" )"
+      R"(FROM "want" JOIN "have" ON "have"."name" = "want"."name" WHERE pg_catalog.to_regtype("want"."type") IS NULL )"
+      R"(UNION ALL SELECT 3, "want"."ordinal", 'wrong_type', "want"."name", )"
+      R"(pg_catalog.format_type(pg_catalog.to_regtype("want"."type"), pg_catalog.to_regtypemod("want"."type")), "have"."type" )"
+      R"(FROM "want" JOIN "have" ON "have"."name" = "want"."name" )"
+      R"(WHERE "have"."type" <> pg_catalog.format_type(pg_catalog.to_regtype("want"."type"), pg_catalog.to_regtypemod("want"."type")) )"
+      R"(UNION ALL SELECT 4, "want"."ordinal", 'nullability', "want"."name", )"
+      R"(CASE WHEN "want"."not_null" THEN 'NOT NULL' ELSE 'nullable' END, CASE WHEN "have"."not_null" THEN 'NOT NULL' ELSE 'nullable' END )"
+      R"(FROM "target", "want" JOIN "have" ON "have"."name" = "want"."name" )"
+      R"(WHERE "target"."is_table" AND "have"."not_null" <> "want"."not_null" )"
+      R"(UNION ALL SELECT 5, "want"."ordinal", 'no_default', "want"."name", '', '' )"
+      R"(FROM "target", "want" JOIN "have" ON "have"."name" = "want"."name" )"
+      R"(WHERE "target"."is_table" AND "want"."generated" AND "have"."not_null" AND NOT "have"."fills_in" )"
+      R"(UNION ALL SELECT 5, "want"."ordinal", 'always_generated', "want"."name", '', '' )"
+      R"(FROM "want" JOIN "have" ON "have"."name" = "want"."name" WHERE NOT "want"."generated" AND "have"."refuses_value" )"
+  );
+
+  if constexpr ( schema_t::HAS_PRIMARY_KEY ) {  // a schema without a key says nothing of the table's
+    text.append(
+        R"(UNION ALL SELECT 6, 0, 'primary_key', '', pg_catalog.array_to_string("want_key"."names", ', '), )"
+        R"(pg_catalog.array_to_string("have_key"."names", ', ') )"
+        R"(FROM "target", "want_key", "have_key" WHERE "target"."is_table" AND "want_key"."names" <> "have_key"."names" )"
+    );
+  }
+
+  text.append(
+      R"(UNION ALL SELECT 7, 0, 'extra_required_column', "have"."name", '', "have"."type" FROM "have" )"
+      R"(WHERE "have"."not_null" AND NOT "have"."fills_in" AND "have"."name" NOT IN (SELECT "name" FROM "want")) )"
+      R"(SELECT "problem", "column", "expected", "found" FROM "differences" ORDER BY "position", "ordinal", "column")"
+  );
+
+  return text;
+}
+
 /** @return `DROP TABLE IF EXISTS <table>`. */
 template <schema::IsSchema schema_t>
 [[nodiscard]] consteval Text<STATEMENT_CAPACITY> drop_table_statement() {
@@ -640,26 +901,63 @@ template <schema::IsSchema schema_t>
   return text;
 }
 
-/** @brief Writes `INSERT INTO <table> (<every insertable column>)`. */
+/** @brief What an upsert calls the row already in the table, in its `SET` clause. */
+inline constexpr std::string_view UPSERT_CURRENT = "current";
+
+/** @brief Writes `INSERT INTO <table> (<every insertable column>)`, naming the table `alias` (`<table> AS <alias>`) unless it is empty. */
 template <schema::IsSchema schema_t, std::size_t text_capacity>
-consteval void append_insert_into(Text<text_capacity>& text) {
+consteval void append_insert_into(Text<text_capacity>& text, std::string_view alias) {
   text.append("INSERT INTO ");
   text.append_table(schema_t::TABLE_NAME);
+  if ( ! alias.empty() ) {
+    text.append(" AS ");
+    text.append_identifier(alias);
+  }
   text.append(" (");
   text.append_identifier_list(schema_t::insertable_column_names());
   text.push(')');
 }
 
-/**
- * @return `INSERT INTO <table> (<columns>) SELECT * FROM unnest($1::<type>[], $2::<type>[], ...)`: one array argument per
- * insertable column, holding that column's value for every row. Every insertable column's type needs an SQL type name (`sql::type_name`).
- */
-template <schema::IsSchema schema_t>
-[[nodiscard]] consteval Text<STATEMENT_CAPACITY> insert_unnest_statement() {
-  Text<STATEMENT_CAPACITY> text;
-  append_insert_into<schema_t>(text);
-  text.append(" SELECT * FROM unnest(");
+/** @brief Appends `"current"."column"`: `column` of the row already in the table, in an upsert's `SET` clause. */
+template <std::size_t text_capacity>
+consteval void append_current(Text<text_capacity>& text, std::string_view column) {
+  text.append_identifier(UPSERT_CURRENT);
+  text.push('.');
+  text.append_identifier(column);
+}
 
+/** @brief Appends `excluded."column"`: `column` of the row that would have gone in, in an upsert's `SET` clause. */
+template <std::size_t text_capacity>
+consteval void append_excluded(Text<text_capacity>& text, std::string_view column) {
+  text.append("excluded.");
+  text.append_identifier(column);
+}
+
+/** @brief Appends `insert_unnest_statement`'s INSERT, naming the table `alias` unless it is empty (see `append_insert_into`). */
+template <schema::IsSchema schema_t, std::size_t text_capacity>
+consteval void append_insert_unnest(Text<text_capacity>& text, std::string_view alias) {
+  append_insert_into<schema_t>(text, alias);
+
+  text.append(" SELECT ");
+  bool first = true;
+  for ( std::size_t column = 0; column < schema_t::FIELD_COUNT; ++column ) {
+    if ( detail::COLUMN_GENERATED<schema_t>.at(column) ) {
+      continue;
+    }
+
+    if ( ! first ) {
+      text.append(", ");
+    }
+    first = false;
+
+    text.append_identifier(schema_t::column_names().at(column));
+    if ( detail::sent_as_text<schema_t>(column) ) {
+      text.append("::");
+      detail::append_cast_type(text, detail::COLUMN_TYPE_NAMES<schema_t>.at(column));
+    }
+  }
+
+  text.append(" FROM unnest(");
   std::uint64_t placeholder = 0;
   for ( std::size_t column = 0; column < schema_t::FIELD_COUNT; ++column ) {
     if ( detail::COLUMN_GENERATED<schema_t>.at(column) ) {
@@ -673,21 +971,96 @@ template <schema::IsSchema schema_t>
     text.push('$');
     text.append_unsigned(++placeholder);
     text.append("::");
-    text.append(detail::COLUMN_TYPE_NAMES<schema_t>.at(column));
+    detail::append_cast_type(
+        text, detail::sent_as_text<schema_t>(column) ? std::string_view("text") : detail::COLUMN_TYPE_NAMES<schema_t>.at(column)
+    );
     text.append("[]");
   }
 
+  text.append(") AS u(");
+  text.append_identifier_list(schema_t::insertable_column_names());
   text.push(')');
+}
+
+/**
+ * @return `INSERT INTO <table> (<columns>) SELECT <columns> FROM unnest($1::<type>[], ...) AS u(<columns>)`: one array argument per
+ * insertable column, holding that column's value for every row, so any number of rows go in one statement. A column that is
+ * itself an array, or of a type of your own, goes as a `text[]` of its values' text forms, cast back to its type in the select
+ * list (`detail::sent_as_text`). Every insertable column's type needs an SQL type name (`sql::type_name`).
+ */
+template <schema::IsSchema schema_t>
+[[nodiscard]] consteval Text<STATEMENT_CAPACITY> insert_unnest_statement() {
+  Text<STATEMENT_CAPACITY> text;
+  append_insert_unnest<schema_t>(text, {});
 
   return text;
 }
 
-/** @return `INSERT INTO <table> (<columns>) VALUES `, to which the rows are appended. */
-template <schema::IsSchema schema_t>
-[[nodiscard]] consteval Text<STATEMENT_CAPACITY> insert_values_head() {
+/**
+ * @brief How an upsert sets one column of a row that is already there, by `operation`: `name("current"."column",
+ * excluded."column")` for a function, `"current"."column" name excluded."column"` for an operator (`infix`); "current" is the row
+ * there, `excluded` the row that would have gone in. Made by `postgres::MergeWith`.
+ */
+struct Merge {
+  std::size_t      column = 0;           ///< Index into the schema's fields.
+  const Operation* operation = nullptr;  ///< The function or operator that merges the two values; null to keep the value there.
+};
+
+/**
+ * @return `insert_unnest_statement`'s INSERT, with the table named `"current"`, ending `ON CONFLICT (<primary key>) DO UPDATE SET
+ * ...`: a row whose key is already there updates it instead. Each column that is neither key nor generated is set as its
+ * `Merge` in `merges` says (or left out, if it keeps the value there), or else to the value that would have gone in
+ * (`"column" = excluded."column"`). The schema must have a primary key and a column to set (`postgres::upsert_statement` checks
+ * both).
+ */
+template <schema::IsSchema schema_t, std::size_t merge_count>
+[[nodiscard]] consteval Text<STATEMENT_CAPACITY> upsert_statement(const std::array<Merge, merge_count>& merges) {
   Text<STATEMENT_CAPACITY> text;
-  append_insert_into<schema_t>(text);
-  text.append(" VALUES ");
+  append_insert_unnest<schema_t>(text, UPSERT_CURRENT);
+
+  text.append(" ON CONFLICT (");
+  text.append_identifier_list(schema_t::primary_key_column_names());
+  text.append(") DO UPDATE SET ");
+
+  bool first = true;
+  for ( std::size_t column = 0; column < schema_t::FIELD_COUNT; ++column ) {
+    if ( detail::COLUMN_GENERATED<schema_t>.at(column) || schema_t::KEY_ROLES.at(column) == schema::KeyRole::Primary ) {
+      continue;
+    }
+
+    const auto merge = std::ranges::find(merges, column, &Merge::column);
+    if ( merge != merges.end() && merge->operation == nullptr ) {
+      continue;  // kept as it is
+    }
+
+    if ( ! first ) {
+      text.append(", ");
+    }
+    first = false;
+
+    const std::string_view name = schema_t::column_names().at(column);
+    text.append_identifier(name);
+    text.append(" = ");
+
+    if ( merge == merges.end() ) {
+      append_excluded(text, name);
+
+    } else if ( merge->operation->infix ) {
+      append_current(text, name);
+      text.push(' ');
+      text.append_operator(merge->operation->name);
+      text.push(' ');
+      append_excluded(text, name);
+
+    } else {
+      text.append_function(merge->operation->name);
+      text.push('(');
+      append_current(text, name);
+      text.append(", ");
+      append_excluded(text, name);
+      text.push(')');
+    }
+  }
 
   return text;
 }

@@ -1,46 +1,50 @@
-// A `Table` of any schema compiles, whatever its key: one column, several, or none. Only what needs a one-column key
-// (`select_by_key`) is missing where there is none.
+// A statement written against a schema is aimed at a table of that schema's shape, named while the program runs (`on`),
+// whatever the schema's key: one column, several, or none. A table of another schema is refused, and a raw statement names
+// its own tables, so it can't be aimed at all.
 
 #include <catch2/catch_test_macros.hpp>
 
-#include <cstdint>
-#include <exception>
-#include <span>
-#include <string>
+#include <concepts>
+#include <utility>
 #include <vector>
 
-#include "schemacht/postgres/table.hpp"
+#include "schemacht/postgres/statements.hpp"
+#include "schemacht/query/prepared.hpp"
+#include "schemacht/query/query.hpp"
+#include "schemacht/query/raw_statement.hpp"
+#include "schemacht/schema/table.hpp"
 #include "support/schemas.hpp"
 
 namespace pg = schemacht::postgres;
+namespace q = schemacht::query;
+namespace sch = schemacht::schema;
 namespace t = schemacht::test;
-
-// Explicit instantiation forms every member that is not a template, and the declaration of every one that is: a signature
-// that can't be formed for the schema (as `select_by_key`'s once couldn't, without a one-column key) is a compile error
-// here. Member templates' bodies are formed only when called, which the checks below do in part.
-template class schemacht::postgres::Table<t::People>;
-template class schemacht::postgres::Table<t::Pairs>;
-template class schemacht::postgres::Table<t::Keyless>;
-template class schemacht::postgres::Table<t::Numbered>;
 
 namespace {
 
-template <typename table_t, typename key_t>
-concept SelectsByKey = requires(table_t& table, std::span<const key_t> keys) { table.select_by_key(keys); };
-
-template <typename table_t>
-concept InsertsWithCompletion = requires(table_t& table, const std::vector<typename table_t::row_type>& rows) {
-  table.insert_into(rows, [](const std::exception_ptr& /*error*/) {});
+template <typename statement_t, typename table_t>
+concept AimsAt = requires(const statement_t& statement, const table_t& table) {
+  { statement.on(table) } -> std::same_as<statement_t>;
 };
+
+constexpr auto ALL_PEOPLE = q::select<t::People>();
+constexpr auto ALL_PAIRS = q::select<t::Pairs>();
+
+using PeopleQuery = decltype(q::Prepared<ALL_PEOPLE>::bind());
+using PairsQuery = decltype(q::Prepared<ALL_PAIRS>::bind());
+using PairsInsert = decltype(pg::insert_statement<t::Pairs>(std::declval<const std::vector<t::Pairs::row_type>&>()));
+using KeylessCreate = decltype(pg::create_table_statement<t::Keyless>());
+using Raw = decltype(q::RawStatement<"SELECT 1 AS id", q::RawArguments<>, t::Id>::bind());
 
 }  // namespace
 
-TEST_CASE("a Table compiles for any key, and selects by key only for a one-column one", "[table]") {
-  STATIC_REQUIRE(SelectsByKey<pg::Table<t::People>, std::int64_t>);
-  STATIC_REQUIRE_FALSE(SelectsByKey<pg::Table<t::Pairs>, std::int32_t>);
-  STATIC_REQUIRE_FALSE(SelectsByKey<pg::Table<t::Keyless>, std::string>);
+TEST_CASE("a statement is aimed only at a table of its own schema's shape, whatever its key", "[table]") {
+  STATIC_REQUIRE(AimsAt<PeopleQuery, sch::Table<t::People>>);
+  STATIC_REQUIRE(AimsAt<PairsQuery, sch::Table<t::Pairs>>);  // a key of two columns
+  STATIC_REQUIRE(AimsAt<PairsInsert, sch::Table<t::Pairs>>);
+  STATIC_REQUIRE(AimsAt<KeylessCreate, sch::Table<t::Keyless>>);  // no key
 
-  STATIC_REQUIRE(InsertsWithCompletion<pg::Table<t::People>>);
-  STATIC_REQUIRE(InsertsWithCompletion<pg::Table<t::Pairs>>);
-  STATIC_REQUIRE(InsertsWithCompletion<pg::Table<t::Keyless>>);
+  STATIC_REQUIRE_FALSE(AimsAt<PeopleQuery, sch::Table<t::Pairs>>);
+  STATIC_REQUIRE_FALSE(AimsAt<PairsInsert, sch::Table<t::Keyless>>);
+  STATIC_REQUIRE_FALSE(AimsAt<Raw, sch::Table<t::People>>);
 }

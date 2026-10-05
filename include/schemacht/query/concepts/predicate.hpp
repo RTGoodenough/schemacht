@@ -29,6 +29,14 @@ concept NamesOperator = requires {
 template <typename operation_t>
 concept TakesNumber = requires { requires operation_t::TAKES_NUMBER; };
 
+/** @brief Whether `operation_t` writes SQL around its argument: `ARGUMENT_PREFIX` before it, or `ARGUMENT_SUFFIX` after it. */
+template <typename operation_t>
+concept WritesAroundArgument = requires {
+  { operation_t::ARGUMENT_PREFIX } -> std::convertible_to<std::string_view>;
+} || requires {
+  { operation_t::ARGUMENT_SUFFIX } -> std::convertible_to<std::string_view>;
+};
+
 /**
  * @brief Whether `operation_t` is a test usable in a query (see `ColumnRef::apply`): it names the SQL that does the test, as a
  * function (`FUNCTION`) or as an operator (`OPERATOR`; the form an index can answer for `@>`, `&&`, `LIKE` and the like). Naming

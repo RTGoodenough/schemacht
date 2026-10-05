@@ -13,9 +13,13 @@
 
 #include "schemacht/column_type.hpp"
 #include "schemacht/postgres/statements.hpp"
+#include "schemacht/query/predicate.hpp"
+#include "schemacht/query/prepared.hpp"
+#include "schemacht/query/sql.hpp"
 #include "schemacht/schema/schema.hpp"
 
 namespace pg = schemacht::postgres;
+namespace q = schemacht::query;
 namespace sch = schemacht::schema;
 namespace sql = schemacht::query::sql;
 
@@ -83,10 +87,54 @@ std::vector<std::byte> bytes_of(std::string_view text) {
   return bytes;
 }
 
+/** @brief Several labels as one value: an array inside a column type of one's own. */
+struct LabelList {
+  std::vector<std::string> values;
+};
+
+/** @brief A code of at most three characters: `varchar(3)`. */
+struct Code {
+  std::string text;
+};
+
+/** @brief Initials of exactly two characters: `char(2)`. */
+struct Initials {
+  std::string text;
+};
+
+/** @brief A point in WGS 84, as hex EWKB: a `geometry(Point,4326)`, whose modifier is a geometry type and an SRID, not a size. */
+struct Spot {
+  std::string ewkb;
+};
+
 }  // namespace
 
 template <>
+struct schemacht::ColumnType<Code> {
+  static constexpr std::string_view SQL_TYPE = "varchar(3)";
+  static Code                       parse(std::string_view text) { return Code{std::string(text)}; }
+  static std::string                format(const Code& code) { return code.text; }
+};
+
+template <>
+struct schemacht::ColumnType<Initials> {
+  static constexpr std::string_view SQL_TYPE = "char(2)";
+  static Initials                   parse(std::string_view text) { return Initials{std::string(text)}; }
+  static std::string                format(const Initials& initials) { return initials.text; }
+};
+
+template <>
+struct schemacht::ColumnType<Spot> {
+  static constexpr std::string_view SQL_TYPE = "geometry(Point,4326)";
+  static Spot                       parse(std::string_view text) { return Spot{std::string(text)}; }
+  static std::string                format(const Spot& spot) { return spot.ewkb; }
+};
+
+template <>
 struct schemacht::ColumnType<OrderId> : schemacht::WrappedColumn<&OrderId::value> {};
+
+template <>
+struct schemacht::ColumnType<LabelList> : schemacht::WrappedColumn<&LabelList::values> {};
 
 template <>
 struct schemacht::ColumnType<Color> : schemacht::EnumColumn<Color, "color", "red", "green"> {};
@@ -178,16 +226,38 @@ TEST_CASE("an EnumColumn is stored as its labels", "[column_type]") {
   CHECK_THROWS_AS(pg::format_field(static_cast<Color>(7)), std::invalid_argument);
 }
 
-TEST_CASE("a column of an own type is inserted with its SQL type", "[column_type][insert]") {
+// An array literal is split on its element type's own delimiter, which isn't always a comma (PostGIS's geometry uses `:`), so a
+// type of one's own goes in an array as text, whose delimiter is, and is cast to its type one value at a time.
+TEST_CASE("a column of an own type is inserted as text, cast to its SQL type", "[column_type][insert]") {
   using Id = sch::Field<OrderId, "id", sch::KeyRole::Primary>;
   using Shade = sch::Field<Color, "shade">;
   using Paints = sch::Schema<"paints", Id, Shade>;
 
   const std::vector<Paints::row_type> rows{Paints::make_row(OrderId{1}, Color::Red)};
-  const auto                          statements = pg::detail::build_insert<Paints, Paints::row_type>(rows);
+  const auto                          statement = pg::insert_statement<Paints>(rows);
 
-  CHECK(statements.at(0).sql == R"(INSERT INTO "paints" ("id", "shade") SELECT * FROM unnest($1::bigint[], $2::color[]))");
-  CHECK(statements.at(0).values == std::vector<std::string>{R"({"1"})", R"({"red"})"});
+  CHECK(
+      statement.sql() ==
+      R"(INSERT INTO "paints" ("id", "shade") SELECT "id"::bigint, "shade"::color FROM unnest($1::text[], $2::text[]) AS u("id", "shade"))"
+  );
+  CHECK(std::vector<std::string>(statement.params().begin(), statement.params().end()) == std::vector<std::string>{R"({"1"})", R"({"red"})"});
+}
+
+TEST_CASE("a list of an own type is sent as text, cast to its SQL type", "[column_type][sql]") {
+  using Paints = sch::Schema<"paints", sch::Field<OrderId, "id", sch::KeyRole::Primary>, sch::Field<Color, "shade">>;
+  static constexpr auto SHADE_IN = q::On<Paints>::col<"shade">().in(q::arg<0>());
+
+  STATIC_REQUIRE(q::Prepared<SHADE_IN>::SQL == R"(SELECT "id", "shade" FROM "paints" WHERE "shade" = ANY($1::text[]::color[]))");
+}
+
+TEST_CASE("an array inside a column type of one's own is inserted as an array: as text, cast back", "[column_type][insert]") {
+  using Listed = sch::Schema<"listed", sch::Field<LabelList, "labels">>;
+  STATIC_REQUIRE(sql::type_name<LabelList>() == "text[]");
+
+  const std::vector<Listed::row_type> rows{Listed::make_row(LabelList{{"a", "b"}})};
+  CHECK(
+      pg::insert_statement<Listed>(rows).sql() == R"(INSERT INTO "listed" ("labels") SELECT "labels"::text[] FROM unnest($1::text[]) AS u("labels"))"
+  );
 }
 
 TEST_CASE("as_text views bytes as the characters they are", "[column_type]") {
@@ -236,4 +306,44 @@ TEST_CASE("a ConvertedColumn is stored as another type", "[column_type]") {
 
   using Wrong = decltype([](int number) { return number; });
   STATIC_REQUIRE_FALSE(schemacht::ConvertsThrough<std::chrono::milliseconds, std::int64_t, Wrong{}, Wrong{}>);
+}
+
+// A cast cuts a character or bit string to the type's length (`'abcdef'::varchar(3)` is `abc`), so an argument is cast to the
+// type's unlimited form, and a value too long fails where it is stored. `char` and `bit` alone mean a length of one: their
+// unlimited forms are `bpchar` and `varbit`. Any other type's modifier stays (a geometry's is its type and SRID).
+TEST_CASE("an argument is cast to a string column's type without its length, and to any other type as written", "[column_type][sql]") {
+  using Codes = sch::Schema<
+      "codes", sch::Field<OrderId, "id", sch::KeyRole::Primary>, sch::Field<Code, "code">, sch::Field<Initials, "initials">,
+      sch::Field<std::vector<Initials>, "aliases">>;
+  static constexpr auto CODE_IN = q::On<Codes>::col<"code">().in(q::arg<0>());
+
+  const std::vector<Codes::row_type> rows{Codes::make_row(OrderId{1}, Code{"abc"}, Initials{"rg"}, std::vector<Initials>{})};
+  CHECK(
+      pg::insert_statement<Codes>(rows).sql() ==
+      R"(INSERT INTO "codes" ("id", "code", "initials", "aliases") SELECT "id"::bigint, "code"::varchar, "initials"::bpchar, "aliases"::bpchar[] )"
+      R"(FROM unnest($1::text[], $2::text[], $3::text[], $4::text[]) AS u("id", "code", "initials", "aliases"))"
+  );
+  STATIC_REQUIRE(q::Prepared<CODE_IN>::SQL.ends_with(R"(WHERE "code" = ANY($1::text[]::varchar[]))"));
+
+  // A modifier other than a string's length stays: a number's precision, a geometry's type and SRID.
+  using Places = sch::Schema<"places", sch::Field<OrderId, "id", sch::KeyRole::Primary>, sch::Field<Cents, "price">, sch::Field<Spot, "spot">>;
+  static constexpr auto               SPOT_IN = q::On<Places>::col<"spot">().in(q::arg<0>());
+  const std::vector<Places::row_type> places{Places::make_row(OrderId{1}, Cents{100}, Spot{"0101000020E6100000"})};
+  CHECK(pg::insert_statement<Places>(places).sql().contains(R"(SELECT "id"::bigint, "price"::numeric(12,2), "spot"::geometry(Point,4326) FROM)"));
+  STATIC_REQUIRE(q::Prepared<SPOT_IN>::SQL.ends_with(R"(WHERE "spot" = ANY($1::text[]::geometry(Point,4326)[]))"));
+
+  // The other spellings of the string types, in either case; no other type has an unlimited form to be cast to.
+  STATIC_REQUIRE(sql::detail::unlimited_string_type("National Character Varying") == "varchar");
+  STATIC_REQUIRE(sql::detail::unlimited_string_type("nchar") == "bpchar");
+  STATIC_REQUIRE(sql::detail::unlimited_string_type("bit varying") == "varbit");
+  STATIC_REQUIRE(sql::detail::unlimited_string_type("national char") == "bpchar");
+  STATIC_REQUIRE(sql::detail::unlimited_string_type("national varchar").empty());  // not a type PostgreSQL has
+  STATIC_REQUIRE(sql::detail::unlimited_string_type("national bit").empty());
+  STATIC_REQUIRE(sql::detail::unlimited_string_type("text").empty());
+  STATIC_REQUIRE(sql::detail::unlimited_string_type("geometry").empty());
+
+  // The table itself keeps the lengths.
+  CHECK(
+      pg::create_table_statement<Codes>().sql().contains(R"("code" varchar(3) NOT NULL, "initials" char(2) NOT NULL, "aliases" char(2)[] NOT NULL)")
+  );
 }

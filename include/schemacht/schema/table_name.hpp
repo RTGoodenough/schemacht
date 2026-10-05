@@ -10,7 +10,7 @@ namespace schemacht::schema {
 
 /**
  * @brief A table's name chosen while the program runs, for running a schema's statements on a table other than its own (see
- * `postgres::Table`): from configuration, a user, or another language's bindings.
+ * `Table`): from configuration, a user, or another language's bindings.
  *
  * Checked once, when made, by the rule a `Schema`'s own name follows (`util::is_identifier`): lowercase letters, digits and
  * underscores, not starting with a digit, at most 63 bytes. So it is written into a statement between double quotes, with

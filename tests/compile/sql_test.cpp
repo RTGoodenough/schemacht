@@ -9,7 +9,7 @@
 #include "schemacht/json.hpp"
 #include "schemacht/query.hpp"
 #include "schemacht/query/sql.hpp"
-#include "schemacht/schema/table_name.hpp"
+#include "schemacht/schema/table.hpp"
 #include "support/schemas.hpp"
 
 namespace q = schemacht::query;
@@ -153,11 +153,11 @@ TEST_CASE("a statement knows where it names its table, and runs on another named
   const auto bound = q::Prepared<RAISE_RETURNING>::bind(1.5, 7);
   CHECK(bound.sql() == q::Prepared<RAISE_RETURNING>::SQL);  // the schema's own table, unless aimed at another
 
-  const auto archived = bound.on(schemacht::schema::TableName("archive"));
+  const auto archived = bound.on(schemacht::schema::Table<t::People>("archive"));
   CHECK(archived.sql() == R"(UPDATE "archive" SET "score" = $1, "active" = TRUE WHERE "id" = $2 RETURNING "score", "id")");
   CHECK(archived.params().size() == 2);
   CHECK(
-      q::Prepared<ORDERED>::bind().on(schemacht::schema::TableName("gis", "people_2026")).sql() ==
+      q::Prepared<ORDERED>::bind().on(schemacht::schema::Table<t::People>("gis", "people_2026")).sql() ==
       R"(SELECT "name", "id" FROM "gis"."people_2026" WHERE "active" = TRUE ORDER BY "score" DESC, "id" LIMIT 10)"
   );
 }

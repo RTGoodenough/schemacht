@@ -203,7 +203,7 @@ TEST_CASE("integration: calls on a transaction run in the order they were made",
   reset<Accounts>(database);
 
   pg::Transaction            transaction = database.begin().get();
-  std::future<void>          inserted = transaction.insert<Accounts>({Accounts::make_row(1, 100)});
+  std::future<std::uint64_t> inserted = transaction.insert<Accounts>({Accounts::make_row(1, 100)});
   std::future<std::uint64_t> updated = transaction.execute(q::Prepared<SET_BALANCE<Accounts>>::bind(5, 1));  // without waiting for the insert
   std::future<void>          committed = transaction.commit();
 
@@ -245,13 +245,13 @@ TEST_CASE("integration: a transaction holds its connection until it ends", "[int
   second.rollback().get();
 }
 
-TEST_CASE("integration: an insert of several statements is atomic", "[integration][transaction]") {
+TEST_CASE("integration: an insert of many rows is atomic", "[integration][transaction]") {
   using Tags = sch::Field<std::vector<std::string>, "tags">;
   using Tagged = sch::Schema<"schemacht_it_tx_tagged", Id, Tags>;
   pg::Database database(test_db());
   reset<Tagged>(database);
 
-  // An array column takes VALUES statements of at most 65,535 parameters: 40,000 rows take two. The second has a key again.
+  // 40,000 rows of a schema with an array column, in one statement: the last has the first's key again.
   std::vector<Tagged::row_type> rows;
   rows.reserve(40000);
   for ( std::int64_t id = 0; id < 40000; ++id ) {
@@ -259,7 +259,7 @@ TEST_CASE("integration: an insert of several statements is atomic", "[integratio
   }
 
   CHECK(sqlstate_of(database.insert<Tagged>(rows)) == "23505");
-  CHECK(count_rows<Tagged>(database) == 0);  // the first statement's rows were rolled back with it
+  CHECK(count_rows<Tagged>(database) == 0);  // none of them is written
 
   // In a transaction, the insert is part of it.
   pg::Transaction transaction = database.begin().get();
@@ -290,7 +290,7 @@ TEST_CASE("integration: a transaction whose connection is lost fails, and the co
   CHECK(sch::get<"pid">(database.execute(BackendPid::bind()).get().at(0)) != pid);
 }
 
-TEST_CASE("integration: an insert of several statements in a transaction runs before the calls after it", "[integration][transaction]") {
+TEST_CASE("integration: a large insert in a transaction runs before the calls after it", "[integration][transaction]") {
   using Tags = sch::Field<std::vector<std::string>, "tags">;
   using Tagged = sch::Schema<"schemacht_it_tx_pipelined", Id, Tags>;
   pg::Database database(test_db());
@@ -298,20 +298,20 @@ TEST_CASE("integration: an insert of several statements in a transaction runs be
 
   std::vector<Tagged::row_type> rows;
   rows.reserve(40000);
-  for ( std::int64_t id = 0; id < 40000; ++id ) {  // two VALUES statements
+  for ( std::int64_t id = 0; id < 40000; ++id ) {
     rows.push_back(Tagged::make_row(id, std::vector<std::string>{"a"}));
   }
 
   static constexpr auto ALL = q::select<Tagged>();
 
-  // Nothing waits: the count and the COMMIT are handed in while the insert's statements are still running.
-  pg::Transaction   transaction = database.begin().get();
-  std::future<void> inserted = transaction.insert<Tagged>(rows);
-  auto              counted = transaction.execute(q::Prepared<ALL>::bind());
-  std::future<void> committed = transaction.commit();
+  // Nothing waits: the count and the COMMIT are handed in while the insert is still running.
+  pg::Transaction            transaction = database.begin().get();
+  std::future<std::uint64_t> inserted = transaction.insert<Tagged>(rows);
+  auto                       counted = transaction.execute(q::Prepared<ALL>::bind());
+  std::future<void>          committed = transaction.commit();
 
   inserted.get();
-  CHECK(counted.get().size() == 40000);  // after both of the insert's statements
+  CHECK(counted.get().size() == 40000);  // after the insert
   committed.get();
   CHECK(count_rows<Tagged>(database) == 40000);
 
@@ -355,7 +355,7 @@ TEST_CASE("integration: a lease let go of inside a transaction comes back out of
   database.drop_table<Accounts>().get();
 }
 
-TEST_CASE("integration: an insert of several statements gives back every row, alone or in a transaction", "[integration][transaction][returning]") {
+TEST_CASE("integration: a large insert gives back every row, alone or in a transaction", "[integration][transaction][returning]") {
   using NumberedId = sch::Field<std::int64_t, "id", sch::KeyRole::Primary, true>;
   using Tags = sch::Field<std::vector<std::string>, "tags">;
   using Label = sch::Field<std::string, "label">;
@@ -363,14 +363,13 @@ TEST_CASE("integration: an insert of several statements gives back every row, al
   pg::Database database(test_db());
   reset<NumberedTags>(database);
 
-  // An array column takes VALUES statements of at most 65,535 parameters: 40,000 rows of two take two.
+  // 40,000 rows of a schema with an array column: one statement, as any insert is.
   std::vector<NumberedTags::insert_row_type> rows;
   rows.reserve(40000);
   for ( std::int64_t row = 0; row < 40000; ++row ) {
     rows.push_back(NumberedTags::make_insert_row(std::vector<std::string>{"a"}, std::to_string(row)));
   }
 
-  // Alone, the statements run in a transaction of their own, whose BEGIN and COMMIT give back nothing.
   // PostgreSQL does not promise the order of the rows it returns: compare which came back, not where.
   const auto labels_of = [](const std::vector<NumberedTags::row_type>& returned) {
     std::set<std::string> labels;
@@ -396,4 +395,25 @@ TEST_CASE("integration: an insert of several statements gives back every row, al
   CHECK(count_rows<NumberedTags>(database) == 80000);
 
   database.drop_table<NumberedTags>().get();
+}
+
+TEST_CASE("integration: a transaction has ended by the time its commit or rollback completes", "[integration][transaction]") {
+  pg::Database database(test_db());
+
+  // The completion runs on a worker, and may be what tells another thread to use the transaction again, or to destroy it:
+  // by then the call that ended it must have nothing left to do to it.
+  for ( int round = 0; round < 50; ++round ) {
+    pg::Transaction    transaction = database.begin().get();
+    std::promise<bool> open_at_completion;
+    const auto         done = [&](const std::exception_ptr& /*error*/) { open_at_completion.set_value(transaction.is_open()); };
+
+    if ( round % 2 == 0 ) {
+      transaction.commit(done);
+    } else {
+      transaction.rollback(done);
+    }
+
+    CHECK_FALSE(open_at_completion.get_future().get());
+    CHECK_THROWS_AS(transaction.execute(Series::bind(1)).get(), std::logic_error);  // ended, for the caller too
+  }
 }

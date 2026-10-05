@@ -17,8 +17,8 @@ include(Catch)
 # The integration tests skip themselves unless SCHEMACHT_TEST_DB holds a libpq connection string.
 add_executable(
   schemacht_tests
-  compile/completions_test.cpp
   compile/raw_statement_test.cpp
+  compile/runner_test.cpp
   compile/schema_test.cpp
   compile/sql_test.cpp
   compile/table_test.cpp
@@ -34,6 +34,7 @@ add_executable(
   unit/thread_pool_test.cpp
   unit/util_test.cpp
   integration/database_test.cpp
+  integration/table_differences_test.cpp
   integration/transaction_test.cpp
 )
 target_include_directories(schemacht_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
@@ -107,8 +108,25 @@ schemacht_compile_fail(OPERATION_ARGUMENT_TYPE "the type its operation declares"
 schemacht_compile_fail(OPERATION_ARGUMENT_OTHER_TYPE "the type its operation declares")
 schemacht_compile_fail(OPERATION_ARGUMENT_DISAGREES "disagree")
 schemacht_compile_fail(OPERATION_ARGUMENT_NOT_COLUMN_TYPE "must be a column type of your own")
-schemacht_compile_fail(TABLE_WRONG_SCHEMA "a Table runs only queries, updates and deletes written against its own schema")
-schemacht_compile_fail(TABLE_RAW_STATEMENT "a Table runs only queries, updates and deletes written against its own schema")
+schemacht_compile_fail(TABLE_WRONG_SCHEMA "a statement runs only on a table of its own schema's shape")
+schemacht_compile_fail(TABLE_WRONG_SCHEMA_INSERT "a statement runs only on a table of its own schema's shape")
+schemacht_compile_fail(TABLE_RAW_STATEMENT "no member named")
+schemacht_compile_fail(UPSERT_NO_KEY "upsert: the schema has no primary key")
+schemacht_compile_fail(UPSERT_GENERATED_KEY "upsert: the database numbers the primary key")
+schemacht_compile_fail(UPSERT_NOTHING_TO_SET "has nothing to update")
+schemacht_compile_fail(UPSERT_MERGE_KEY "upsert: a MergeWith or Keep names a primary key column")
+schemacht_compile_fail(UPSERT_MERGE_GENERATED "upsert: a MergeWith or Keep names a GENERATED column")
+schemacht_compile_fail(UPSERT_MERGE_UNKNOWN "the schema has no column with that name")
+schemacht_compile_fail(UPSERT_MERGE_TWICE "upsert: two of its MergeWith and Keep name the same column")
+schemacht_compile_fail(UPSERT_KEEP_KEY "upsert: a MergeWith or Keep names a primary key column")
+schemacht_compile_fail(UPSERT_KEEP_EVERYTHING "every column besides the key is kept")
+schemacht_compile_fail(UPSERT_KEEP_AND_MERGE "upsert: two of its MergeWith and Keep name the same column")
+schemacht_compile_fail(UPSERT_MERGE_BAD_FUNCTION "must be a SQL function name")
+schemacht_compile_fail(UPSERT_MERGE_BAD_OPERATOR "must be a single SQL operator")
+schemacht_compile_fail(UPSERT_MERGE_ARGUMENT_PREFIX "MergeOperation")
+schemacht_compile_fail(UPSERT_MERGE_BOTH "MergeOperation")
+schemacht_compile_fail(STREAM_CHUNKS_ROW_HANDLER "ChunkCallback")
+schemacht_compile_fail(UNCHECKED_SQL_ARGUMENT_WITHOUT_TEXT_FORM "UncheckedSqlArgument")
 
 # With no case defined, cases.cpp must compile: the failures above are the cases', not the file's.
 add_test(NAME compile_fail.baseline COMMAND ${CMAKE_CXX_COMPILER} -std=c++23 -fsyntax-only -I${PROJECT_SOURCE_DIR}/include

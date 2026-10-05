@@ -29,13 +29,30 @@ namespace detail {
   return std::ranges::all_of(name, [](char chr) { return detail::is_lower(chr) || detail::is_digit(chr) || chr == '_'; });
 }
 
-/** @return Whether `name` is a valid SQL function name: letters, digits and underscores, not starting with a digit. */
-[[nodiscard]] constexpr bool is_sql_function_name(std::string_view name) {
-  if ( name.empty() || detail::is_digit(name.front()) ) {
+namespace detail {
+
+/** @return Whether `word` is one part of a SQL function name: letters, digits and underscores, not starting with a digit. */
+[[nodiscard]] constexpr bool is_function_word(std::string_view word) {
+  if ( word.empty() || is_digit(word.front()) ) {
     return false;
   }
 
-  return std::ranges::all_of(name, [](char chr) { return detail::is_lower(chr) || detail::is_upper(chr) || detail::is_digit(chr) || chr == '_'; });
+  return std::ranges::all_of(word, [](char chr) { return is_lower(chr) || is_upper(chr) || is_digit(chr) || chr == '_'; });
+}
+
+}  // namespace detail
+
+/**
+ * @return Whether `name` is a valid SQL function name: letters, digits and underscores, not starting with a digit; optionally
+ * after the schema it is in and a dot (`stats.add_counts`), to call it whatever the search path is.
+ */
+[[nodiscard]] constexpr bool is_sql_function_name(std::string_view name) {
+  const std::size_t dot = name.find('.');
+  if ( dot == std::string_view::npos ) {
+    return detail::is_function_word(name);
+  }
+
+  return detail::is_function_word(name.substr(0, dot)) && detail::is_function_word(name.substr(dot + 1));
 }
 
 /**

@@ -1,5 +1,6 @@
 #pragma once
 
+#include <concepts>
 #include <cstddef>
 #include <cstdint>
 #include <span>
@@ -14,7 +15,7 @@
 #include "schemacht/query/query.hpp"
 #include "schemacht/query/sql.hpp"
 #include "schemacht/schema/schema.hpp"
-#include "schemacht/schema/table_name.hpp"
+#include "schemacht/schema/table.hpp"
 
 namespace schemacht::query {
 
@@ -107,21 +108,30 @@ class CompiledQuery {
   [[nodiscard]] std::span<const std::size_t> columns() const noexcept { return _columns; }
 
   /**
-   * @return This query on `table` instead of its schema's own: the same statement and arguments, naming `table`. What
-   * `postgres::Table` runs; a backend's own handle on a table can use it too.
+   * @return This query on `table` instead of its schema's own: the same statement and arguments, naming `table` (a table of the
+   * schema's shape, named while the program runs).
    */
-  [[nodiscard]] CompiledQuery on(const schema::TableName& table) const& {
+  [[nodiscard]] CompiledQuery on(const schema::Table<schema_t>& table) const& {
     CompiledQuery aimed = *this;
-    aimed._sql_on_table = sql::on_table(_sql, _table_slot, table);
+    aimed._sql_on_table = sql::on_table(_sql, _table_slot, table.name());
 
     return aimed;
   }
 
   /** @brief As above, moving the arguments rather than copying them. */
-  [[nodiscard]] CompiledQuery on(const schema::TableName& table) && {
-    _sql_on_table = sql::on_table(_sql, _table_slot, table);
+  [[nodiscard]] CompiledQuery on(const schema::Table<schema_t>& table) && {
+    _sql_on_table = sql::on_table(_sql, _table_slot, table.name());
 
     return std::move(*this);
+  }
+
+  /** @brief Refused: a table of another schema's shape. */
+  template <schema::IsSchema other_t>
+  void on(const schema::Table<other_t>& /*table*/) const {
+    static_assert(
+        std::same_as<other_t, schema_t>,
+        "a statement runs only on a table of its own schema's shape: aim it at a schema::Table of the schema it was written against"
+    );
   }
 
  private:
@@ -167,11 +177,13 @@ class TypedQuery : public CompiledQuery<schema_t> {
  public:
   using result_type = result_t;
 
+  using CompiledQuery<schema_t>::on;  // its refusal of another schema's table
+
   /** @return This query on `table` instead of its schema's own (see `CompiledQuery::on`). */
-  [[nodiscard]] TypedQuery on(const schema::TableName& table) const& { return TypedQuery(CompiledQuery<schema_t>::on(table)); }
+  [[nodiscard]] TypedQuery on(const schema::Table<schema_t>& table) const& { return TypedQuery(CompiledQuery<schema_t>::on(table)); }
 
   /** @brief As above, moving the arguments rather than copying them. */
-  [[nodiscard]] TypedQuery on(const schema::TableName& table) && { return TypedQuery(std::move(*this).CompiledQuery<schema_t>::on(table)); }
+  [[nodiscard]] TypedQuery on(const schema::Table<schema_t>& table) && { return TypedQuery(std::move(*this).CompiledQuery<schema_t>::on(table)); }
 
  private:
   template <auto source>
