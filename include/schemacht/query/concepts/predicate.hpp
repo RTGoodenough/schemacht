@@ -37,6 +37,14 @@ concept WritesAroundArgument = requires {
   { operation_t::ARGUMENT_SUFFIX } -> std::convertible_to<std::string_view>;
 };
 
+/** @brief Whether `operation_t` writes SQL around its column: `COLUMN_PREFIX` before it, or `COLUMN_SUFFIX` after it. */
+template <typename operation_t>
+concept WritesAroundColumn = requires {
+  { operation_t::COLUMN_PREFIX } -> std::convertible_to<std::string_view>;
+} || requires {
+  { operation_t::COLUMN_SUFFIX } -> std::convertible_to<std::string_view>;
+};
+
 /**
  * @brief Whether `operation_t` is a test usable in a query (see `ColumnRef::apply`): it names the SQL that does the test, as a
  * function (`FUNCTION`) or as an operator (`OPERATOR`; the form an index can answer for `@>`, `&&`, `LIKE` and the like). Naming
@@ -52,11 +60,14 @@ concept OperationOn = (NamesFunction<operation_t> != NamesOperator<operation_t>)
 template <typename operation_t>
 concept OperationWithReal = NamesFunction<operation_t> && ! NamesOperator<operation_t> && TakesNumber<operation_t>;
 
-/** @brief Whether `ranking_t` ranks rows against an argument: it names the SQL operator (`OPERATOR`) whose number they sort by, smallest first. */
+/**
+ * @brief Whether `ranking_t` ranks rows against an argument: it names the SQL operator (`OPERATOR`) whose number they sort by,
+ * smallest first. A ranking is of the column and the argument as they are: it writes no SQL around either.
+ */
 template <typename ranking_t>
 concept RankingOn = requires {
   { ranking_t::OPERATOR } -> std::convertible_to<std::string_view>;
-};
+} && ! WritesAroundArgument<ranking_t> && ! WritesAroundColumn<ranking_t>;
 
 /**
  * @brief Whether `operation_t` (an operation or a ranking) takes an argument of a type of its own, not the column's: it says

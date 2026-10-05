@@ -89,11 +89,16 @@ struct ArgumentForm {
  * - `OPERATOR`, written `"column" OPERATOR $n`, or `FUNCTION`, written `FUNCTION("column", $n)`: one of the two;
  * - optionally `TAKES_NUMBER = true`, for a function that also takes a number (a threshold, a radius), a `double`;
  * - optionally `ARGUMENT_PREFIX` and `ARGUMENT_SUFFIX`, SQL written around the argument;
+ * - optionally `COLUMN_PREFIX` and `COLUMN_SUFFIX`, SQL written around the column, to test an expression of it: `lower(` and
+ *   `)`, or a cast (`::geography`). It is the form an index on that expression can answer. The argument is still cast to the
+ *   column's type, so if the expression is of another type, say so with `argument_type`. Nothing is added around the
+ *   expression, so one written with an operator brings its own parentheses: `(` and ` ->> 'name')`;
  * - optionally `using argument_type = T;`, when the argument is not of the column's type: a polygon tested against a line
  *   column, or a text key against a `jsonb` one. `T` must be a column type of your own (a `ColumnType` specialization): the
  *   argument is cast to its SQL type, and `bind` takes exactly a `T`.
  *
- * examples/extensions.cpp declares pg_trgm's similarity this way, and jsonb's `?`, whose argument is a key.
+ * examples/extensions.cpp declares pg_trgm's similarity this way, jsonb's `?`, whose argument is a key, and a test of
+ * `lower("name")`.
  */
 struct Operation {
   /// The SQL function, written `name("column", $n)`, or, if `infix`, the SQL operator, written `"column" name $n`.
@@ -104,15 +109,20 @@ struct Operation {
   bool             takes_real = false;  ///< Whether the test has a second, numeric argument: `name("column", $n, $m)`. Functions only.
   /// Fixed SQL written around the argument (`$n::type`), to convert it first. E.g. `lower(` and `)` give
   /// `"column" ~~ lower($1::text)`. The value itself is always a parameter.
-  std::string_view    argument_prefix;
-  std::string_view    argument_suffix;
+  std::string_view argument_prefix;
+  std::string_view argument_suffix;
+  /// Fixed SQL written around the column, to test an expression of it. E.g. `lower(` and `)` give
+  /// `lower("column") ~~ $1::text`. Only the test is written so: a select list and an `ORDER BY` name the column itself.
+  std::string_view    column_prefix;
+  std::string_view    column_suffix;
   const ArgumentForm* argument = nullptr;  ///< The argument's own type (`argument_type`), if it is not the column's.
 };
 
 /**
  * @brief A way of ranking rows by their column and an argument, smallest first: the SQL operator that gives the number they
  * are sorted by (`"column" <-> $n`), which an index can answer for "the closest N". Made by `ColumnRef::ranked_by` from a
- * type that declares `OPERATOR`, and optionally `argument_type` (as `Operation`'s).
+ * type that declares `OPERATOR`, and optionally `argument_type` (as `Operation`'s). It writes nothing around the column or
+ * the argument: a type with `COLUMN_PREFIX` or `ARGUMENT_PREFIX` (or a suffix) is not a ranking.
  */
 struct Ranking {
   std::string_view    op;                  ///< The SQL operator, written between the column and the argument.
@@ -177,6 +187,32 @@ template <typename operation_t>
                    { operation_t::ARGUMENT_SUFFIX } -> std::convertible_to<std::string_view>;
                  } ) {
     return operation_t::ARGUMENT_SUFFIX;
+  } else {
+    return {};
+  }
+}
+
+/**
+ * @brief The SQL an operation writes around its column: `COLUMN_PREFIX` before it and `COLUMN_SUFFIX` after it, both empty if
+ * it does not say.
+ */
+template <typename operation_t>
+[[nodiscard]] constexpr std::string_view column_prefix() {
+  if constexpr ( requires {
+                   { operation_t::COLUMN_PREFIX } -> std::convertible_to<std::string_view>;
+                 } ) {
+    return operation_t::COLUMN_PREFIX;
+  } else {
+    return {};
+  }
+}
+
+template <typename operation_t>
+[[nodiscard]] constexpr std::string_view column_suffix() {
+  if constexpr ( requires {
+                   { operation_t::COLUMN_SUFFIX } -> std::convertible_to<std::string_view>;
+                 } ) {
+    return operation_t::COLUMN_SUFFIX;
   } else {
     return {};
   }
@@ -251,6 +287,8 @@ class BoundOperation {
       .takes_real = TakesNumber<operation_t>,
       .argument_prefix = argument_prefix<operation_t>(),
       .argument_suffix = argument_suffix<operation_t>(),
+      .column_prefix = column_prefix<operation_t>(),
+      .column_suffix = column_suffix<operation_t>(),
       .argument = argument_form<operation_t>(),
   };
 };
@@ -540,7 +578,8 @@ class ColumnRef {
    * `json::contains` or `query::like`.
    *
    * The query layer treats it as an opaque test. Being written as a plain function call or operator, it must not depend
-   * on anything but the column and its arguments.
+   * on anything but the column and its arguments. An operation that declares `COLUMN_PREFIX` or `COLUMN_SUFFIX` tests an
+   * expression of the column instead (`lower("name")`).
    */
   template <typename operation_t, std::size_t slot_idx>
     requires OperationOn<operation_t>

@@ -239,6 +239,15 @@ struct Counts {
 constexpr auto BAD = q::On<Things>::col<"name">().apply<Counts>(q::arg<0>());
 #endif
 
+#if defined(CASE_RANKING_COLUMN_PREFIX)
+struct LowerDistance {
+  static constexpr std::string_view OPERATOR = "<->";
+  static constexpr std::string_view COLUMN_PREFIX = "lower(";
+  static constexpr std::string_view COLUMN_SUFFIX = ")";
+};
+constexpr auto BAD = q::select<Things>().order_by(q::On<Things>::col<"name">().ranked_by<LowerDistance>(q::arg<0>()));
+#endif
+
 #if defined(CASE_TABLE_RAW_STATEMENT)
 using EveryThing = q::RawStatement<"SELECT id FROM things", q::RawArguments<>, Id>;
 [[maybe_unused]] void run() {
@@ -328,6 +337,16 @@ struct Wrapped {
   static constexpr std::string_view OPERATOR = "+";
   static constexpr std::string_view ARGUMENT_PREFIX = "abs(";
   static constexpr std::string_view ARGUMENT_SUFFIX = ")";
+};
+using Bad = pg::MergeWith<"count", Wrapped>;
+[[maybe_unused]] Bad merge;
+#endif
+
+#if defined(CASE_UPSERT_MERGE_COLUMN_PREFIX)
+struct Wrapped {
+  static constexpr std::string_view OPERATOR = "+";
+  static constexpr std::string_view COLUMN_PREFIX = "abs(";
+  static constexpr std::string_view COLUMN_SUFFIX = ")";
 };
 using Bad = pg::MergeWith<"count", Wrapped>;
 [[maybe_unused]] Bad merge;

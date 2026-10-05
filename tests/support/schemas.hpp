@@ -120,6 +120,55 @@ struct HasKey {
   using argument_type = JsonKey;
 };
 
+/** @brief Operations that test an expression of their column: SQL written around it with `COLUMN_PREFIX` and `COLUMN_SUFFIX`. */
+namespace expression {
+
+/** @brief `lower("column") = lower($1::text)`: equal whatever the case, the form an index on `lower("column")` answers. */
+struct SameIgnoringCase {
+  static constexpr std::string_view OPERATOR = "=";
+  static constexpr std::string_view COLUMN_PREFIX = "lower(";
+  static constexpr std::string_view COLUMN_SUFFIX = ")";
+  static constexpr std::string_view ARGUMENT_PREFIX = "lower(";
+  static constexpr std::string_view ARGUMENT_SUFFIX = ")";
+};
+
+/** @brief `starts_with(lower("column"), $1::text)`: a function of an expression of the column. */
+struct LowerStartsWith {
+  static constexpr std::string_view FUNCTION = "starts_with";
+  static constexpr std::string_view COLUMN_PREFIX = "lower(";
+  static constexpr std::string_view COLUMN_SUFFIX = ")";
+};
+
+/** @brief `similar_above(lower("column"), $1::text, $2::double precision)`: with a number too. */
+struct LowerSimilarAbove {
+  static constexpr std::string_view FUNCTION = "similar_above";
+  static constexpr bool             TAKES_NUMBER = true;
+  static constexpr std::string_view COLUMN_PREFIX = "lower(";
+  static constexpr std::string_view COLUMN_SUFFIX = ")";
+};
+
+/** @brief The name in a document, sent as text: the argument of `NameIs`. */
+struct DocumentName {
+  std::string value;
+};
+
+/** @brief `("doc" ->> 'name') = $1::text`: the expression is text, not the column's jsonb, so the argument's type is declared. */
+struct NameIs {
+  static constexpr std::string_view OPERATOR = "=";
+  static constexpr std::string_view COLUMN_PREFIX = "(";
+  static constexpr std::string_view COLUMN_SUFFIX = " ->> 'name')";
+  using argument_type = DocumentName;
+};
+
+/** @brief `"column"::bytea = $1::text::bytea`: a suffix alone, on each side. */
+struct SameBytes {
+  static constexpr std::string_view OPERATOR = "=";
+  static constexpr std::string_view COLUMN_SUFFIX = "::bytea";
+  static constexpr std::string_view ARGUMENT_SUFFIX = "::bytea";
+};
+
+}  // namespace expression
+
 }  // namespace schemacht::test
 
 template <>
@@ -140,6 +189,10 @@ struct schemacht::ColumnType<schemacht::test::Point> {  // text only, as `Box`
 
 template <>
 struct schemacht::ColumnType<schemacht::test::JsonKey> : schemacht::WrappedColumn<&schemacht::test::JsonKey::value> {};
+
+template <>
+struct schemacht::ColumnType<schemacht::test::expression::DocumentName>
+    : schemacht::WrappedColumn<&schemacht::test::expression::DocumentName::value> {};
 
 template <>
 class schemacht::query::sql::SelectExpression<schemacht::test::Tile> {

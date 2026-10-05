@@ -482,15 +482,15 @@ class Emitter {
 
   /**
    * @brief `function("column", $n::type[, $m::double precision])`, or `"column" operator $n::type`: `type` is the column's, or
-   * the operation's `argument_type`'s, and the argument is written inside the operation's `ARGUMENT_PREFIX` and
-   * `ARGUMENT_SUFFIX`, if it has them.
+   * the operation's `argument_type`'s. The column is written inside the operation's `COLUMN_PREFIX` and `COLUMN_SUFFIX`, and
+   * the argument inside its `ARGUMENT_PREFIX` and `ARGUMENT_SUFFIX`, if it has them.
    */
   consteval void call(const Node& current) {
     const ArgumentForm*    own = current.operation->argument;
     const std::string_view type = own != nullptr ? own->sql_type : column_type_name<schema_t>(current.column);
 
     if ( current.operation->infix ) {
-      _text->append_identifier(schema_t::column_names().at(current.column));
+      tested_column(current);
       _text->push(' ');
       _text->append_operator(current.operation->name);
       _text->push(' ');
@@ -500,7 +500,7 @@ class Emitter {
 
     _text->append_function(current.operation->name);
     _text->push('(');
-    _text->append_identifier(schema_t::column_names().at(current.column));
+    tested_column(current);
     _text->append(", ");
     argument(current, type);
 
@@ -510,6 +510,13 @@ class Emitter {
       cast(type_name<double>());
     }
     _text->push(')');
+  }
+
+  /** @brief The call's column as the operation writes it: `"column"`, inside the SQL the operation puts around it (if any). */
+  consteval void tested_column(const Node& current) {
+    _text->append(current.operation->column_prefix);
+    _text->append_identifier(schema_t::column_names().at(current.column));
+    _text->append(current.operation->column_suffix);
   }
 
   /** @brief The call's argument as the operation writes it: `$n::type`, inside the SQL the operation puts around it (if any). */

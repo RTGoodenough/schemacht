@@ -1,4 +1,5 @@
-// An extension's operators and functions in queries, and an operation whose argument is not of the column's type.
+// An extension's operators and functions in queries, an operation whose argument is not of the column's type, and one that
+// tests an expression of its column.
 //
 // An operation is a type that names its SQL (see `query::Operation`); `col.apply<Op>(arg)` tests a column with it, and
 // `col.ranked_by<Op>(arg)` sorts by it. Here:
@@ -9,10 +10,13 @@
 // - jsonb's own operators. `json::contains` (`@>`) is the library's. `HasKey` (`?`) is declared here, and its argument is a
 //   key, not a document: `using argument_type = JsonKey;` makes the argument a `JsonKey`, sent as `text`. A PostGIS test of a
 //   line column against a polygon is declared the same way.
+// - A test of an expression of the column. `SameIgnoringCase` writes `lower(` and `)` around the column (`COLUMN_PREFIX`,
+//   `COLUMN_SUFFIX`) and around the argument, which is the form an index on `lower("name")` answers. A PostGIS test of a
+//   raster's outline (`ST_ConvexHull("rast")`), or of a geometry as a geography (`"geom"::geography`), is declared the same way.
 //
 // Run with a libpq connection string: schemacht_example_extensions "host=localhost dbname=app user=app"
 // It installs pg_trgm if it can (and leaves it installed), creates the function similar_above and the table
-// schemacht_example_streets, and drops those two when it is done. Without pg_trgm, it says so and runs the jsonb part only.
+// schemacht_example_streets, and drops those two when it is done. Without pg_trgm, it says so and leaves its part out.
 
 #include <cstddef>
 #include <cstdint>
@@ -68,6 +72,15 @@ struct HasKey {
   using argument_type = JsonKey;
 };
 
+/** @brief `lower("column") = lower($1::text)`: the same text, whatever the case of either. */
+struct SameIgnoringCase {
+  static constexpr std::string_view OPERATOR = "=";
+  static constexpr std::string_view COLUMN_PREFIX = "lower(";
+  static constexpr std::string_view COLUMN_SUFFIX = ")";
+  static constexpr std::string_view ARGUMENT_PREFIX = "lower(";
+  static constexpr std::string_view ARGUMENT_SUFFIX = ")";
+};
+
 // ---- Using them --------------------------------------------------------------------------------------------------------
 
 using Id = sch::Field<std::int64_t, "id", sch::KeyRole::Primary>;
@@ -96,6 +109,11 @@ constexpr auto WITH_PROPERTIES = q::select(json::contains(StreetColumns::col<"pr
 constexpr auto WITH_KEY = q::select(StreetColumns::col<"properties">().apply<HasKey>(q::arg<0>()))
                               .order_by(StreetColumns::col<"id">().asc())
                               .project(StreetColumns::col<"name">());
+
+// The streets with a name, in whatever case it was written. The rows come back as stored: only the test lowers the name.
+constexpr auto NAMED = q::select(StreetColumns::col<"name">().apply<SameIgnoringCase>(q::arg<0>()))
+                           .order_by(StreetColumns::col<"id">().asc())
+                           .project(StreetColumns::col<"name">());
 
 using CreateTrgm = q::RawStatement<"CREATE EXTENSION IF NOT EXISTS pg_trgm", q::RawArguments<>>;
 using CreateSimilarAbove = q::RawStatement<
@@ -147,7 +165,7 @@ int main(int argc, char** argv) {
             Streets::make_row(2, "main st", json::Json(R"({"highway": "footway", "surface": "paved"})")),
             Streets::make_row(3, "maine road", json::Json(R"({"highway": "primary"})")),
             Streets::make_row(4, "mill lane", json::Json(R"({"highway": "footway", "surface": "gravel", "lit": false})")),
-            Streets::make_row(5, "high street", json::Json(R"({"highway": "primary", "lit": true})")),
+            Streets::make_row(5, "High Street", json::Json(R"({"highway": "primary", "lit": true})")),
         })
         .get();
 
@@ -162,6 +180,7 @@ int main(int argc, char** argv) {
         "Paved footways:", database.execute(q::Prepared<WITH_PROPERTIES>::bind(json::Json(R"({"highway": "footway", "surface": "paved"})"))).get()
     );
     print_names("Saying whether they are lit:", database.execute(q::Prepared<WITH_KEY>::bind(JsonKey{"lit"})).get());
+    print_names("Named \"HIGH street\", in any case:", database.execute(q::Prepared<NAMED>::bind("HIGH street")).get());
 
     drop_everything(database);
 

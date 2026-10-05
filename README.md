@@ -115,7 +115,8 @@ int main() {
 - **An extension's operators and functions** (pg_trgm, PostGIS, ...): `col.apply<Op>(arg)` for a test, and
   `col.ranked_by<Op>(arg)` to sort by one. An operation's argument can be of a type other than the column's, with
   `using argument_type = T;`, where `T` is a column type of your own (a `ColumnType` specialization): a text key for
-  jsonb's `?`, say. See [examples/extensions.cpp](examples/extensions.cpp).
+  jsonb's `?`, say. An operation can also test an expression of its column, with SQL written around the column
+  (`COLUMN_PREFIX`, `COLUMN_SUFFIX`): `lower("name")` or a cast, as an index on that expression needs. See [examples/extensions.cpp](examples/extensions.cpp).
 - **Tables from schemas:** `create_table` and `drop_table`, for tests, examples and a first start. They cover the primary
   key, `UNIQUE` columns and an identity key.
 - **Checking a table against its schema:** `database.table_differences<Schema>()` asks the database how the table differs
@@ -133,7 +134,7 @@ The examples show these together:
 - [examples/transfers.cpp](examples/transfers.cpp): identity keys, `insert_returning`, update and delete with
   `returning`, a unique column, an upsert, and transactions;
 - [examples/extensions.cpp](examples/extensions.cpp): pg_trgm's operators and a function of the application's own, jsonb's
-  operators, and an operation whose argument is not of the column's type.
+  operators, an operation whose argument is not of the column's type, and one that tests an expression of its column.
 
 ## Building and testing
 

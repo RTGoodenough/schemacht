@@ -41,10 +41,12 @@ class UncheckedSql;  // postgres/statements.hpp
 /**
  * @brief Whether `merge_t` says how an upsert merges a column of the row already there with the one that would have gone in
  * (see `MergeWith`): an operation (`query::OperationOn`) that names a SQL function (`FUNCTION`) or a SQL operator (`OPERATOR`),
- * and takes nothing else: no `argument_type`, and no `ARGUMENT_PREFIX` or `ARGUMENT_SUFFIX`.
+ * and takes nothing else: no `argument_type`, and no SQL around the argument or the column (`ARGUMENT_PREFIX`,
+ * `ARGUMENT_SUFFIX`, `COLUMN_PREFIX`, `COLUMN_SUFFIX`).
  */
 template <typename merge_t>
-concept MergeOperation = query::OperationOn<merge_t> && ! query::DeclaresArgumentType<merge_t> && ! query::WritesAroundArgument<merge_t>;
+concept MergeOperation = query::OperationOn<merge_t> && ! query::DeclaresArgumentType<merge_t> && ! query::WritesAroundArgument<merge_t> &&
+                         ! query::WritesAroundColumn<merge_t>;
 
 template <util::CTString column, MergeOperation merge_t>
 struct MergeWith;  // postgres/statements.hpp

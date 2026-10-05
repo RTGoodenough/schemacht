@@ -40,6 +40,14 @@ constexpr auto HAS_KEY = q::On<t::Counted>::col<"doc">().apply<t::HasKey>(q::arg
 using TwoDocs = schemacht::schema::Schema<
     "two_docs", t::Id, schemacht::schema::Field<schemacht::json::Json, "a">, schemacht::schema::Field<schemacht::json::Json, "b">>;
 constexpr auto EITHER_HAS_KEY = q::On<TwoDocs>::col<"a">().apply<t::HasKey>(q::arg<0>()) || q::On<TwoDocs>::col<"b">().apply<t::HasKey>(q::arg<0>());
+constexpr auto SAME_IGNORING_CASE = q::select(People::col<"name">().apply<t::expression::SameIgnoringCase>(q::arg<0>()))
+                                        .order_by(People::col<"name">().asc())
+                                        .project(People::col<"name">());
+constexpr auto LOWER_STARTS_WITH = q::delete_where(People::col<"name">().apply<t::expression::LowerStartsWith>(q::arg<0>())).returning();
+constexpr auto LOWER_SIMILAR_ABOVE = People::col<"name">().apply<t::expression::LowerSimilarAbove>(q::arg<0>(), q::arg<1>());
+constexpr auto NAME_IS = q::On<t::Counted>::col<"doc">().apply<t::expression::NameIs>(q::arg<0>());
+constexpr auto SAME_BYTES =
+    q::update<t::People>().set(People::col<"active">(), true).where(People::col<"name">().apply<t::expression::SameBytes>(q::arg<0>()));
 constexpr auto CONTAINS = schemacht::json::contains(q::On<t::Counted>::col<"doc">(), q::arg<0>());
 constexpr auto COUNT_IN = q::On<t::Counted>::col<"count">().in(q::arg<0>());
 constexpr auto ALL_TILES = q::select<t::Tiles>();
@@ -104,6 +112,33 @@ TEST_CASE("an operation or ranking whose argument has a type of its own", "[sql]
   REQUIRE(bound.params().size() == 2);
   CHECK(std::get<q::ArgumentText>(bound.params()[0]).text == "(0.5,0.5)");
   CHECK(std::get<q::ArgumentText>(bound.params()[1]).text == "(2,2)");
+}
+
+TEST_CASE("an operation on an expression of its column writes SQL around the column", "[sql][extension]") {
+  STATIC_REQUIRE(q::WritesAroundColumn<t::expression::SameIgnoringCase>);
+  STATIC_REQUIRE(q::WritesAroundColumn<t::expression::SameBytes>);  // a suffix alone
+  STATIC_REQUIRE_FALSE(q::WritesAroundColumn<t::trgm::Similar>);
+  STATIC_REQUIRE(q::column_prefix<t::expression::SameBytes>().empty());
+  STATIC_REQUIRE(q::column_suffix<t::expression::SameBytes>() == "::bytea");
+
+  // An operator, with SQL around the argument too. Only the test is written so: the select list and ORDER BY name the column.
+  STATIC_REQUIRE(q::Prepared<SAME_IGNORING_CASE>::SQL == R"(SELECT "name" FROM "people" WHERE lower("name") = lower($1::text) ORDER BY "name")");
+
+  // A function, and one that takes a number too; in a DELETE, whose RETURNING names the columns themselves.
+  STATIC_REQUIRE(
+      q::Prepared<LOWER_STARTS_WITH>::SQL ==
+      R"(DELETE FROM "people" WHERE starts_with(lower("name"), $1::text) RETURNING "id", "name", "nick", "score", "active")"
+  );
+  STATIC_REQUIRE(
+      q::Prepared<LOWER_SIMILAR_ABOVE>::SQL ==
+      R"(SELECT "id", "name", "nick", "score", "active" FROM "people" WHERE similar_above(lower("name"), $1::text, $2::double precision))"
+  );
+
+  // The expression has another type than the column, so the operation declares its argument's.
+  STATIC_REQUIRE(q::Prepared<NAME_IS>::SQL == R"(SELECT "id", "count", "doc" FROM "counted" WHERE ("doc" ->> 'name') = $1::text)");
+
+  // A suffix alone, in an UPDATE.
+  STATIC_REQUIRE(q::Prepared<SAME_BYTES>::SQL == R"(UPDATE "people" SET "active" = TRUE WHERE "name"::bytea = $1::text::bytea)");
 }
 
 TEST_CASE("AND and OR are parenthesized only where needed", "[sql]") {

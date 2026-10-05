@@ -857,6 +857,61 @@ TEST_CASE("integration: an operation whose argument has a type of its own: jsonb
 
 namespace {
 
+using Titles = sch::Schema<"schemacht_it_titles", Id, Word>;
+using TitleColumns = q::On<Titles>;
+namespace expression = schemacht::test::expression;
+
+// The titles equal to an argument whatever the case of either: `lower("word") = lower($1::text)`.
+constexpr auto TITLED =
+    q::select(TitleColumns::col<"word">().apply<expression::SameIgnoringCase>(q::arg<0>())).order_by(TitleColumns::col<"id">().asc());
+
+// Removes the titles that start with an argument once in lower case: `starts_with(lower("word"), $1::text)`.
+constexpr auto REMOVE_STARTING = q::delete_where(TitleColumns::col<"word">().apply<expression::LowerStartsWith>(q::arg<0>())).returning();
+
+using NamedDocuments = sch::Schema<"schemacht_it_named_documents", Id, Document>;
+
+// The documents whose name is an argument: `("doc" ->> 'name') = $1::text`, an expression of another type than the column.
+constexpr auto NAMED_DOCUMENT =
+    q::select(q::On<NamedDocuments>::col<"doc">().apply<expression::NameIs>(q::arg<0>())).project(q::On<NamedDocuments>::col<"id">());
+
+}  // namespace
+
+TEST_CASE("integration: an operation on an expression of its column", "[integration][extension]") {
+  pg::Database database(test_db());
+  database.drop_table<Titles>().get();
+  database.create_table<Titles>().get();
+  database.insert<Titles>({Titles::make_row(1, "Main Street"), Titles::make_row(2, "MAIN STREET"), Titles::make_row(3, "Mill Lane")}).get();
+
+  // The rows come back as they are stored: only the test is of the expression.
+  const auto titled = database.execute(q::Prepared<TITLED>::bind("main STREET")).get();
+  REQUIRE(titled.size() == 2);
+  CHECK(sch::get<"word">(titled[0]) == "Main Street");
+  CHECK(sch::get<"word">(titled[1]) == "MAIN STREET");
+  CHECK(database.execute(q::Prepared<TITLED>::bind("main")).get().empty());
+
+  const auto removed = database.execute(q::Prepared<REMOVE_STARTING>::bind("mill")).get();
+  REQUIRE(removed.size() == 1);
+  CHECK(sch::get<"word">(removed[0]) == "Mill Lane");
+  CHECK(database.execute(q::Prepared<REMOVE_STARTING>::bind("Main")).get().empty());  // the argument is not lowered, so nothing starts with it
+
+  database.drop_table<Titles>().get();
+
+  // An expression that is text, of a jsonb column: the argument is of the type the operation declares.
+  using schemacht::json::Json;
+  database.drop_table<NamedDocuments>().get();
+  database.create_table<NamedDocuments>().get();
+  database.insert<NamedDocuments>({NamedDocuments::make_row(1, Json(R"({"name": "b"})")), NamedDocuments::make_row(2, Json(R"({"name": "c"})"))})
+      .get();
+
+  const auto named = database.execute(q::Prepared<NAMED_DOCUMENT>::bind(expression::DocumentName{"c"})).get();
+  REQUIRE(named.size() == 1);
+  CHECK(sch::get<"id">(named[0]) == 2);
+
+  database.drop_table<NamedDocuments>().get();
+}
+
+namespace {
+
 using Named = schemacht::test::Numbered;  // an identity key, a name and a nickname
 using NamedColumns = q::On<Named>;
 
