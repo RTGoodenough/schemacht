@@ -17,6 +17,7 @@
 #include "schemacht/postgres/row_reader.hpp"
 #include "schemacht/postgres/statement_runner.hpp"
 #include "schemacht/postgres/statements.hpp"
+#include "schemacht/postgres/table_differences.hpp"
 #include "schemacht/postgres/transaction.hpp"
 #include "schemacht/query/command.hpp"
 #include "schemacht/query/prepared.hpp"
@@ -103,6 +104,7 @@ TEST_CASE("a call returns a future of its outcome, or nothing when given a compl
   );  // rows without their generated columns
   STATIC_REQUIRE(std::same_as<decltype(std::declval<pg::Database&>().execute(pg::unchecked_sql("VACUUM"))), std::future<std::uint64_t>>);
   STATIC_REQUIRE(std::same_as<decltype(std::declval<pg::Transaction&>().execute(pg::unchecked_sql("VACUUM"), CountDone{})), void>);
+  STATIC_REQUIRE(std::same_as<decltype(std::declval<pg::Database&>().table_differences<t::People>()), std::future<std::vector<pg::TableDifference>>>);
   STATIC_REQUIRE(std::same_as<decltype(std::declval<pg::Database&>().begin()), std::future<pg::Transaction>>);
   STATIC_REQUIRE(std::same_as<decltype(std::declval<pg::Transaction&>().commit()), std::future<void>>);
   STATIC_REQUIRE(std::same_as<decltype(std::declval<pg::Transaction&>().rollback(ErrorDone{})), void>);

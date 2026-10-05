@@ -92,7 +92,9 @@ class Transaction : public StatementRunner {
   [[nodiscard]] bool is_open() const noexcept { return holds_lease(); }
 
   /**
-   * @brief Commits the transaction. It has ended either way, and its connection goes back to the pool.
+   * @brief Commits the transaction. It has ended either way, and its connection goes back to the pool. By the time the
+   * completion runs it has ended as far as this object goes too (`is_open()` is false), so what the completion wakes may use or
+   * destroy the transaction at once.
    *
    * The error is the `COMMIT`'s (a `QueryError`; under `Serializable`, `40001` means: run the transaction again), a `QueryError`
    * with `25P02` if a statement in it had failed and PostgreSQL rolled it back instead, or `std::logic_error` if it had already
@@ -121,20 +123,26 @@ class Transaction : public StatementRunner {
   void end(bool committing, done_t done) {
     // Made here, on the caller's thread, so that the worker has nothing to allocate: a COMMIT PostgreSQL answered with ROLLBACK.
     const std::exception_ptr rolled_back = committing ? std::make_exception_ptr(detail::rolled_back()) : nullptr;
-    client().run(
-        lease(), committing ? "COMMIT" : "ROLLBACK", {},
-        [done = std::move(done), rolled_back](const QueryResult& result, const std::exception_ptr& error) mutable {
-          if ( ! error && rolled_back && result.command_tag() == "ROLLBACK" ) {
-            done(rolled_back);
-          } else {
-            done(error);
-          }
-        }
-    );
 
-    // Let go of only once it is queued, so that a call that throws leaves the transaction open. The connection goes back once
-    // it is done; an empty lease (the transaction had already ended) got std::logic_error.
-    [[maybe_unused]] const AsyncClient::Lease ended = take_lease();
+    // Let go of before anything is queued: the completion runs on a worker, and what it wakes may use or destroy this transaction
+    // at once, while this call is still returning. The connection goes back once the statement is done; an empty lease (the
+    // transaction had already ended) gets std::logic_error.
+    AsyncClient::Lease ending = take_lease();
+    try {
+      client().run(
+          ending, committing ? "COMMIT" : "ROLLBACK", {},
+          [done = std::move(done), rolled_back](const QueryResult& result, const std::exception_ptr& error) mutable {
+            if ( ! error && rolled_back && result.command_tag() == "ROLLBACK" ) {
+              done(rolled_back);
+            } else {
+              done(error);
+            }
+          }
+      );
+    } catch ( ... ) {
+      put_back_lease(std::move(ending));  // nothing was queued, so no completion will run: a call that throws leaves the transaction open
+      throw;
+    }
   }
 
   /**

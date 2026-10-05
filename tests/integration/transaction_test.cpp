@@ -396,3 +396,24 @@ TEST_CASE("integration: a large insert gives back every row, alone or in a trans
 
   database.drop_table<NumberedTags>().get();
 }
+
+TEST_CASE("integration: a transaction has ended by the time its commit or rollback completes", "[integration][transaction]") {
+  pg::Database database(test_db());
+
+  // The completion runs on a worker, and may be what tells another thread to use the transaction again, or to destroy it:
+  // by then the call that ended it must have nothing left to do to it.
+  for ( int round = 0; round < 50; ++round ) {
+    pg::Transaction    transaction = database.begin().get();
+    std::promise<bool> open_at_completion;
+    const auto         done = [&](const std::exception_ptr& /*error*/) { open_at_completion.set_value(transaction.is_open()); };
+
+    if ( round % 2 == 0 ) {
+      transaction.commit(done);
+    } else {
+      transaction.rollback(done);
+    }
+
+    CHECK_FALSE(open_at_completion.get_future().get());
+    CHECK_THROWS_AS(transaction.execute(Series::bind(1)).get(), std::logic_error);  // ended, for the caller too
+  }
+}

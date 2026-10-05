@@ -200,6 +200,7 @@ class schemacht::postgres::FieldCodec<Unwritable> {
 TEST_CASE("integration: every built-in type round-trips, in binary and in text", "[integration]") {
   pg::Database database(test_db());
   create_types_table(database, "schemacht_it_types");
+  CHECK(database.table_differences<Types>().get().empty());  // the table written out above is the schema's
 
   database.insert<Types>(sample_rows()).get();
 
@@ -268,6 +269,7 @@ TEST_CASE("integration: array values round-trip through the insert, whatever the
   pg::Database database(test_db());
   database.drop_table<Lists>().get();
   database.create_table<Lists>().get();
+  CHECK(database.table_differences<Lists>().get().empty());  // arrays of every kind
 
   const std::vector<Lists::row_type> rows{
       Lists::make_row(
@@ -508,6 +510,7 @@ TEST_CASE("integration: dates, times and UUIDs round-trip, in binary and in text
   pg::Database database(test_db(), pg::Database::Options{.pool = {.connections = 1}});  // one connection: the SET below applies to all
   database.drop_table<Times>().get();
   database.create_table<Times>().get();
+  CHECK(database.table_differences<Times>().get().empty());  // dates, times and a uuid
 
   const schemacht::Uuid          first = schemacht::Uuid::from_string("00000000-0000-0000-0000-000000000001");
   const schemacht::Uuid          second = schemacht::Uuid::from_string("ffffffff-0000-0000-0000-000000000002");
@@ -621,6 +624,7 @@ TEST_CASE("integration: the column type helpers round-trip, in binary and in tex
   pg::Database database(test_db());
   database.drop_table<Tasks>().get();
   database.create_table<Tasks>().get();
+  CHECK(database.table_differences<Tasks>().get().empty());  // the column type helpers' types
   database
       .insert<Tasks>(
           {Tasks::make_row(1, Priority::High, Price{1999}, Location{"/tmp/a"}), Tasks::make_row(2, Priority::Low, Price{-5}, std::nullopt)}
@@ -1509,13 +1513,13 @@ TEST_CASE("integration: a chunk stream's last chunk, and a chunk with a row that
 }
 
 TEST_CASE("integration: a statement that is streamed is left whole, unless it was given as a temporary", "[integration][stream]") {
-  pg::Database                 database(test_db());
+  pg::Database              database(test_db());
   const sch::Table<Keyless> keyless("schemacht_it_stream_twice");
   recreate(database, keyless);
 
   // An insert that gives back its rows, kept and streamed twice: its arguments are still there the second time.
   const std::vector<Keyless::row_type> rows{Keyless::make_row("a", 1.0), Keyless::make_row("b", 2.0)};
-  auto                                    statement = pg::insert_returning_statement<Keyless>(rows).on(keyless);
+  auto                                 statement = pg::insert_returning_statement<Keyless>(rows).on(keyless);
 
   std::size_t by_row = 0;
   database.stream(statement, [&by_row](const Keyless::row_type& /*row*/) { ++by_row; }).get();

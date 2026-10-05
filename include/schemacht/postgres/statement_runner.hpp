@@ -14,6 +14,7 @@
 #include "schemacht/postgres/key_lookup.hpp"
 #include "schemacht/postgres/row_reader.hpp"
 #include "schemacht/postgres/statements.hpp"
+#include "schemacht/postgres/table_differences.hpp"
 #include "schemacht/schema/schema.hpp"
 #include "schemacht/util/compile_time.hpp"
 #include "schemacht/util/futures.hpp"
@@ -216,6 +217,15 @@ class StatementRunner {
     return execute(drop_table_statement<schema_t>(), std::move(done));
   }
 
+  /**
+   * @brief How `schema_t`'s table in the database differs from the schema (see `table_differences_statement`): a
+   * `TableDifference` for each difference, none if it is as the schema says. For a program to check when it starts.
+   */
+  template <schema::IsSchema schema_t, util::CompletionFor<std::vector<TableDifference>> done_t = util::UseFuture>
+  auto table_differences(done_t done = {}) {
+    return execute(table_differences_statement<schema_t>(), std::move(done));
+  }
+
   /** @brief Every row of `schema_t` whose `key_col` value is one of `keys`, e.g. `db.select_by_key_values<PlacesSchema, "id">(ids)`. */
   template <TextSchema schema_t, util::CTString key_col, util::CompletionFor<std::vector<typename schema_t::row_type>> done_t = util::UseFuture>
   auto select_by_key_values(std::span<const key_type<schema_t, key_col>> keys, done_t done = {}) {
@@ -289,6 +299,7 @@ class StatementRunner {
   [[nodiscard]] const AsyncClient::Lease& lease() const noexcept { return _lease; }
   [[nodiscard]] bool                      holds_lease() const noexcept { return static_cast<bool>(_lease); }
   [[nodiscard]] AsyncClient::Lease        take_lease() noexcept { return std::move(_lease); }
+  void                                    put_back_lease(AsyncClient::Lease lease) noexcept { _lease = std::move(lease); }
 
  private:
   AsyncClient*       _client;

@@ -118,6 +118,9 @@ int main() {
   jsonb's `?`, say. See [examples/extensions.cpp](examples/extensions.cpp).
 - **Tables from schemas:** `create_table` and `drop_table`, for tests, examples and a first start. They cover the primary
   key, `UNIQUE` columns and an identity key.
+- **Checking a table against its schema:** `database.table_differences<Schema>()` asks the database how the table differs
+  from the schema (a missing table or column, another type, `NOT NULL`, the primary key, ...) and gives each difference as
+  data, for a program to check its tables when it starts. It needs PostgreSQL 17.
 - **Tables named while the program runs:** a schema's name is its default table. A `sch::Table<Schema>` names another of
   its shape (checked once, when made, and optionally in a PostgreSQL schema: `"gis"."roads"`), for a name from
   configuration, a user, or another language's bindings. Any statement of the schema runs there once aimed at it:

@@ -34,6 +34,7 @@ add_executable(
   unit/thread_pool_test.cpp
   unit/util_test.cpp
   integration/database_test.cpp
+  integration/table_differences_test.cpp
   integration/transaction_test.cpp
 )
 target_include_directories(schemacht_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})

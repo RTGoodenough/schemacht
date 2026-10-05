@@ -228,6 +228,9 @@ TEST_CASE("integration: a failed allocation on the caller's thread reaches the c
   sweeps.push_back(sweep_caller([&](const Probe& probe) {
     database->stream_chunks(q::Prepared<ALL_KEYLESS>::bind().on(keyless), [](const std::vector<t::Keyless::row_type>& /*rows*/) {}, probe.done());
   }));
+  sweeps.push_back(sweep_caller([&](const Probe& probe) {
+    database->execute(pg::table_differences_statement<t::Keyless>().on(keyless), probe.done());
+  }));
   sweeps.push_back(sweep_caller([&](const Probe& probe) { database->begin({}, probe.done()); }));
 
   // On a transaction: its statements, and ending it.

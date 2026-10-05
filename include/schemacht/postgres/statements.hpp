@@ -582,6 +582,12 @@ template <UncheckedSqlArgument... argument_ts>
 
 namespace schemacht::postgres::detail {
 
+/** @return The names of the columns a row (a tuple of `field_ts`) is read from: its fields', in order. They point at static storage. */
+template <schema::IsField... field_ts>
+[[nodiscard]] constexpr std::array<std::string_view, sizeof...(field_ts)> result_column_names(const std::tuple<field_ts...>* /*row*/) {
+  return {field_ts::COLUMN_NAME.view()...};
+}
+
 /** @brief A statement as it goes to the database: its text, the text of each argument, and the columns it must return (by name, in order). */
 struct WireStatement {
   std::string                   sql;
@@ -605,10 +611,8 @@ template <SendableStatement statement_t>
 
     wired.params.assign(statement.params().begin(), statement.params().end());
 
-    if constexpr ( std::tuple_size_v<typename statement_t::result_type> > 0 ) {  // an insert's RETURNING: every column
-      const auto names = statement_t::schema_type::column_names();
-      wired.column_names.assign(names.begin(), names.end());
-    }
+    const auto names = result_column_names(static_cast<const statement_t::result_type*>(nullptr));  // none, if it returns no rows
+    wired.column_names.assign(names.begin(), names.end());
 
   } else if constexpr ( query::IsBoundRawStatement<statement_t> ) {
     wired.params.reserve(std::tuple_size_v<typename statement_t::arguments_type>);

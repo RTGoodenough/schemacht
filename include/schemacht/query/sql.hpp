@@ -759,6 +759,138 @@ template <schema::IsSchema schema_t>
   return text;
 }
 
+/** @brief The longest a table check can be (`table_differences_statement`): it lists every column, so it outgrows other statements. */
+inline constexpr std::size_t TABLE_CHECK_CAPACITY = 4 * STATEMENT_CAPACITY;
+
+/** @brief Appends `value` as a SQL string literal: between single quotes, each one inside it doubled. */
+template <std::size_t text_capacity>
+consteval void append_literal(Text<text_capacity>& text, std::string_view value) {
+  text.push('\'');
+  for ( const char chr : value ) {
+    if ( chr == '\'' ) {
+      text.push('\'');
+    }
+    text.push(chr);
+  }
+  text.push('\'');
+}
+
+/**
+ * @return The query that says how the table in the database differs from `schema_t`: a row per difference, of the columns
+ * `problem`, `column`, `expected` and `found`, and none if the table is as the schema says (see
+ * `postgres::table_differences_statement`, which says what counts as one). It is written from what `create_table_statement` is
+ * written from (each column's name, type, `NOT NULL`, key and `GENERATED`), so a table that statement made has no differences.
+ *
+ * It reads the catalogs, and compares types in the server's own spelling (`format_type`), so `int8` is `bigint` and
+ * `geometry(linestring,4326)` is `geometry(LineString,4326)`. That needs `to_regtypemod`: PostgreSQL 17 or newer. What it
+ * calls is named in `pg_catalog`, so nothing on the search path can stand in for it. The rows come by kind of problem, as
+ * `postgres::TableProblem` lists them, and within a kind in the schema's column order.
+ */
+template <schema::IsSchema schema_t>
+[[nodiscard]] consteval Text<TABLE_CHECK_CAPACITY> table_differences_statement() {
+  static_assert(
+      ! std::ranges::any_of(detail::COLUMN_TYPE_NAMES<schema_t>, &std::string_view::empty),
+      "table_differences: a column's type has no SQL name; give it one (ColumnType::SQL_TYPE, or a query::sql::SqlType specialization)"
+  );
+
+  Text<TABLE_CHECK_CAPACITY> text;
+
+  // The table, by name: one that isn't there has no oid, nor has a name that is something else's (an index, a sequence, a type).
+  // "is_table" is false for a view, a materialized view and a foreign table, which have columns but no constraints to compare.
+  text.append(R"(WITH RECURSIVE "target" AS (SELECT "t"."name", "c"."oid", "c"."relkind" IN ('r', 'p') AS "is_table" FROM (VALUES (')");
+  text.append_table(schema_t::TABLE_NAME);
+  text.append(
+      R"(')) AS "t" ("name") LEFT JOIN "pg_catalog"."pg_class" AS "c" )"
+      R"(ON "c"."oid" = pg_catalog.to_regclass("t"."name") AND "c"."relkind" IN ('r', 'p', 'v', 'm', 'f')), )"
+  );
+
+  // What the schema says of each column.
+  text.append(R"("want" ("ordinal", "name", "type", "not_null", "is_key", "generated") AS (VALUES )");
+  for ( std::size_t column = 0; column < schema_t::FIELD_COUNT; ++column ) {
+    if ( column != 0 ) {
+      text.append(", ");
+    }
+
+    text.push('(');
+    text.append_unsigned(column + 1);
+    text.append(", ");
+    append_literal(text, schema_t::column_names().at(column));
+    text.append(", ");
+    append_literal(text, detail::COLUMN_TYPE_NAMES<schema_t>.at(column));
+    text.append(detail::COLUMN_NULLABLE<schema_t>.at(column) ? ", FALSE" : ", TRUE");
+    text.append(schema_t::KEY_ROLES.at(column) == schema::KeyRole::Primary ? ", TRUE" : ", FALSE");
+    text.append(detail::COLUMN_GENERATED<schema_t>.at(column) ? ", TRUE" : ", FALSE");
+    text.push(')');
+  }
+  text.append("), ");
+
+  // Each column's type, a domain followed down to the type it is over, gathering each domain's NOT NULL and default on the way:
+  // "has_default" if the database gives the column a value when an insert leaves it out.
+  text.append(
+      R"("types" ("attnum", "typid", "typmod", "not_null", "has_default") AS ()"
+      R"(SELECT "a"."attnum", "a"."atttypid", "a"."atttypmod", "a"."attnotnull", )"
+      R"(("a"."atthasdef" OR "a"."attidentity" <> '' OR "a"."attgenerated" <> '') )"
+      R"(FROM "target" JOIN "pg_catalog"."pg_attribute" AS "a" ON "a"."attrelid" = "target"."oid" )"
+      R"(WHERE "a"."attnum" > 0 AND NOT "a"."attisdropped" )"
+      R"(UNION ALL SELECT "types"."attnum", "d"."typbasetype", "d"."typtypmod", "types"."not_null" OR "d"."typnotnull", )"
+      R"("types"."has_default" OR "d"."typdefault" IS NOT NULL )"
+      R"(FROM "types" JOIN "pg_catalog"."pg_type" AS "d" ON "d"."oid" = "types"."typid" WHERE "d"."typtype" = 'd'), )"
+  );
+
+  // What the table has: "refuses_value" if an insert may not give the column a value.
+  text.append(
+      R"("have" AS (SELECT "a"."attname"::text AS "name", pg_catalog.format_type("types"."typid", "types"."typmod") AS "type", )"
+      R"("types"."not_null", "types"."has_default" AS "fills_in", ("a"."attidentity" = 'a' OR "a"."attgenerated" <> '') AS "refuses_value" )"
+      R"(FROM "target" JOIN "pg_catalog"."pg_attribute" AS "a" ON "a"."attrelid" = "target"."oid" )"
+      R"(JOIN "types" ON "types"."attnum" = "a"."attnum" )"
+      R"(JOIN "pg_catalog"."pg_type" AS "b" ON "b"."oid" = "types"."typid" AND "b"."typtype" <> 'd'), )"
+      R"("want_key" AS (SELECT ARRAY(SELECT "name" FROM "want" WHERE "is_key" ORDER BY 1) AS "names"), )"
+      R"("have_key" AS (SELECT ARRAY(SELECT "a"."attname"::text FROM "target" )"
+      R"(JOIN "pg_catalog"."pg_index" AS "i" ON "i"."indrelid" = "target"."oid" AND "i"."indisprimary" )"
+      R"(JOIN "pg_catalog"."pg_attribute" AS "a" ON "a"."attrelid" = "i"."indrelid" )"
+      R"(AND "a"."attnum" = ANY (("i"."indkey"::int2[])[0:"i"."indnkeyatts" - 1]) ORDER BY 1) AS "names"), )"  // not its INCLUDE columns
+  );
+
+  text.append(
+      R"("differences" ("position", "ordinal", "problem", "column", "expected", "found") AS ()"
+      R"(SELECT 0, 0, 'missing_table', '', "target"."name", '' FROM "target" WHERE "target"."oid" IS NULL )"
+      R"(UNION ALL SELECT 1, "want"."ordinal", 'missing_column', "want"."name", "want"."type", '' )"
+      R"(FROM "target", "want" LEFT JOIN "have" ON "have"."name" = "want"."name" )"
+      R"(WHERE "target"."oid" IS NOT NULL AND "have"."name" IS NULL )"
+      R"(UNION ALL SELECT 2, "want"."ordinal", 'unknown_type', "want"."name", "want"."type", "have"."type" )"
+      R"(FROM "want" JOIN "have" ON "have"."name" = "want"."name" WHERE pg_catalog.to_regtype("want"."type") IS NULL )"
+      R"(UNION ALL SELECT 3, "want"."ordinal", 'wrong_type', "want"."name", )"
+      R"(pg_catalog.format_type(pg_catalog.to_regtype("want"."type"), pg_catalog.to_regtypemod("want"."type")), "have"."type" )"
+      R"(FROM "want" JOIN "have" ON "have"."name" = "want"."name" )"
+      R"(WHERE "have"."type" <> pg_catalog.format_type(pg_catalog.to_regtype("want"."type"), pg_catalog.to_regtypemod("want"."type")) )"
+      R"(UNION ALL SELECT 4, "want"."ordinal", 'nullability', "want"."name", )"
+      R"(CASE WHEN "want"."not_null" THEN 'NOT NULL' ELSE 'nullable' END, CASE WHEN "have"."not_null" THEN 'NOT NULL' ELSE 'nullable' END )"
+      R"(FROM "target", "want" JOIN "have" ON "have"."name" = "want"."name" )"
+      R"(WHERE "target"."is_table" AND "have"."not_null" <> "want"."not_null" )"
+      R"(UNION ALL SELECT 5, "want"."ordinal", 'no_default', "want"."name", '', '' )"
+      R"(FROM "target", "want" JOIN "have" ON "have"."name" = "want"."name" )"
+      R"(WHERE "target"."is_table" AND "want"."generated" AND "have"."not_null" AND NOT "have"."fills_in" )"
+      R"(UNION ALL SELECT 5, "want"."ordinal", 'always_generated', "want"."name", '', '' )"
+      R"(FROM "want" JOIN "have" ON "have"."name" = "want"."name" WHERE NOT "want"."generated" AND "have"."refuses_value" )"
+  );
+
+  if constexpr ( schema_t::HAS_PRIMARY_KEY ) {  // a schema without a key says nothing of the table's
+    text.append(
+        R"(UNION ALL SELECT 6, 0, 'primary_key', '', pg_catalog.array_to_string("want_key"."names", ', '), )"
+        R"(pg_catalog.array_to_string("have_key"."names", ', ') )"
+        R"(FROM "target", "want_key", "have_key" WHERE "target"."is_table" AND "want_key"."names" <> "have_key"."names" )"
+    );
+  }
+
+  text.append(
+      R"(UNION ALL SELECT 7, 0, 'extra_required_column', "have"."name", '', "have"."type" FROM "have" )"
+      R"(WHERE "have"."not_null" AND NOT "have"."fills_in" AND "have"."name" NOT IN (SELECT "name" FROM "want")) )"
+      R"(SELECT "problem", "column", "expected", "found" FROM "differences" ORDER BY "position", "ordinal", "column")"
+  );
+
+  return text;
+}
+
 /** @return `DROP TABLE IF EXISTS <table>`. */
 template <schema::IsSchema schema_t>
 [[nodiscard]] consteval Text<STATEMENT_CAPACITY> drop_table_statement() {

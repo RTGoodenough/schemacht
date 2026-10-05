@@ -19,7 +19,8 @@
  * - **Changes:** `execute` an update or delete (command.hpp), or a raw statement with no columns (an `UPDATE`, a `CREATE TYPE`),
  *   for the count of rows it changed, or the rows themselves with `returning(...)`; `insert` rows of a schema, or
  *   `insert_returning` them to get back what the database filled in (an identity key, say).
- * - **Tables:** `create_table` and `drop_table` from a schema, for tests, examples and a first start.
+ * - **Tables:** `create_table` and `drop_table` from a schema, for tests, examples and a first start; `table_differences` to
+ *   check, when a program starts, that a table is what its schema says.
  * - **Transactions:** `begin` one, run the same calls on it, then `commit` or `rollback` (transaction.hpp).
  * - **Notices** the server sends are dropped, unless `Options::pool.on_notice` takes them.
  *
