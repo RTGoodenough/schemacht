@@ -5,7 +5,7 @@ project(schemacht VERSION 0.1.0 LANGUAGES CXX)
 include(CMakePackageConfigHelpers)
 include(GNUInstallDirs)
 
-set(CMAKE_CXX_STANDARD 23)
+set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON CACHE INTERNAL "")
@@ -52,8 +52,8 @@ target_include_directories(
 
 target_link_libraries(schemacht PUBLIC PostgreSQL::PostgreSQL Threads::Threads)
 
-# The headers use C++23, so whoever includes them compiles as C++23 too.
-target_compile_features(schemacht PUBLIC cxx_std_23)
+# The headers use C++20, so whoever includes them compiles as C++20 or later.
+target_compile_features(schemacht PUBLIC cxx_std_20)
 
 # The name a project links, whether it builds schemacht (add_subdirectory) or finds it installed (find_package).
 add_library(schemacht::schemacht ALIAS schemacht)

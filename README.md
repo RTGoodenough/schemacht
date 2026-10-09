@@ -1,13 +1,13 @@
 # schemacht
 
-schemacht is a C++23 library for PostgreSQL. You describe a table once, as a C++ type. Queries, updates and deletes are
+schemacht is a C++20 library for PostgreSQL. You describe a table once, as a C++ type. Queries, updates and deletes are
 then written in C++ against it and turned into SQL while compiling. A misspelled column, or an argument of the wrong type,
 is a compile error rather than a failure at run time. A `Database` runs the statements on a pool of non-blocking libpq
 connections and returns typed rows through `std::future`s.
 
 ## Requirements
 
-- A C++23 compiler: tested with g++ 13 and clang++ 18.
+- A C++20 compiler: tested with g++ 13 and clang++ 18 (the headers compile as C++23 too).
 - libpq 17 or newer (`libpq-dev` from the [PostgreSQL apt repository](https://apt.postgresql.org)).
 - CMake 3.21 or newer.
 
@@ -27,7 +27,7 @@ find_package(schemacht 0.1 REQUIRED)
 target_link_libraries(app PRIVATE schemacht::schemacht)
 ```
 
-Linking `schemacht::schemacht` also sets C++23 for your target, and links libpq and threads.
+Linking `schemacht::schemacht` also asks for C++20 (or later) on your target, and links libpq and threads.
 
 ## Quick start
 

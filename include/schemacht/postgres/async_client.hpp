@@ -13,6 +13,7 @@
 #include <vector>
 
 #include "schemacht/postgres/session_settings.hpp"
+#include "schemacht/util/move_only_function.hpp"
 
 struct pg_result;  // libpq's PGresult; kept out of this header
 
@@ -165,7 +166,7 @@ class AsyncClient {
   };
 
   /** @brief Called on a worker thread once a statement finishes. On failure the result is empty and the exception set. */
-  using Completion = std::move_only_function<void(QueryResult, std::exception_ptr)>;
+  using Completion = util::MoveOnlyFunction<void(QueryResult, std::exception_ptr)>;
 
   /** @brief How `stream` reads a statement. */
   struct StreamOptions {
@@ -176,10 +177,10 @@ class AsyncClient {
   };
 
   /** @brief Called on a worker thread with each chunk of a stream, in turn. Returns whether to go on: `false` stops the stream. */
-  using ChunkHandler = std::move_only_function<bool(QueryResult)>;
+  using ChunkHandler = util::MoveOnlyFunction<bool(QueryResult)>;
 
   /** @brief Called once, on a worker thread, when a stream ends: with no error if it ran to its end or was stopped. */
-  using StreamCompletion = std::move_only_function<void(std::exception_ptr)>;
+  using StreamCompletion = util::MoveOnlyFunction<void(std::exception_ptr)>;
 
   /**
    * @brief Opens `options.connections` connections and starts the reactor and workers.
@@ -232,7 +233,7 @@ class AsyncClient {
   void stream(std::string sql, std::vector<std::string> params, StreamOptions options, ChunkHandler on_chunk, StreamCompletion done);
 
   /** @brief Runs `task` on the worker threads. */
-  void post(std::move_only_function<void()> task);
+  void post(util::MoveOnlyFunction<void()> task);
 
   struct LeaseState;
 
@@ -272,7 +273,7 @@ class AsyncClient {
   };
 
   /** @brief Called once, on a worker thread, with the lease once a connection is free, or with the error (and an empty lease). */
-  using LeaseCompletion = std::move_only_function<void(Lease, std::exception_ptr)>;
+  using LeaseCompletion = util::MoveOnlyFunction<void(Lease, std::exception_ptr)>;
 
   /**
    * @brief Asks for a connection of the pool's own, and returns at once. The request waits in the same queue as statements.

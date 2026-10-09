@@ -25,7 +25,7 @@ namespace detail {
 
 /**
  * @brief A statement as it goes to the database, or why it could not be made (a codec refused a value): that goes to the
- * completion. (`std::expected`, which is what this is, is not there for clang with libstdc++ 13.)
+ * completion. (`std::expected` is what this is, but it is C++23 and the library compiles as C++20.)
  */
 struct Wired {
   WireStatement      statement;
@@ -331,7 +331,7 @@ class StatementRunner {
   template <TextRow result_t, std::predicate<const QueryResult&> reader_t>
   void send_stream(detail::Wired wired, ReadOptions read, reader_t reader, AsyncClient::StreamCompletion done) {
     if ( wired.error ) {
-      _client->post([done = std::move(done), error = wired.error] mutable { done(error); });
+      _client->post([done = std::move(done), error = wired.error]() mutable { done(error); });
       return;
     }
 
@@ -357,7 +357,7 @@ class StatementRunner {
     };
 
     if ( wired.error ) {
-      _client->post([completion = std::move(completion), error = wired.error] mutable { completion(QueryResult{}, error); });
+      _client->post([completion = std::move(completion), error = wired.error]() mutable { completion(QueryResult{}, error); });
     } else if ( _on_lease ) {
       _client->run(_lease, std::move(wired.statement.sql), std::move(wired.statement.params), std::move(completion));
     } else {

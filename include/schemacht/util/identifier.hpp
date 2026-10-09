@@ -66,11 +66,11 @@ namespace detail {
   constexpr std::string_view OPERATOR_CHARS = "<>-|#&~=@+*/%^!?";
   constexpr std::string_view SIGN_ALLOWING_CHARS = "~!@#%^&|?";
 
-  if ( name.empty() || ! std::ranges::all_of(name, [&](char chr) { return OPERATOR_CHARS.contains(chr); }) ) {
+  if ( name.empty() || ! std::ranges::all_of(name, [&](char chr) { return OPERATOR_CHARS.find(chr) != std::string_view::npos; }) ) {
     return false;
   }
 
-  if ( name.contains("--") || name.contains("/*") ) {
+  if ( name.find("--") != std::string_view::npos || name.find("/*") != std::string_view::npos ) {
     return false;
   }
 

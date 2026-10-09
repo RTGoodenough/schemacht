@@ -145,7 +145,7 @@ class FieldCodec {
       return "\\x" + util::format_hex(value);  // the `\x` says hex: without it, PostgreSQL would store the hex digits as text
 
     } else {  // a number
-      static constexpr std::size_t            NUMERIC_TEXT_CAPACITY = 64;
+      constexpr std::size_t                   NUMERIC_TEXT_CAPACITY = 64;
       std::array<char, NUMERIC_TEXT_CAPACITY> buffer{};
       const auto                              result = std::to_chars(buffer.begin(), buffer.end(), value);
 

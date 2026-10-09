@@ -14,6 +14,7 @@
 #include "schemacht/schema/schema.hpp"
 #include "schemacht/schema/table.hpp"
 #include "support/schemas.hpp"
+#include "support/text.hpp"
 
 namespace pg = schemacht::postgres;
 namespace t = schemacht::test;
@@ -210,7 +211,7 @@ TEST_CASE("an upsert calls a merge function named with its schema there, whateve
   const auto                             statement = pg::upsert_statement<t::People, pg::MergeWith<"score", MergeScores>>(people).on(archive);
 
   CHECK(statement.sql().starts_with(R"(INSERT INTO "gis"."people_2026" AS "current" )"));
-  CHECK(statement.sql().contains(R"("score" = app.merge_scores("current"."score", excluded."score"))"));
+  CHECK(schemacht::test::contains(statement.sql(), R"("score" = app.merge_scores("current"."score", excluded."score"))"));
 }
 
 TEST_CASE("an upsert leaves a kept column of the row already there as it is", "[upsert]") {
@@ -268,19 +269,22 @@ TEST_CASE("a table check lists what the schema says of each column, and names th
       R"(WITH RECURSIVE "target" AS (SELECT "t"."name", "c"."oid", "c"."relkind" IN ('r', 'p') AS "is_table" FROM (VALUES ('"numbered"')) )"
       R"(AS "t" ("name") LEFT JOIN "pg_catalog"."pg_class" AS "c" )"
   ));
-  CHECK(check.sql().contains(
-      R"(AS (VALUES (1, 'id', 'integer', TRUE, TRUE, TRUE), (2, 'name', 'text', TRUE, FALSE, FALSE), (3, 'nick', 'text', FALSE, FALSE, FALSE)), )"
-  ));
+  CHECK(
+      schemacht::test::contains(
+          check.sql(),
+          R"(AS (VALUES (1, 'id', 'integer', TRUE, TRUE, TRUE), (2, 'name', 'text', TRUE, FALSE, FALSE), (3, 'nick', 'text', FALSE, FALSE, FALSE)), )"
+      )
+  );
   CHECK(check.sql().ends_with(R"(SELECT "problem", "column", "expected", "found" FROM "differences" ORDER BY "position", "ordinal", "column")"));
   CHECK(check.params().empty());
   CHECK(pg::detail::wire(check).column_names == std::vector<std::string_view>{"problem", "column", "expected", "found"});
 
   const sch::Table<t::Numbered> archive("gis", "people_2026");
-  CHECK(check.on(archive).sql().contains(R"((VALUES ('"gis"."people_2026"')) AS "t" ("name"))"));
+  CHECK(schemacht::test::contains(check.on(archive).sql(), R"((VALUES ('"gis"."people_2026"')) AS "t" ("name"))"));
 
   // A schema without a key says nothing of the table's.
-  CHECK(check.sql().contains("'primary_key'"));
-  CHECK_FALSE(pg::table_differences_statement<t::Keyless>().sql().contains("'primary_key'"));
+  CHECK(schemacht::test::contains(check.sql(), "'primary_key'"));
+  CHECK_FALSE(schemacht::test::contains(pg::table_differences_statement<t::Keyless>().sql(), "'primary_key'"));
 }
 
 TEST_CASE("a table difference is put in words", "[table_differences]") {

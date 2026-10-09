@@ -66,7 +66,7 @@ endforeach()
 function(schemacht_compile_fail case regex)
   add_test(
     NAME compile_fail.${case}
-    COMMAND ${CMAKE_CXX_COMPILER} -std=c++23 -fsyntax-only -I${PROJECT_SOURCE_DIR}/include -DCASE_${case}
+    COMMAND ${CMAKE_CXX_COMPILER} -std=c++20 -fsyntax-only -I${PROJECT_SOURCE_DIR}/include -DCASE_${case}
             ${CMAKE_CURRENT_SOURCE_DIR}/compile_fail/cases.cpp
   )
   set_tests_properties(compile_fail.${case} PROPERTIES PASS_REGULAR_EXPRESSION "${regex}")
@@ -130,6 +130,9 @@ schemacht_compile_fail(UPSERT_MERGE_BOTH "MergeOperation")
 schemacht_compile_fail(STREAM_CHUNKS_ROW_HANDLER "ChunkCallback")
 schemacht_compile_fail(UNCHECKED_SQL_ARGUMENT_WITHOUT_TEXT_FORM "UncheckedSqlArgument")
 
-# With no case defined, cases.cpp must compile: the failures above are the cases', not the file's.
-add_test(NAME compile_fail.baseline COMMAND ${CMAKE_CXX_COMPILER} -std=c++23 -fsyntax-only -I${PROJECT_SOURCE_DIR}/include
+# With no case defined, cases.cpp must compile: the failures above are the cases', not the file's. It must as C++23 too: the
+# library is written for C++20, and a project on a later standard includes the same headers.
+add_test(NAME compile_fail.baseline COMMAND ${CMAKE_CXX_COMPILER} -std=c++20 -fsyntax-only -I${PROJECT_SOURCE_DIR}/include
                                             ${CMAKE_CURRENT_SOURCE_DIR}/compile_fail/cases.cpp)
+add_test(NAME compile_fail.baseline_cxx23 COMMAND ${CMAKE_CXX_COMPILER} -std=c++23 -fsyntax-only -I${PROJECT_SOURCE_DIR}/include
+                                                  ${CMAKE_CURRENT_SOURCE_DIR}/compile_fail/cases.cpp)

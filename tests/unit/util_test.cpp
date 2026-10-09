@@ -4,6 +4,7 @@
 #include <catch2/matchers/catch_matchers.hpp>
 
 #include <array>
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <exception>
@@ -13,12 +14,14 @@
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 #include "schemacht/util/compile_time.hpp"
 #include "schemacht/util/futures.hpp"
 #include "schemacht/util/hex.hpp"
 #include "schemacht/util/identifier.hpp"
+#include "schemacht/util/move_only_function.hpp"
 
 namespace util = schemacht::util;
 
@@ -139,4 +142,77 @@ TEST_CASE("complete gives a future for UseFuture, and hands any other completion
   std::int64_t got = 0;
   util::complete<std::int64_t>([&got](std::int64_t value, const std::exception_ptr& /*error*/) { got = value; }, [](auto done) { done(4, nullptr); });
   CHECK(got == 4);
+}
+
+namespace {
+
+/** @brief Counts how many of it there are, so a test can see when the function destroys what it holds. */
+struct Counted {
+  static inline std::atomic<int> alive = 0;  // NOLINT(cppcoreguidelines-avoid-non-const-global-variables): a test's own count
+
+  Counted() { ++alive; }
+  Counted(const Counted&) = delete;
+  Counted(Counted&& /*other*/) noexcept { ++alive; }
+  Counted& operator=(const Counted&) = delete;
+  Counted& operator=(Counted&&) = delete;
+  ~Counted() { --alive; }
+};
+
+}  // namespace
+
+TEST_CASE("a move-only function holds a callable that can't be copied, and runs it", "[util]") {
+  using Function = schemacht::util::MoveOnlyFunction<int(int)>;
+  STATIC_REQUIRE_FALSE(std::is_copy_constructible_v<Function>);
+  STATIC_REQUIRE(std::is_nothrow_move_constructible_v<Function>);
+
+  // A promise can be captured, which a std::function could not hold.
+  std::promise<int>                            promise;
+  std::future<int>                             future = promise.get_future();
+  schemacht::util::MoveOnlyFunction<void(int)> settle = [promise = std::move(promise)](int value) mutable { promise.set_value(value); };
+  REQUIRE(settle);
+  settle(7);
+  CHECK(future.get() == 7);
+
+  // Empty by default, from nullptr, and once moved from; the moved-to one holds the callable.
+  Function none;
+  CHECK_FALSE(none);
+  CHECK_FALSE(Function(nullptr));
+  Function twice = [](int value) { return value * 2; };
+  Function moved = std::move(twice);
+  CHECK_FALSE(twice);  // NOLINT(bugprone-use-after-move): what the test is about
+  REQUIRE(moved);
+  CHECK(moved(4) == 8);
+
+  // Move assignment destroys what was held and takes what the other held.
+  none = std::move(moved);
+  REQUIRE(none);
+  CHECK(none(5) == 10);
+  CHECK_FALSE(moved);  // NOLINT(bugprone-use-after-move)
+}
+
+TEST_CASE("a move-only function destroys what it holds, inside or allocated", "[util]") {
+  using Function = schemacht::util::MoveOnlyFunction<int()>;
+  Counted::alive = 0;
+
+  {
+    // Small and moves without throwing: kept inside the function. Large: allocated. Both are destroyed with it, once.
+    STATIC_REQUIRE(Function::HELD_INSIDE<decltype([one = Counted{}] { return 1; })>);
+    STATIC_REQUIRE_FALSE(Function::HELD_INSIDE<decltype([one = Counted{}, padding = std::array<std::byte, 64>{}] { return 2; })>);
+    Function small = [one = Counted{}] { return 1; };
+    Function large = [one = Counted{}, padding = std::array<std::byte, 64>{}] { return 2; };
+    CHECK(Counted::alive == 2);
+    CHECK(small() == 1);
+    CHECK(large() == 2);
+
+    Function moved_small = std::move(small);
+    Function moved_large = std::move(large);
+    CHECK(Counted::alive == 2);
+    CHECK(moved_small() == 1);
+    CHECK(moved_large() == 2);
+
+    moved_small = std::move(moved_large);  // the small one is destroyed; the large one is held by the other now
+    CHECK(Counted::alive == 1);
+    CHECK(moved_small() == 2);
+  }
+  CHECK(Counted::alive == 0);
 }

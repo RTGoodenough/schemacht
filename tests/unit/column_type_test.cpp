@@ -17,6 +17,7 @@
 #include "schemacht/query/prepared.hpp"
 #include "schemacht/query/sql.hpp"
 #include "schemacht/schema/schema.hpp"
+#include "support/text.hpp"
 
 namespace pg = schemacht::postgres;
 namespace q = schemacht::query;
@@ -329,7 +330,11 @@ TEST_CASE("an argument is cast to a string column's type without its length, and
   using Places = sch::Schema<"places", sch::Field<OrderId, "id", sch::KeyRole::Primary>, sch::Field<Cents, "price">, sch::Field<Spot, "spot">>;
   static constexpr auto               SPOT_IN = q::On<Places>::col<"spot">().in(q::arg<0>());
   const std::vector<Places::row_type> places{Places::make_row(OrderId{1}, Cents{100}, Spot{"0101000020E6100000"})};
-  CHECK(pg::insert_statement<Places>(places).sql().contains(R"(SELECT "id"::bigint, "price"::numeric(12,2), "spot"::geometry(Point,4326) FROM)"));
+  CHECK(
+      schemacht::test::contains(
+          pg::insert_statement<Places>(places).sql(), R"(SELECT "id"::bigint, "price"::numeric(12,2), "spot"::geometry(Point,4326) FROM)"
+      )
+  );
   STATIC_REQUIRE(q::Prepared<SPOT_IN>::SQL.ends_with(R"(WHERE "spot" = ANY($1::text[]::geometry(Point,4326)[]))"));
 
   // The other spellings of the string types, in either case; no other type has an unlimited form to be cast to.
@@ -344,6 +349,8 @@ TEST_CASE("an argument is cast to a string column's type without its length, and
 
   // The table itself keeps the lengths.
   CHECK(
-      pg::create_table_statement<Codes>().sql().contains(R"("code" varchar(3) NOT NULL, "initials" char(2) NOT NULL, "aliases" char(2)[] NOT NULL)")
+      schemacht::test::contains(
+          pg::create_table_statement<Codes>().sql(), R"("code" varchar(3) NOT NULL, "initials" char(2) NOT NULL, "aliases" char(2)[] NOT NULL)"
+      )
   );
 }

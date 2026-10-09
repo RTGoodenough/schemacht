@@ -1,10 +1,10 @@
 #include "schemacht/postgres/binary_form.hpp"
 
 #include <bit>
+#include <climits>
 #include <concepts>
 #include <cstddef>
 #include <cstdint>
-#include <cstring>
 #include <span>
 #include <stdexcept>
 #include <string>
@@ -21,10 +21,8 @@ constexpr std::size_t INT64_BYTES = 8;
 template <std::unsigned_integral value_t>
 value_t load_big_endian(std::span<const std::byte> bytes) {
   value_t value = 0;
-  std::memcpy(&value, bytes.data(), sizeof(value_t));
-
-  if constexpr ( std::endian::native == std::endian::little ) {
-    value = std::byteswap(value);
+  for ( const std::byte byte : bytes.first(sizeof(value_t)) ) {
+    value = static_cast<value_t>(value << CHAR_BIT) | std::to_integer<value_t>(byte);
   }
 
   return value;

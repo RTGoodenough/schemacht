@@ -3,10 +3,11 @@
 #include <condition_variable>
 #include <cstddef>
 #include <deque>
-#include <functional>
 #include <mutex>
 #include <thread>
 #include <vector>
+
+#include "schemacht/util/move_only_function.hpp"
 
 namespace schemacht::async {
 
@@ -37,15 +38,15 @@ class ThreadPool {
    * The task may capture move-only state (a promise, say). A task that throws is dropped: tasks report their own errors (through a promise, say), and a stray exception
    * must not take the worker down.
    */
-  void post(std::move_only_function<void()> task);
+  void post(util::MoveOnlyFunction<void()> task);
 
  private:
-  std::mutex                                  _mutex;
-  std::condition_variable                     _wake;
-  std::deque<std::move_only_function<void()>> _tasks;
-  bool                                        _stopping = false;
-  bool                                        _joined = false;
-  std::vector<std::thread>                    _threads;
+  std::mutex                                 _mutex;
+  std::condition_variable                    _wake;
+  std::deque<util::MoveOnlyFunction<void()>> _tasks;
+  bool                                       _stopping = false;
+  bool                                       _joined = false;
+  std::vector<std::thread>                   _threads;
 
   void work();
 

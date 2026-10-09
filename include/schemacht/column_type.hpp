@@ -99,7 +99,7 @@ struct EnumColumn {
 
   /** @throws std::invalid_argument for a value that has no label. */
   static std::string format(const enum_t& value) {
-    const auto index = std::to_underlying(value);
+    const auto index = static_cast<std::underlying_type_t<enum_t>>(value);
     if ( index < 0 || static_cast<std::size_t>(index) >= LABELS.size() ) {
       throw std::invalid_argument("the value " + std::to_string(index) + " has no label in the enum " + std::string(SQL_TYPE));
     }
@@ -125,7 +125,9 @@ struct EnumIntegerColumn {
   static constexpr std::string_view SQL_TYPE = query::sql::type_name<number_type>();
 
   static enum_t      parse(std::string_view text) { return static_cast<enum_t>(postgres::FieldCodec<number_type>::parse(text)); }
-  static std::string format(const enum_t& value) { return postgres::FieldCodec<number_type>::format(std::to_underlying(value)); }
+  static std::string format(const enum_t& value) {
+    return postgres::FieldCodec<number_type>::format(static_cast<std::underlying_type_t<enum_t>>(value));
+  }
 
   static enum_t parse_binary(std::span<const std::byte> bytes) { return static_cast<enum_t>(postgres::FieldCodec<number_type>::parse_binary(bytes)); }
   static constexpr bool binary_accepts(std::uint32_t type_oid) { return postgres::FieldCodec<number_type>::binary_accepts(type_oid); }

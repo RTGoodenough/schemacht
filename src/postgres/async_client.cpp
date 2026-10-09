@@ -24,6 +24,7 @@
 #include <vector>
 
 #include "schemacht/async/thread_pool.hpp"
+#include "schemacht/util/move_only_function.hpp"
 
 namespace schemacht::postgres {
 
@@ -291,7 +292,7 @@ class AsyncClient::Impl {
       StreamCompletion done
   ) {
     if ( options.chunk_rows == 0 || options.max_buffered_chunks == 0 ) {
-      _workers->post([done = std::move(done)] mutable {
+      _workers->post([done = std::move(done)]() mutable {
         done(std::make_exception_ptr(std::invalid_argument("a stream needs chunks of at least one row and at least one buffered chunk")));
       });
       return;
@@ -333,7 +334,7 @@ class AsyncClient::Impl {
     wake();
   }
 
-  void post(std::move_only_function<void()> task) { _workers->post(std::move(task)); }
+  void post(util::MoveOnlyFunction<void()> task) { _workers->post(std::move(task)); }
 
  private:
   /** @brief A statement that has been sent and is waiting on its connection's socket. */
@@ -475,10 +476,10 @@ class AsyncClient::Impl {
       _workers->post([stream = std::move(operation.stream), error] { stream->done(error); });
 
     } else if ( operation.granted ) {
-      _workers->post([granted = std::move(operation.granted), error] mutable { granted(Lease(), error); });
+      _workers->post([granted = std::move(operation.granted), error]() mutable { granted(Lease(), error); });
 
     } else {
-      _workers->post([done = std::move(operation.done), error] mutable { done(QueryResult{}, error); });
+      _workers->post([done = std::move(operation.done), error]() mutable { done(QueryResult{}, error); });
     }
   }
 
@@ -674,7 +675,7 @@ class AsyncClient::Impl {
     const auto lease = std::make_shared<LeaseState>();
     lease->connection = connection;
 
-    _workers->post([this, granted = std::move(granted), lease] mutable { granted(Lease(this, lease), nullptr); });
+    _workers->post([this, granted = std::move(granted), lease]() mutable { granted(Lease(this, lease), nullptr); });
     _leases.push_back(lease);
   }
 
@@ -860,7 +861,7 @@ class AsyncClient::Impl {
     statement.result = nullptr;
 
     return_connection(statement.operation.lease, connection);
-    _workers->post([done = std::move(statement.operation.done), result = std::move(result), error] mutable { done(std::move(result), error); });
+    _workers->post([done = std::move(statement.operation.done), result = std::move(result), error]() mutable { done(std::move(result), error); });
   }
 
   // ---- streams -------------------------------------------------------------
@@ -1180,7 +1181,7 @@ void AsyncClient::stream(std::string sql, std::vector<std::string> params, Strea
   _impl->stream(nullptr, std::move(sql), std::move(params), options, std::move(on_chunk), std::move(done));
 }
 
-void AsyncClient::post(std::move_only_function<void()> task) { _impl->post(std::move(task)); }
+void AsyncClient::post(util::MoveOnlyFunction<void()> task) { _impl->post(std::move(task)); }
 
 void AsyncClient::lease(LeaseCompletion granted) { _impl->lease(std::move(granted)); }
 
@@ -1198,7 +1199,7 @@ std::exception_ptr empty_lease() {
 
 void AsyncClient::run(const Lease& lease, std::string sql, std::vector<std::string> params, Completion done, ResultFormat format) {
   if ( ! lease ) {
-    _impl->post([done = std::move(done)] mutable { done(QueryResult{}, empty_lease()); });
+    _impl->post([done = std::move(done)]() mutable { done(QueryResult{}, empty_lease()); });
     return;
   }
 
@@ -1209,7 +1210,7 @@ void AsyncClient::stream(
     const Lease& lease, std::string sql, std::vector<std::string> params, StreamOptions options, ChunkHandler on_chunk, StreamCompletion done
 ) {
   if ( ! lease ) {
-    _impl->post([done = std::move(done)] mutable { done(empty_lease()); });
+    _impl->post([done = std::move(done)]() mutable { done(empty_lease()); });
     return;
   }
 

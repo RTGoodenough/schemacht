@@ -1,11 +1,12 @@
 #include "schemacht/async/thread_pool.hpp"
 
 #include <cstddef>
-#include <functional>
 #include <mutex>
 #include <stdexcept>
 #include <thread>
 #include <utility>
+
+#include "schemacht/util/move_only_function.hpp"
 
 namespace schemacht::async {
 
@@ -41,7 +42,7 @@ void ThreadPool::shutdown() {
   _tasks.clear();  // posted after the last worker left: nothing will run them
 }
 
-void ThreadPool::post(std::move_only_function<void()> task) {
+void ThreadPool::post(util::MoveOnlyFunction<void()> task) {
   {
     const std::scoped_lock lock(_mutex);
     if ( _joined ) {
@@ -54,7 +55,7 @@ void ThreadPool::post(std::move_only_function<void()> task) {
 
 void ThreadPool::work() {
   while ( true ) {
-    std::move_only_function<void()> task;
+    util::MoveOnlyFunction<void()> task;
     {
       std::unique_lock lock(_mutex);
       _wake.wait(lock, [this] { return _stopping || ! _tasks.empty(); });

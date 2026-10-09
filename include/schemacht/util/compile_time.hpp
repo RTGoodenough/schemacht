@@ -1,11 +1,11 @@
 #pragma once
 
-// Field names are class-type template parameters (C++20), and the headers use C++23 (std::move_only_function, std::byteswap, ...).
-// Without this, an older standard gives errors that do not say so: clang reads `Field<T, "name">` in C++17 as a template
-// parameter of type `int` and reports that a string is not convertible to it.
-#if ! defined(_MSC_VER) && __cplusplus < 202100L
+// The headers use C++20: field names are class-type template parameters, templates are constrained with concepts, and SQL is
+// written by consteval functions. Without this, an older standard gives errors that do not say so: clang reads
+// `Field<T, "name">` in C++17 as a template parameter of type `int` and reports that a string is not convertible to it.
+#if ! defined(_MSC_VER) && __cplusplus < 202002L
 #error \
-    "schemacht requires C++23: compile with -std=c++23 (CMake: link schemacht::schemacht, which asks for it). If your editor shows this but your build works, the editor is not using your build's compile flags (for clangd: a compile_commands.json)."
+    "schemacht requires C++20: compile with -std=c++20 or later (CMake: link schemacht::schemacht, which asks for it). If your editor shows this but your build works, the editor is not using your build's compile flags (for clangd: a compile_commands.json)."
 #endif
 
 #include <algorithm>
