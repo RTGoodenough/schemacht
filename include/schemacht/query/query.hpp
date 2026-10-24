@@ -22,10 +22,11 @@ enum class LimitKind : std::uint8_t {
   Arg,       ///< A count supplied when the query is bound.
 };
 
+/** @brief A query's `LIMIT`: none, a count written into it, or a count bound when it runs. */
 struct Limit {
-  LimitKind    kind = LimitKind::None;
-  std::int64_t count = 0;  ///< `Constant` only.
-  std::size_t  slot = 0;   ///< `Arg` only.
+  LimitKind    kind = LimitKind::None;  ///< Which of the three.
+  std::int64_t count = 0;               ///< `Constant` only.
+  std::size_t  slot = 0;                ///< `Arg` only.
 
   [[nodiscard]] constexpr bool operator==(const Limit&) const = default;
 };
@@ -56,12 +57,12 @@ template <schema::IsSchema schema_t>
  */
 template <schema::IsSchema schema_t, std::size_t predicate_capacity, std::size_t order_capacity>
 struct Query {
-  using schema_type = schema_t;
+  using schema_type = schema_t;  ///< The schema the query is of.
 
-  Predicate<schema_t, predicate_capacity> predicate{};
-  std::array<OrderTerm, order_capacity>   order{};
+  Predicate<schema_t, predicate_capacity> predicate{};  ///< Which rows: the `WHERE` clause.
+  std::array<OrderTerm, order_capacity>   order{};      ///< The `ORDER BY` terms; `order_count` of them are in use.
   std::size_t                             order_count = 0;
-  Limit                                   row_limit{};
+  Limit                                   row_limit{};  ///< The `LIMIT`, if any.
 
   /// The columns returned, in result order; `column_count` of them are in use, and 0 means every column.
   std::array<std::size_t, schema_t::FIELD_COUNT> columns{};

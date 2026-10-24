@@ -51,8 +51,8 @@ enum class ConstantKind : std::uint8_t {
 
 /** @brief A literal value, stored as raw bits so it can live in a compile-time tree. */
 struct Constant {
-  ConstantKind  kind = ConstantKind::Bool;
-  std::uint64_t bits = 0;
+  ConstantKind  kind = ConstantKind::Bool;  ///< Which kind the bits are.
+  std::uint64_t bits = 0;                   ///< The value, as `make_constant` stores it.
 
   [[nodiscard]] constexpr bool operator==(const Constant&) const = default;
 };
@@ -77,7 +77,7 @@ struct Operand {
  * the SQL type it is cast to. There is one per type, so its address also tells which C++ type `bind` takes.
  */
 struct ArgumentForm {
-  std::string_view sql_type;
+  std::string_view sql_type;  ///< The SQL type the argument is cast to.
 };
 
 /**
@@ -90,7 +90,7 @@ struct ArgumentForm {
  * - optionally `TAKES_NUMBER = true`, for a function that also takes a number (a threshold, a radius), a `double`;
  * - optionally `ARGUMENT_PREFIX` and `ARGUMENT_SUFFIX`, SQL written around the argument;
  * - optionally `COLUMN_PREFIX` and `COLUMN_SUFFIX`, SQL written around the column, to test an expression of it: `lower(` and
- *   `)`, or a cast (`::geography`). It is the form an index on that expression can answer. The argument is still cast to the
+ *   `)`, or a cast to `geography`. It is the form an index on that expression can answer. The argument is still cast to the
  *   column's type, so if the expression is of another type, say so with `argument_type`. Nothing is added around the
  *   expression, so one written with an operator brings its own parentheses: `(` and ` ->> 'name')`;
  * - optionally `using argument_type = T;`, when the argument is not of the column's type: a polygon tested against a line
@@ -107,12 +107,12 @@ struct Operation {
   std::string_view name;
   bool             infix = false;       ///< Whether `name` is an operator, written between the column and the argument.
   bool             takes_real = false;  ///< Whether the test has a second, numeric argument: `name("column", $n, $m)`. Functions only.
-  /// Fixed SQL written around the argument (`$n::type`), to convert it first. E.g. `lower(` and `)` give
-  /// `"column" ~~ lower($1::text)`. The value itself is always a parameter.
+  /// Fixed SQL written around the argument (`$n`, cast to its type), to convert it first. E.g. `lower(` and `)` give
+  /// `"column" ~~ lower($1)` with the cast inside. The value itself is always a parameter.
   std::string_view argument_prefix;
   std::string_view argument_suffix;
   /// Fixed SQL written around the column, to test an expression of it. E.g. `lower(` and `)` give
-  /// `lower("column") ~~ $1::text`. Only the test is written so: a select list and an `ORDER BY` name the column itself.
+  /// `lower("column") ~~ $1`. Only the test is written so: a select list and an `ORDER BY` name the column itself.
   std::string_view    column_prefix;
   std::string_view    column_suffix;
   const ArgumentForm* argument = nullptr;  ///< The argument's own type (`argument_type`), if it is not the column's.
@@ -159,7 +159,7 @@ struct Node {
  */
 template <schema::IsSchema schema_t, std::size_t capacity>
 struct Predicate {
-  using schema_type = schema_t;
+  using schema_type = schema_t;  ///< The schema whose columns the predicate refers to.
 
   std::array<Node, capacity> nodes{};
   std::size_t                count = 0;  ///< Nodes in use.
@@ -181,6 +181,7 @@ template <typename operation_t>
   }
 }
 
+/** @brief The SQL an operation writes after its argument (`ARGUMENT_SUFFIX`), empty if it does not say. */
 template <typename operation_t>
 [[nodiscard]] constexpr std::string_view argument_suffix() {
   if constexpr ( requires {
@@ -207,6 +208,7 @@ template <typename operation_t>
   }
 }
 
+/** @brief The SQL an operation writes after its column (`COLUMN_SUFFIX`), empty if it does not say. */
 template <typename operation_t>
 [[nodiscard]] constexpr std::string_view column_suffix() {
   if constexpr ( requires {
@@ -357,7 +359,7 @@ template <typename data_t>
 template <std::size_t slot_idx>
 class ArgRef {
  public:
-  static constexpr std::size_t SLOT = slot_idx;
+  static constexpr std::size_t SLOT = slot_idx;  ///< Which argument, counted from 0.
 };
 
 /** @return The `slot_idx`-th bound argument. Its type comes from the column it's compared with. */
@@ -448,10 +450,10 @@ template <schema::IsSchema schema_t>
 
 /** @brief One `ORDER BY` term: which column, and which way. */
 struct OrderTerm {
-  std::size_t    column = 0;
-  bool           descending = false;
-  const Ranking* ranking = nullptr;  ///< Set for a ranking ("closest first"): sorts by `ranking`'s number for the column and the argument.
-  std::size_t    slot = 0;           ///< `ranking` only: the argument.
+  std::size_t    column = 0;          ///< The column sorted by: an index into the schema's fields.
+  bool           descending = false;  ///< Largest first.
+  const Ranking* ranking = nullptr;   ///< Set for a ranking ("closest first"): sorts by `ranking`'s number for the column and the argument.
+  std::size_t    slot = 0;            ///< `ranking` only: the argument.
 
   [[nodiscard]] constexpr bool operator==(const OrderTerm&) const = default;
 };
@@ -459,7 +461,7 @@ struct OrderTerm {
 /** @brief An `OrderTerm` known to refer to a column of `schema_t`; make one with `ColumnRef::asc()`/`desc()`. */
 template <schema::IsSchema schema_t>
 struct Ordering {
-  OrderTerm term;
+  OrderTerm term;  ///< The term, as the schema's `ColumnRef` made it.
 };
 
 /**
@@ -485,56 +487,68 @@ class ColumnRef {
   /** @brief This column's index in the schema's fields. */
   static constexpr std::size_t INDEX = column_idx;
 
+  /** @brief The column is equal to the bound argument `slot_idx`, a `data_type`. */
   template <std::size_t slot_idx>
   [[nodiscard]] constexpr auto operator==(ArgRef<slot_idx> /*arg*/) const {
     return compare_arg<slot_idx>(Comparison::Equal);
   }
+  /** @brief The column is not equal to the bound argument `slot_idx`, a `data_type`. */
   template <std::size_t slot_idx>
   [[nodiscard]] constexpr auto operator!=(ArgRef<slot_idx> /*arg*/) const {
     return compare_arg<slot_idx>(Comparison::NotEqual);
   }
+  /** @brief The column is less than the bound argument `slot_idx`, a `data_type`. */
   template <std::size_t slot_idx>
   [[nodiscard]] constexpr auto operator<(ArgRef<slot_idx> /*arg*/) const {
     return compare_arg<slot_idx>(Comparison::Less);
   }
+  /** @brief The column is at most the bound argument `slot_idx`, a `data_type`. */
   template <std::size_t slot_idx>
   [[nodiscard]] constexpr auto operator<=(ArgRef<slot_idx> /*arg*/) const {
     return compare_arg<slot_idx>(Comparison::LessEqual);
   }
+  /** @brief The column is greater than the bound argument `slot_idx`, a `data_type`. */
   template <std::size_t slot_idx>
   [[nodiscard]] constexpr auto operator>(ArgRef<slot_idx> /*arg*/) const {
     return compare_arg<slot_idx>(Comparison::Greater);
   }
+  /** @brief The column is at least the bound argument `slot_idx`, a `data_type`. */
   template <std::size_t slot_idx>
   [[nodiscard]] constexpr auto operator>=(ArgRef<slot_idx> /*arg*/) const {
     return compare_arg<slot_idx>(Comparison::GreaterEqual);
   }
 
+  /** @brief The column is equal to the literal `value`, written into the statement (`bool` and integer columns only). */
   template <typename value_t>
     requires ConstantFor<data_type, value_t>
   [[nodiscard]] constexpr auto operator==(const value_t& value) const {
     return compare_constant(Comparison::Equal, value);
   }
+  /** @brief The column is not equal to the literal `value`, written into the statement (`bool` and integer columns only). */
   template <typename value_t>
     requires ConstantFor<data_type, value_t>
   [[nodiscard]] constexpr auto operator!=(const value_t& value) const {
     return compare_constant(Comparison::NotEqual, value);
   }
+  /** @brief The column is less than the literal `value`, written into the statement (`bool` and integer columns only). */
   template <typename value_t>
     requires ConstantFor<data_type, value_t>
   [[nodiscard]] constexpr auto operator<(const value_t& value) const {
     return compare_constant(Comparison::Less, value);
   }
+  /** @brief The column is at most the literal `value`, written into the statement (`bool` and integer columns only). */
   template <typename value_t>
     requires ConstantFor<data_type, value_t>
   [[nodiscard]] constexpr auto operator<=(const value_t& value) const {
     return compare_constant(Comparison::LessEqual, value);
   }
+  /** @brief The column is greater than the literal `value`, written into the statement (`bool` and integer columns only). */
   template <typename value_t>
     requires ConstantFor<data_type, value_t>
   [[nodiscard]] constexpr auto operator>(const value_t& value) const {
     return compare_constant(Comparison::Greater, value);
   }
+  /** @brief The column is at least the literal `value`, written into the statement (`bool` and integer columns only). */
   template <typename value_t>
     requires ConstantFor<data_type, value_t>
   [[nodiscard]] constexpr auto operator>=(const value_t& value) const {

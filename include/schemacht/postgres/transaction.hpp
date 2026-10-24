@@ -21,8 +21,8 @@ enum class Isolation : std::uint8_t {
 
 /** @brief How a transaction starts. */
 struct TransactionOptions {
-  Isolation isolation = Isolation::ReadCommitted;
-  bool      read_only = false;  ///< Refuse every write (SQLSTATE `25006`).
+  Isolation isolation = Isolation::ReadCommitted;  ///< What the transaction sees of others' changes.
+  bool      read_only = false;                     ///< Refuse every write (SQLSTATE `25006`).
 };
 
 namespace detail {

@@ -14,6 +14,7 @@
 #include "schemacht/util/hex.hpp"
 
 /**
+ * @file
  * A UUID as a column type: PostgreSQL's `uuid`. Also an example of a column type made with `schemacht::ColumnType`.
  */
 namespace schemacht {

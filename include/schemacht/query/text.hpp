@@ -9,6 +9,7 @@
 #include "schemacht/schema/schema.hpp"
 
 /**
+ * @file
  * Text tests for queries. Each is written as the SQL operator (not the equivalent function) so that an index can answer it.
  */
 namespace schemacht::query {

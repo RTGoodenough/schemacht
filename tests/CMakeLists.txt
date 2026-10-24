@@ -50,7 +50,7 @@ catch_discover_tests(schemacht_fault_tests)
 # ==============================================================================
 # The examples, run against the test database (skipped, as the integration tests are, without SCHEMACHT_TEST_DB)
 # ==============================================================================
-foreach(example basic custom_types transfers extensions)
+foreach(example first_program basic custom_types transfers extensions)
   if(TARGET schemacht_example_${example})
     add_test(NAME example.${example} COMMAND ${CMAKE_COMMAND} -DEXAMPLE=$<TARGET_FILE:schemacht_example_${example}> -P
                                              ${CMAKE_CURRENT_SOURCE_DIR}/run_example.cmake)

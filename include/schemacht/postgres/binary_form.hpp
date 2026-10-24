@@ -6,6 +6,7 @@
 #include <string_view>
 
 /**
+ * @file
  * Reading PostgreSQL's binary form: what a column type's `parse_binary` and `binary_accepts` are written with (see
  * `schemacht::ColumnType`). PostgreSQL sends every number big endian.
  */

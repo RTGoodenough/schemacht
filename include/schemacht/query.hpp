@@ -1,6 +1,7 @@
 #pragma once
 
 /**
+ * @file
  * Writing queries: the predicate builder (`query::On`, `col`, `arg`, `select`), the compile-time statement (`query::Prepared`),
  * `query::like`, and the typed raw statement (`query::RawStatement`) for what the builder cannot say.
  *

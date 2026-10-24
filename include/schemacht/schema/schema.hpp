@@ -84,10 +84,10 @@ struct RowMaker<std::tuple<field_ts...>> {
 template <util::CTString table_str, IsField... field_ts>
 class Schema {
  public:
-  static constexpr std::string_view TABLE_NAME{table_str.view()};
+  static constexpr std::string_view TABLE_NAME{table_str.view()};  ///< The table's name: the schema's default table.
   /** @brief The table's name as a `util::CTString`, for building other compile-time strings. Most callers want `TABLE_NAME`. */
   static constexpr util::CTString TABLE_NAME_CTSTRING = table_str;
-  static constexpr std::size_t    FIELD_COUNT = sizeof...(field_ts);
+  static constexpr std::size_t    FIELD_COUNT = sizeof...(field_ts);  ///< How many columns the schema has.
 
   /** @brief One row's worth of field values, in declaration order. */
   using row_type = std::tuple<field_ts...>;

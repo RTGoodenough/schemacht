@@ -1,6 +1,7 @@
 #pragma once
 
 /**
+ * @file
  * The Postgres backend: `Database`, a pool of connections (an `AsyncClient`) that runs queries and raw statements and
  * returns `std::future`s, `Transaction`, plus `SessionSettings` and `QueryError`. Includes backend.hpp.
  */

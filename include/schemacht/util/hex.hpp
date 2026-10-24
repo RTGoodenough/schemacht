@@ -10,6 +10,7 @@
 #include <vector>
 
 /**
+ * @file
  * Bytes as hex text and back: what PostgreSQL's `bytea` (after its `\x`), a `uuid`, and many extension types' text forms
  * (PostGIS's hex EWKB, say) are made of. A column type of your own whose text form is hex uses these too.
  */

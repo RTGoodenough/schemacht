@@ -1,3 +1,6 @@
+add_executable(schemacht_example_first_program first_program.cpp)
+target_link_libraries(schemacht_example_first_program PRIVATE schemacht::schemacht)
+
 add_executable(schemacht_example_basic basic.cpp)
 target_link_libraries(schemacht_example_basic PRIVATE schemacht::schemacht)
 

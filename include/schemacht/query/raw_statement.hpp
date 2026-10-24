@@ -266,7 +266,7 @@ class BoundRawStatement {
  *   sent apart from the text. Nothing is spliced in.
  * - **Arguments** are the C++ types listed, each written as text by `postgres::FieldCodec` (a `std::vector` of one becomes
  *   an array). Parameters are untyped on the wire, so where PostgreSQL cannot tell a `$n`'s type from its context, cast
- *   it in the statement (`$1::jsonb`). An argument cannot be NULL yet.
+ *   it in the statement (`CAST($1 AS jsonb)`). An argument cannot be NULL yet.
  * - **Columns** are the `Field`s, in the order of the statement's select list and **named as the columns it returns**
  *   (`... AS spent`): a result whose columns differ from the fields is an error, not silently the wrong values. A
  *   column that can be NULL is a `std::optional` field, as everywhere.

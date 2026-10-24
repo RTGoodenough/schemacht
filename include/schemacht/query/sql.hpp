@@ -20,6 +20,7 @@
 #include "schemacht/util/identifier.hpp"
 
 /**
+ * @file
  * Lowering a `Query` to a PostgreSQL statement, entirely at compile time. Every value that isn't a literal is a `$n`
  * placeholder, so the text is a constant.
  *

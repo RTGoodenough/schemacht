@@ -1,6 +1,7 @@
 #pragma once
 
 /**
+ * @file
  * Column types of your own. Specialize `schemacht::ColumnType<T>` once, next to the type (schema/column_type.hpp says what it
  * holds), and `T` can be a `Field`'s type, a query's argument, and inserted and read like a built-in type. For the common
  * kinds of type, a helper here writes the whole specialization, binary form included where the stored type has one:

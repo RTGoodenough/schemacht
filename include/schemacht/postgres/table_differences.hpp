@@ -14,6 +14,7 @@
 #include "schemacht/schema/schema.hpp"
 
 /**
+ * @file
  * Checking a table against its schema: `table_differences_statement` asks the database how the table differs from what the
  * schema says, for a program to check when it starts, before the first query fails on a table that is missing or was changed.
  */

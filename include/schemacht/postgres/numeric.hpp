@@ -9,6 +9,7 @@
 #include "schemacht/postgres/concepts/numeric.hpp"  // IWYU pragma: export
 
 /**
+ * @file
  * Exact decimal amounts as PostgreSQL's `numeric`, for a column type of your own that holds one as a whole number of its
  * smallest unit: cents are a scale of 2, so `19.99` is 1999. The `Money` of examples/custom_types.cpp is written with these.
  *

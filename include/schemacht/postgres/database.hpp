@@ -10,8 +10,25 @@
 #include "schemacht/postgres/transaction.hpp"
 #include "schemacht/util/futures.hpp"
 
+namespace schemacht::postgres {
+
+namespace detail {
+
+/** @brief Owns the pool, so that it is made before the `StatementRunner` that sends to it: a base is made before the next base. */
+class ClientHolder {
+ protected:
+  ClientHolder(const std::string& conninfo, const AsyncClient::Options& options) : _client(conninfo, options) {}
+
+  [[nodiscard]] AsyncClient& held_client() noexcept { return _client; }
+
+ private:
+  AsyncClient _client;
+};
+
+}  // namespace detail
+
 /**
- * A Postgres database: a pool of connections (an `AsyncClient`) that runs typed queries, raw statements and inserts for
+ * @brief A Postgres database: a pool of connections (an `AsyncClient`) that runs typed queries, raw statements and inserts for
  * any schema, from any thread.
  *
  * - **Rows:** `execute` a query (`Prepared::bind`) or a raw statement for every row, or `stream` them as they arrive, one at a
@@ -32,31 +49,13 @@
  *
  * @warning Row handlers and completions run on the pool's worker threads. They must not block on another of this database's
  * futures (`get()`), which could leave no worker free to complete it: chain the next call with a completion instead.
- */
-namespace schemacht::postgres {
-
-namespace detail {
-
-/** @brief Owns the pool, so that it is made before the `StatementRunner` that sends to it: a base is made before the next base. */
-class ClientHolder {
- protected:
-  ClientHolder(const std::string& conninfo, const AsyncClient::Options& options) : _client(conninfo, options) {}
-
-  [[nodiscard]] AsyncClient& held_client() noexcept { return _client; }
-
- private:
-  AsyncClient _client;
-};
-
-}  // namespace detail
-
-/**
- * @brief Postgres database with a pool of connections. Everything it runs is described on `StatementRunner`, which it
- * shares with `Transaction`.
+ *
+ * Everything it runs is described on `StatementRunner`, which it shares with `Transaction`.
  */
 // NOLINTNEXTLINE(misc-multiple-inheritance) -- composition: ClientHolder only owns the pool (the base-from-member idiom)
 class Database : private detail::ClientHolder, public StatementRunner {
  public:
+  /** @brief How the database is set up: its pool, and how it reads results. */
   struct Options {
     AsyncClient::Options pool;  ///< The connections, the threads that run completions, and the session settings.
     ReadOptions          read;  ///< How results are read, unless a call says otherwise.
@@ -77,6 +76,7 @@ class Database : private detail::ClientHolder, public StatementRunner {
   /**
    * @brief Begins a transaction (`BEGIN`, with `options`). It takes a connection of the pool's until it ends, so it waits for
    * one if none is free; it must not outlive this database. examples/transfers.cpp makes transfers in transactions.
+   * @param options The isolation level, and whether it is read-only.
    * @param done none given (`util::UseFuture`): returns a `std::future` of the transaction. Else called with it and the error (on
    *        failure, the transaction it gets has ended: it refuses every statement).
    */

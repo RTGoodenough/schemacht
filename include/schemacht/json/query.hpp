@@ -9,6 +9,7 @@
 #include "schemacht/schema/schema.hpp"
 
 /**
+ * @file
  * Tests on JSON columns for queries: the operator that PostgreSQL answers from a GIN index.
  */
 namespace schemacht::json {

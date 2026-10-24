@@ -1,6 +1,7 @@
 #pragma once
 
 /**
+ * @file
  * Schemas: `Field`, `KeyRole` and `Schema`, reading a row's values by column name (`get`), and `Table` (with its `TableName`)
  * for a table of a schema's shape named while the program runs.
  *

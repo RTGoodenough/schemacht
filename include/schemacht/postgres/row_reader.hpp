@@ -20,6 +20,7 @@
 #include "schemacht/schema/field.hpp"
 
 /**
+ * @file
  * Turning a chunk of a query's result into typed rows.
  *
  * The row type (`result_t`, a `schema::FieldTuple`) is known where a query is run, so each row is built directly: field
@@ -30,7 +31,7 @@ namespace schemacht::postgres {
 
 namespace detail {
 
-/** @return The value of `field_t` from one field's text or bytes, or its NULL. @throws as `parse_column`, or if a NULL does not fit `field_t`. */
+/** @return The value of `field_t` from one field's text or bytes, or its NULL. @throws std::invalid_argument as `parse_column` does, or std::runtime_error if a NULL does not fit `field_t`. */
 template <schema::IsField field_t, ResultFormat format>
 [[nodiscard]] field_t::data_type read_field(const std::optional<std::string_view>& value) {
   if ( ! value.has_value() ) {
@@ -88,7 +89,8 @@ void check_column_types(const chunk_t& chunk) {
  * @brief Reads every row of `chunk` as a `result_t` and hands each to `on_row`, in order, until it wants no more.
  * @pre The chunk has `result_t`'s columns (see `check_result_columns`).
  * @return Whether `on_row` wants more rows (false: it returned `false`, and the rows after that were not read).
- * @throws as `read_row`, `check_column_types` and `on_row`; std::logic_error for a binary chunk of a row that is not `BinaryReadableRow`.
+ * @throws std::invalid_argument and std::runtime_error as `read_row` and `check_column_types` do, whatever `on_row` throws, and
+ *         std::logic_error for a binary chunk of a row that is not `BinaryReadableRow`.
  */
 template <TextRow result_t, ResultChunk chunk_t, RowCallback<result_t> handler_t>
 bool read_rows(const chunk_t& chunk, handler_t& on_row) {
@@ -123,7 +125,7 @@ bool read_rows(const chunk_t& chunk, handler_t& on_row) {
 /**
  * @return Every row of `chunk`, read as a `result_t`, in order: what `Database::stream_chunks` hands its handler.
  * @pre The chunk has `result_t`'s columns (see `check_result_columns`).
- * @throws as `read_rows`.
+ * @throws std::invalid_argument, std::runtime_error and std::logic_error as `read_rows` does.
  */
 template <TextRow result_t, ResultChunk chunk_t>
 [[nodiscard]] std::vector<result_t> read_chunk(const chunk_t& chunk) {

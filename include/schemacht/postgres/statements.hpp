@@ -28,6 +28,7 @@
 #include "schemacht/util/identifier.hpp"
 
 /**
+ * @file
  * Turning bound queries and rows into what is sent to Postgres: statement text plus each argument's text. Free of libpq.
  */
 namespace schemacht::postgres::detail {

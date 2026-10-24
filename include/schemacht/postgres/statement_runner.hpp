@@ -92,6 +92,7 @@ class StatementRunner {
    * The error is a `QueryError` if the statement failed, or a `std::runtime_error` if its result was not the columns it names.
    * @tparam statement_t A query (`Prepared::bind`) of any schema, an insert that gives back its rows
    *         (`insert_returning_statement`), or a raw statement (`RawStatement::bind`).
+   * @param statement The statement to run.
    * @param read How to read the result.
    * @param done none given (`util::UseFuture`): returns a `std::future` of the rows. Else called with the rows and the error.
    */
@@ -113,6 +114,7 @@ class StatementRunner {
    * @brief Runs `command`, a statement that returns no rows (an update, a delete, an insert or upsert, a `CREATE TABLE`, a raw
    * statement with no columns, or `unchecked_sql`), for the count of rows it affected: those an `UPDATE` changed, say, or 0 for
    * a `CREATE TABLE`.
+   * @param command The statement to run.
    * @param done none given (`util::UseFuture`): returns a `std::future` of the count. Else called with the count and the error.
    */
   template <CommandStatementRef statement_t, util::CompletionFor<std::uint64_t> done_t = util::UseFuture>
@@ -131,6 +133,9 @@ class StatementRunner {
    * returns `void`, or a `bool` where `false` stops: no more rows are delivered and the query is cancelled (in a transaction,
    * where a cancel would abort it, the rest of the rows are read and dropped instead). If `on_row` throws, that is the stream's
    * error; rows delivered before an error (the database's or `on_row`'s) stay delivered.
+   * @param statement The statement to run.
+   * @param on_row Called with each row.
+   * @param read How to read the result.
    * @param done none given (`util::UseFuture`): returns a `std::future<void>` that completes once the stream ends (whether it ran to
    *        the end or `on_row` stopped it). Else called with the error once it ends.
    */
@@ -160,6 +165,9 @@ class StatementRunner {
    * `on_chunk` is called as `stream`'s `on_row` is (one call at a time, on a thread of the pool's), never with an empty vector,
    * and returns `void`, or a `bool` where `false` stops. If it throws, that is the stream's error; chunks delivered before an
    * error stay delivered, but none of the rows of a chunk with a row that can't be read.
+   * @param statement The statement to run.
+   * @param on_chunk Called with each chunk's rows.
+   * @param read How to read the result.
    * @param done none given (`util::UseFuture`): returns a `std::future<void>` that completes once the stream ends. Else called
    *        with the error once it ends.
    */
@@ -289,17 +297,25 @@ class StatementRunner {
 
  protected:
   /**
+   * @param client The pool.
+   * @param lease The connection statements go to, if `on_lease`; else empty.
+   * @param read How results are read unless a call says otherwise.
    * @param on_lease Whether statements go to `lease`'s connection (a transaction's) rather than the pool; once `lease` is gone,
    *                 every statement then fails.
    */
   StatementRunner(AsyncClient& client, AsyncClient::Lease lease, bool on_lease, const ReadOptions& read)
       : _client(&client), _lease(std::move(lease)), _on_lease(on_lease), _read(read) {}
 
-  [[nodiscard]] AsyncClient&              client() const noexcept { return *_client; }
+  /** @return The pool. */
+  [[nodiscard]] AsyncClient& client() const noexcept { return *_client; }
+  /** @return The connection statements go to, if this runner holds one. */
   [[nodiscard]] const AsyncClient::Lease& lease() const noexcept { return _lease; }
-  [[nodiscard]] bool                      holds_lease() const noexcept { return static_cast<bool>(_lease); }
-  [[nodiscard]] AsyncClient::Lease        take_lease() noexcept { return std::move(_lease); }
-  void                                    put_back_lease(AsyncClient::Lease lease) noexcept { _lease = std::move(lease); }
+  /** @return Whether this runner still holds its connection. */
+  [[nodiscard]] bool holds_lease() const noexcept { return static_cast<bool>(_lease); }
+  /** @return The connection, taken out of this runner, which then holds none. */
+  [[nodiscard]] AsyncClient::Lease take_lease() noexcept { return std::move(_lease); }
+  /** @brief Gives back a connection taken with `take_lease`, when what it was taken for could not start. */
+  void put_back_lease(AsyncClient::Lease lease) noexcept { _lease = std::move(lease); }
 
  private:
   AsyncClient*       _client;

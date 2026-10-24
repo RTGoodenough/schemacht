@@ -10,6 +10,7 @@
 #include "schemacht/util/concepts/futures.hpp"  // IWYU pragma: export
 
 /**
+ * @file
  * Completions and the futures made from them: completing a `std::promise` from a completion that gets an error or a result,
  * which turns a callback into the future a caller waits on, and `complete`, which lets one call take either.
  */

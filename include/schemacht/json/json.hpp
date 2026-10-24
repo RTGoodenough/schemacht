@@ -13,6 +13,7 @@
 #include "schemacht/schema/column_type.hpp"
 
 /**
+ * @file
  * JSON as a column type: PostgreSQL's `jsonb`. Also an example of adding a column type (see column_type.hpp): it
  * specializes `schemacht::ColumnType`.
  */

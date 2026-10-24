@@ -16,6 +16,7 @@
 // field_codec.hpp includes this at its end, so these codecs are seen wherever `FieldCodec` is.
 
 /**
+ * @file
  * Dates and times as column types, written and read as PostgreSQL's own:
  *
  * | C++                            | PostgreSQL    |

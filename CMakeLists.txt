@@ -14,6 +14,8 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON CACHE INTERNAL "")
 option(SCHEMACHT_INSTALL "Generate the install rules: the library, its headers and a CMake package (find_package(schemacht))" ${PROJECT_IS_TOP_LEVEL})
 option(SCHEMACHT_BUILD_TESTS "Build the tests" ${PROJECT_IS_TOP_LEVEL})
 option(SCHEMACHT_BUILD_EXAMPLES "Build the examples" ${PROJECT_IS_TOP_LEVEL})
+set(SCHEMACHT_BUILD_DOCS "AUTO" CACHE STRING "Add the target `docs`, the API reference built from the headers with Doxygen: AUTO (if Doxygen is found), ON or OFF")
+set_property(CACHE SCHEMACHT_BUILD_DOCS PROPERTY STRINGS AUTO ON OFF)
 
 # ==============================================================================
 # Dependencies
@@ -69,6 +71,47 @@ endif()
 if(SCHEMACHT_BUILD_TESTS)
   enable_testing()
   add_subdirectory(tests)
+endif()
+
+# ==============================================================================
+# Documentation: the target `docs`, if Doxygen is found
+# ==============================================================================
+# The API reference, from the comments in include/, with README.md as its front page and docs/ as further pages, written to
+# build/docs/html. No Doxyfile is kept: CMake's FindDoxygen writes one from the DOXYGEN_ variables below. Diagrams need
+# Graphviz (dot); without it the reference is built without them.
+string(TOUPPER "${SCHEMACHT_BUILD_DOCS}" SCHEMACHT_BUILD_DOCS_CHOICE)
+if(SCHEMACHT_BUILD_DOCS_CHOICE STREQUAL "ON")
+  find_package(Doxygen REQUIRED OPTIONAL_COMPONENTS dot)
+elseif(SCHEMACHT_BUILD_DOCS_CHOICE STREQUAL "AUTO")
+  find_package(Doxygen QUIET OPTIONAL_COMPONENTS dot)
+elseif(NOT SCHEMACHT_BUILD_DOCS_CHOICE STREQUAL "OFF")
+  message(FATAL_ERROR "SCHEMACHT_BUILD_DOCS is '${SCHEMACHT_BUILD_DOCS}': AUTO, ON or OFF")
+endif()
+
+if(DOXYGEN_FOUND AND NOT SCHEMACHT_BUILD_DOCS_CHOICE STREQUAL "OFF")
+  set(DOXYGEN_PROJECT_BRIEF "tables as C++ types, SQL written while compiling, an asynchronous PostgreSQL client")
+  set(DOXYGEN_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/docs)
+  set(DOXYGEN_USE_MDFILE_AS_MAINPAGE ${CMAKE_CURRENT_SOURCE_DIR}/README.md)
+  set(DOXYGEN_STRIP_FROM_PATH ${CMAKE_CURRENT_SOURCE_DIR}/include ${CMAKE_CURRENT_SOURCE_DIR})
+  set(DOXYGEN_STRIP_FROM_INC_PATH ${CMAKE_CURRENT_SOURCE_DIR}/include)
+  set(DOXYGEN_EXAMPLE_PATH ${CMAKE_CURRENT_SOURCE_DIR}/examples)
+  set(DOXYGEN_EXTRACT_ALL NO)
+  set(DOXYGEN_EXTRACT_PRIVATE NO)
+  set(DOXYGEN_HIDE_UNDOC_MEMBERS YES)
+  set(DOXYGEN_HIDE_UNDOC_CLASSES YES)
+  set(DOXYGEN_EXCLUDE_SYMBOLS "detail" "*::detail" "*::detail::*" "insert_detail" "*::insert_detail" "*::insert_detail::*")
+  set(DOXYGEN_PREDEFINED "__cplusplus=202002L")  # the headers' own guard against an older standard
+  set(DOXYGEN_MARKDOWN_ID_STYLE GITHUB)  # so that a link to a heading in docs/ resolves as it does on GitHub
+  set(DOXYGEN_JAVADOC_AUTOBRIEF NO)  # every brief is an explicit @brief; a sentence end inside a code span would otherwise cut one short
+  set(DOXYGEN_GENERATE_LATEX NO)
+  set(DOXYGEN_GENERATE_TREEVIEW YES)
+  set(DOXYGEN_SHOW_INCLUDE_FILES NO)
+  set(DOXYGEN_SORT_MEMBER_DOCS NO)
+  set(DOXYGEN_WARN_IF_UNDOCUMENTED YES)
+  set(DOXYGEN_WARN_AS_ERROR NO)
+  set(DOXYGEN_QUIET YES)
+  doxygen_add_docs(docs ${CMAKE_CURRENT_SOURCE_DIR}/include/schemacht ${CMAKE_CURRENT_SOURCE_DIR}/README.md ${CMAKE_CURRENT_SOURCE_DIR}/docs
+                   COMMENT "The API reference, with Doxygen, into ${CMAKE_BINARY_DIR}/docs/html")
 endif()
 
 # ==============================================================================

@@ -54,7 +54,9 @@ class QueryResult {
   QueryResult(QueryResult&& other) noexcept;
   QueryResult& operator=(QueryResult&& other) noexcept;
 
+  /** @return How many rows the result holds. */
   [[nodiscard]] std::size_t row_count() const noexcept { return _row_count; }
+  /** @return How many columns each row has. */
   [[nodiscard]] std::size_t column_count() const noexcept { return _column_count; }
 
   /**
@@ -153,6 +155,7 @@ class AsyncClient {
   class Impl;
 
  public:
+  /** @brief How the client is set up: its connections, its threads and their sessions. */
   struct Options {
     std::size_t     connections = 4;  ///< Connections opened up front; also the most statements in flight at once.
     std::size_t     workers = 2;      ///< Threads running completions.

@@ -1,15 +1,39 @@
+# AI Disclosure
+
+The code and docs were written with the help of an AI assistant (Claude).
+
 # schemacht
 
-schemacht is a C++20 library for PostgreSQL. You describe a table once, as a C++ type. Queries, updates and deletes are
-then written in C++ against it and turned into SQL while compiling. A misspelled column, or an argument of the wrong type,
-is a compile error rather than a failure at run time. A `Database` runs the statements on a pool of non-blocking libpq
-connections and returns typed rows through `std::future`s.
+schemacht is a C++20 library for PostgreSQL. A table is described once, as a C++ type. Queries, updates and deletes are
+written in C++ against that type and turned into SQL while compiling, so a misspelled column or an argument of the
+wrong type is a compile error. A `Database` runs the statements on a pool of non-blocking libpq connections and returns
+typed rows through `std::future`s or completions.
+
+## What it does
+
+- **Schemas as types:** `sch::Schema<"people", Field...>`; a row is a tuple of its fields, read with `sch::get<"name">`.
+- **Statements checked while compiling:** `select`, `update`, `delete_where` with comparisons, `in`, `IS NULL`, `LIKE`,
+  `AND`/`OR`/`NOT`, `order_by`, `limit`, `project` and `returning`; `q::Prepared<Q>::SQL` is the SQL text.
+- **Inserts:** `insert` any number of rows in one statement, `insert_returning` for what the database filled in, `upsert`
+  with each column overwritten, merged by a SQL function or operator, or kept.
+- **Transactions:** `begin` with an isolation level or read-only; a transaction dropped without a commit is rolled back.
+- **Streaming:** `stream` a large result a row at a time, or `stream_chunks` a chunk at a time, with backpressure.
+- **Futures or completions:** every call returns a `std::future`, or calls a completion given last; every error arrives
+  there, exactly once.
+- **SQL the builder cannot write:** `q::RawStatement` with its `$n` placeholders checked while compiling, and
+  `pg::unchecked_sql` for text built while the program runs.
+- **Column types:** the built-in ones (numbers, text, bytes, arrays, `std::chrono`, `Uuid`, `json::Json`) and types of
+  your own through a `ColumnType` specialization.
+- **An extension's operators and functions** (pg_trgm, PostGIS, ...) in queries, as operation types.
+- **Tables named while the program runs** (`sch::Table<Schema>`), and a check of a table against its schema
+  (`table_differences`).
 
 ## Requirements
 
 - A C++20 compiler: tested with g++ 13 and clang++ 18 (the headers compile as C++23 too).
 - libpq 17 or newer (`libpq-dev` from the [PostgreSQL apt repository](https://apt.postgresql.org)).
 - CMake 3.21 or newer.
+- Optional: Doxygen and Graphviz, for the API reference.
 
 ## Adding it to a CMake project
 
@@ -29,7 +53,9 @@ target_link_libraries(app PRIVATE schemacht::schemacht)
 
 Linking `schemacht::schemacht` also asks for C++20 (or later) on your target, and links libpq and threads.
 
-## Quick start
+## A first program
+
+[examples/first_program.cpp](examples/first_program.cpp), run with a libpq connection string as its argument:
 
 ```cpp
 #include <cstdint>
@@ -48,16 +74,16 @@ using Id = sch::Field<std::int64_t, "id", sch::KeyRole::Primary, true>;  // true
 using Name = sch::Field<std::string, "name">;
 using Email = sch::Field<std::optional<std::string>, "email">;  // a std::optional column can be NULL
 using Score = sch::Field<double, "score">;
-using People = sch::Schema<"people", Id, Name, Email, Score>;
+using People = sch::Schema<"schemacht_example_people", Id, Name, Email, Score>;
 using Col = q::On<People>;
 
 // Statements, written in C++ and turned into SQL while compiling; arg<N>() is a value given when one runs.
 constexpr auto AT_LEAST = q::select(Col::col<"score">() >= q::arg<0>()).order_by(Col::col<"score">().desc()).limit(10);
 constexpr auto SET_SCORE = q::update<People>().set(Col::col<"score">(), q::arg<0>()).where(Col::col<"id">() == q::arg<1>());
 
-int main() {
-  pg::Database database("host=localhost dbname=app user=app");  // a pool of connections
-  database.drop_table<People>().get();                          // if it is there from a run before
+int main(int argc, char** argv) {
+  pg::Database database(argc > 1 ? argv[1] : "");  // a pool of connections
+  database.drop_table<People>().get();             // if it is there from a run before
   database.create_table<People>().get();
 
   // Every call returns a std::future; insert_returning gives back what the database filled in, such as the ids.
@@ -78,63 +104,26 @@ int main() {
     transaction.execute(q::Prepared<SET_SCORE>::bind(0.0, sch::get<"id">(person))).get();
   }
   transaction.commit().get();
+
+  database.drop_table<People>().get();
 }
 ```
 
 `q::Prepared<AT_LEAST>::SQL` is the statement as a compile-time string:
-`SELECT "id", "name", "email", "score" FROM "people" WHERE "score" >= $1 ORDER BY "score" DESC LIMIT 10`.
+`SELECT "id", "name", "email", "score" FROM "schemacht_example_people" WHERE "score" >= $1 ORDER BY "score" DESC LIMIT 10`.
 
-## What else it does
+## Examples
 
-- **Queries:**
-  - comparisons, `in(...)`, `IS NULL`, `AND`/`OR`/`NOT`, `LIKE`;
-  - `order_by`, `limit`, and `project` to fetch only some columns;
-  - `stream` to handle a large result a row at a time as it arrives, or `stream_chunks` a chunk at a time, with
-    backpressure;
-  - every call returns a `std::future`, or, given a callback last, calls it instead, to chain the next step:
-    `database.execute(query, [](std::vector<Row> rows, std::exception_ptr error) { ... })`;
-  - every error from making and running a statement arrives through the future or the callback, which runs exactly once; a
-    call throws only if it can't start at all (no memory to hand the statement on, say), and then its callback never runs.
-- **Changes:**
-  - `update(...)` and `delete_where(...)` give the count of rows changed, or the rows themselves with `.returning(...)`;
-  - `insert` writes any number of rows atomically, in one statement: all of them or none;
-  - `upsert` does the same, updating the row already there for a key that is (`ON CONFLICT` on the primary key): each
-    column overwritten, merged with the value already there by a SQL function or operator you name, or kept,
-    `database.upsert<PageViews, pg::MergeWith<"views", Add>, pg::Keep<"first_seen">>(rows)`.
-- **Transactions:** `Database::begin` (with an isolation level, or read-only). A transaction that is dropped without a
-  commit is rolled back.
-- **Raw SQL with types:** `q::RawStatement<"SELECT ...", q::RawArguments<...>, Fields...>` checks its `$n` placeholders
-  against its arguments while compiling. For SQL that can only be written while the program runs (DDL on a table named
-  then, say), `pg::unchecked_sql(text, arguments...)` runs it with its arguments bound to `$1`, `$2`, ..., checking nothing.
-- **Column types:**
-  - `bool`, integers, `float` and `double`, `std::string`, bytes (`bytea`), `std::vector` (arrays);
-  - dates and times (`std::chrono`), `schemacht::Uuid`, `schemacht::json::Json` (`jsonb`);
-  - any type of your own, with a `schemacht::ColumnType` specialization: see
-    [include/schemacht/column_type.hpp](include/schemacht/column_type.hpp) and
-    [examples/custom_types.cpp](examples/custom_types.cpp).
-- **An extension's operators and functions** (pg_trgm, PostGIS, ...): `col.apply<Op>(arg)` for a test, and
-  `col.ranked_by<Op>(arg)` to sort by one. An operation's argument can be of a type other than the column's, with
-  `using argument_type = T;`, where `T` is a column type of your own (a `ColumnType` specialization): a text key for
-  jsonb's `?`, say. An operation can also test an expression of its column, with SQL written around the column
-  (`COLUMN_PREFIX`, `COLUMN_SUFFIX`): `lower("name")` or a cast, as an index on that expression needs. See [examples/extensions.cpp](examples/extensions.cpp).
-- **Tables from schemas:** `create_table` and `drop_table`, for tests, examples and a first start. They cover the primary
-  key, `UNIQUE` columns and an identity key.
-- **Checking a table against its schema:** `database.table_differences<Schema>()` asks the database how the table differs
-  from the schema (a missing table or column, another type, `NOT NULL`, the primary key, ...) and gives each difference as
-  data, for a program to check its tables when it starts. It needs PostgreSQL 17.
-- **Tables named while the program runs:** a schema's name is its default table. A `sch::Table<Schema>` names another of
-  its shape (checked once, when made, and optionally in a PostgreSQL schema: `"gis"."roads"`), for a name from
-  configuration, a user, or another language's bindings. Any statement of the schema runs there once aimed at it:
-  `database.execute(query.on(archive))`, `database.execute(pg::insert_statement<Schema>(rows).on(archive))`.
+Each example is a program under [examples/](examples/), run with a connection string as its argument. Each makes its
+own tables and drops them afterwards.
 
-The examples show these together:
-- [examples/basic.cpp](examples/basic.cpp): a schema, an insert, queries, a raw statement, and a table named while the program
-  runs;
-- [examples/custom_types.cpp](examples/custom_types.cpp): column types of your own;
-- [examples/transfers.cpp](examples/transfers.cpp): identity keys, `insert_returning`, update and delete with
-  `returning`, a unique column, an upsert, and transactions;
-- [examples/extensions.cpp](examples/extensions.cpp): pg_trgm's operators and a function of the application's own, jsonb's
-  operators, an operation whose argument is not of the column's type, and one that tests an expression of its column.
+| Example | Shows |
+|---|---|
+| `first_program` | the program above |
+| `basic` | a schema, a table made from it, queries with arguments, a raw statement, a table named while the program runs |
+| `custom_types` | column types of your own: a wrapped integer, enums, a converted type, a `numeric` written by hand |
+| `transfers` | identity keys, `insert_returning`, update and delete with `returning`, a unique column, an upsert, transactions, chained completions |
+| `extensions` | pg_trgm's operators and a function of the application's own, jsonb's operators, an operation with an argument type of its own, a test of an expression of a column |
 
 ## Building and testing
 
@@ -145,17 +134,33 @@ ctest --test-dir build
 ```
 
 The tests and examples are built when schemacht is the top-level project (`SCHEMACHT_BUILD_TESTS`,
-`SCHEMACHT_BUILD_EXAMPLES`). The integration tests and the examples need a PostgreSQL database to run against. Point
-`SCHEMACHT_TEST_DB` at a throwaway one: they create and drop tables whose names start with `schemacht_it_` or
-`schemacht_example_`, and the schemas `schemacht_it_schema` and `schemacht_it_upsert`. One integration test and the extensions example also install
-pg_trgm if they can, and leave it installed; they create and drop the functions `similar_above` and
-`schemacht_it_keep_longer`. Without
-`SCHEMACHT_TEST_DB`, they are skipped.
+`SCHEMACHT_BUILD_EXAMPLES`). The tests that need a database, and the examples, skip themselves unless
+`SCHEMACHT_TEST_DB` holds a libpq connection string:
 
 ```sh
 SCHEMACHT_TEST_DB="host=localhost port=5432 dbname=schemacht_test user=test" ctest --test-dir build -j8
 ```
 
-## Status
+Point it at a throwaway database. The tests and examples create and drop objects there: tables named
+`schemacht_it_*` and `schemacht_example_*`, the schemas `schemacht_it_schema`, `schemacht_it_upsert`,
+`schemacht_it_check` and `schemacht_it_check_domains` (with domains in it), the view `schemacht_it_check_view`, the
+sequence `schemacht_it_check_missing`, the functions `similar_above`, `schemacht_it_keep_longer` and
+`schemacht_it_upsert.add_totals`, and the type `schemacht_example_mood`. One integration test and the `extensions`
+example install `pg_trgm` if they can, and leave it installed; without it, that part is skipped.
 
-Version 0.1: the API may still change between minor versions.
+Besides the unit and integration tests there are compile-fail tests (each compiles one case that must fail with a given
+message) and a fault test (`schemacht_fault_tests`, which fails each memory allocation in turn and checks that every
+completion still runs exactly once, or never when the call threw).
+
+## Documentation
+
+- [docs/guide.md](docs/guide.md): using schemacht, from describing a table to an extension's operators and a table's
+  check against its schema.
+- [docs/developer.md](docs/developer.md): how it is put together, the path of a call, threads and the error guarantee,
+  how to add to it, how to build, test and lint.
+- The API reference is generated from the headers with Doxygen: `cmake --build build --target docs`, then open
+  `build/docs/html/index.html`. The headers carry the same comments.
+
+## Status and license
+
+Version 0.1: the API may still change between minor versions. MIT license, see [LICENSE](LICENSE).

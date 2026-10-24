@@ -1,6 +1,7 @@
 #pragma once
 
 /**
+ * @file
  * `json::Json`, the `jsonb` column type, and `json::contains`, the `@>` test on it. Includes query.hpp (and through it schema.hpp),
  * which is what a query with `json::contains` is written with.
  */

@@ -90,15 +90,15 @@ struct Field {
   );
   static_assert(! NULLABLE || key_role != KeyRole::Primary, "a primary key column cannot be NULL, so it cannot be a std::optional");
 
-  static constexpr util::CTString COLUMN_NAME{column_str};
-  static constexpr KeyRole        KEY_ROLE = key_role;
-  static constexpr bool           GENERATED = generated;
+  static constexpr util::CTString COLUMN_NAME{column_str};  ///< The column's name.
+  static constexpr KeyRole        KEY_ROLE = key_role;      ///< Whether the column is (part of) the primary key, or unique.
+  static constexpr bool           GENERATED = generated;    ///< Whether the database fills the column in.
 
   /// Reads the value without naming `.value`: `std::string text = name_field;`.
   // NOLINTNEXTLINE(google-explicit-constructor, hicpp-explicit-conversions, cppcoreguidelines-explicit-constructor, misc-explicit-constructor) -- implicit on purpose: a Field reads as its value
   constexpr operator const data_type&() const& noexcept { return value; }
 
-  data_t value;
+  data_t value;  ///< The value this row holds for the column.
 };
 
 namespace detail {

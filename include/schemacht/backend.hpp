@@ -1,6 +1,7 @@
 #pragma once
 
 /**
+ * @file
  * Schemas, queries and Postgres's value formats, without a database connection: `postgres::FieldCodec` (how each column
  * type is written and read) and `postgres::by_key_values`. Does not include libpq's headers. Includes schema.hpp and query.hpp.
  */
