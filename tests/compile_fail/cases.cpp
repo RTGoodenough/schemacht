@@ -371,6 +371,47 @@ struct Add {
 }
 #endif
 
+#if defined(CASE_UPSERT_CONFLICT_NOT_UNIQUE)
+[[maybe_unused]] void run(const std::vector<Things::row_type>& rows) { (void)pg::upsert_statement<Things, pg::ConflictOn<"name">>(rows); }
+#endif
+
+#if defined(CASE_UPSERT_CONFLICT_ON_KEY)
+[[maybe_unused]] void run(const std::vector<Things::row_type>& rows) { (void)pg::upsert_statement<Things, pg::ConflictOn<"id">>(rows); }
+#endif
+
+#if defined(CASE_UPSERT_CONFLICT_UNKNOWN)
+[[maybe_unused]] void run(const std::vector<Things::row_type>& rows) { (void)pg::upsert_statement<Things, pg::ConflictOn<"label">>(rows); }
+#endif
+
+#if defined(CASE_UPSERT_CONFLICT_TWICE)
+using Email = sch::Field<std::string, "email", sch::KeyRole::Unique>;
+using Handle = sch::Field<std::string, "handle", sch::KeyRole::Unique>;
+using Users = sch::Schema<"users", Id, Email, Handle, Name>;
+[[maybe_unused]] void run(const std::vector<Users::row_type>& rows) {
+  (void)pg::upsert_statement<Users, pg::ConflictOn<"email">, pg::ConflictOn<"handle">>(rows);
+}
+#endif
+
+#if defined(CASE_UPSERT_CONFLICT_GENERATED)
+using Stamp = sch::Field<std::int64_t, "stamp", sch::KeyRole::Unique, true>;
+using Stamped = sch::Schema<"stamped", Id, Stamp, Name>;
+[[maybe_unused]] void run(const std::vector<Stamped::insert_row_type>& rows) { (void)pg::upsert_statement<Stamped, pg::ConflictOn<"stamp">>(rows); }
+#endif
+
+#if defined(CASE_UPSERT_KEEP_CONFLICT_COLUMN)
+using Email = sch::Field<std::string, "email", sch::KeyRole::Unique>;
+using Users = sch::Schema<"users", Id, Email, Name>;
+[[maybe_unused]] void run(const std::vector<Users::row_type>& rows) {
+  (void)pg::upsert_statement<Users, pg::ConflictOn<"email">, pg::Keep<"email">>(rows);
+}
+#endif
+
+#if defined(CASE_UPSERT_CONFLICT_NOTHING_TO_SET)
+using Email = sch::Field<std::string, "email", sch::KeyRole::Unique>;
+using Users = sch::Schema<"users", sch::Field<std::int64_t, "id", sch::KeyRole::Primary, true>, Email>;
+[[maybe_unused]] void run(const std::vector<Users::insert_row_type>& rows) { (void)pg::upsert_statement<Users, pg::ConflictOn<"email">>(rows); }
+#endif
+
 #if defined(CASE_UPSERT_MERGE_BOTH)
 struct Both {
   static constexpr std::string_view FUNCTION = "greatest";

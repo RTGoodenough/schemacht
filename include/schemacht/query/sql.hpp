@@ -6,6 +6,7 @@
 #include <concepts>
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -1015,24 +1016,30 @@ struct Merge {
 };
 
 /**
- * @return `insert_unnest_statement`'s INSERT, with the table named `"current"`, ending `ON CONFLICT (<primary key>) DO UPDATE SET
- * ...`: a row whose key is already there updates it instead. Each column that is neither key nor generated is set as its
- * `Merge` in `merges` says (or left out, if it keeps the value there), or else to the value that would have gone in
- * (`"column" = excluded."column"`). The schema must have a primary key and a column to set (`postgres::upsert_statement` checks
- * both).
+ * @return `insert_unnest_statement`'s INSERT, with the table named `"current"`, ending `ON CONFLICT (<matched columns>) DO UPDATE
+ * SET ...`: a row whose matched columns are already there updates that row instead. The matched columns are the primary key,
+ * or the one column at `matched` (a `KeyRole::Unique` column, by index into the schema's fields). Each column that is neither
+ * matched, nor a primary key column, nor generated is set as its `Merge` in `merges` says (or left out, if it keeps the value
+ * there), or else to the value that would have gone in (`"column" = excluded."column"`). The primary key is never set: a row
+ * matched on a unique column keeps its key. The schema must have what it matches on and a column to set
+ * (`postgres::upsert_statement` checks both).
  */
 template <schema::IsSchema schema_t, std::size_t merge_count>
-[[nodiscard]] consteval Text<STATEMENT_CAPACITY> upsert_statement(const std::array<Merge, merge_count>& merges) {
+[[nodiscard]] consteval Text<STATEMENT_CAPACITY> upsert_statement(const std::array<Merge, merge_count>& merges, std::optional<std::size_t> matched) {
   Text<STATEMENT_CAPACITY> text;
   append_insert_unnest<schema_t>(text, UPSERT_CURRENT);
 
   text.append(" ON CONFLICT (");
-  text.append_identifier_list(schema_t::primary_key_column_names());
+  if ( matched ) {
+    text.append_identifier(schema_t::column_names().at(*matched));
+  } else {
+    text.append_identifier_list(schema_t::primary_key_column_names());
+  }
   text.append(") DO UPDATE SET ");
 
   bool first = true;
   for ( std::size_t column = 0; column < schema_t::FIELD_COUNT; ++column ) {
-    if ( detail::COLUMN_GENERATED<schema_t>.at(column) || schema_t::KEY_ROLES.at(column) == schema::KeyRole::Primary ) {
+    if ( detail::COLUMN_GENERATED<schema_t>.at(column) || schema_t::KEY_ROLES.at(column) == schema::KeyRole::Primary || column == matched ) {
       continue;
     }
 

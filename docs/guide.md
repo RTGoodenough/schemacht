@@ -207,7 +207,24 @@ transaction
 A function is called as `FUNCTION("current"."col", excluded."col")`, the value already there first; it may be named
 with its schema (`stats.add_counts`). An upsert needs a primary key the rows carry (not a generated one), at least one
 column to update, and rules that name no key, generated or repeated column; each of these is a compile error otherwise.
-The conflict target is the primary key only.
+
+To match rows on a `Unique` column instead of the primary key, add `pg::ConflictOn<"col">` to the rules. The primary
+key may then be one the database numbers, or absent, and a matched row keeps it; neither it nor the matched column is
+ever set. For a table of ways told apart by their nodes:
+
+```cpp
+using WayId = sch::Field<std::int64_t, "way_id", sch::KeyRole::Primary, true>;
+using NodeIds = sch::Field<std::vector<std::int64_t>, "node_ids", sch::KeyRole::Unique>;
+using Ways = sch::Schema<"ways", WayId, Dataset, NodeIds, Tags, Pushed>;
+
+database.upsert<Ways, pg::ConflictOn<"node_ids">, pg::Keep<"tags">>(rows).get();
+// ... ON CONFLICT ("node_ids") DO UPDATE SET "dataset" = excluded."dataset", "pushed" = excluded."pushed"
+```
+
+The column must be a single `Unique` field that the rows carry, and the rules may not name it; the table needs the
+matching unique constraint, which `create_table` writes. Only that column decides a match: a row whose primary key is
+already there under another value of it is a unique violation, the database's error. A NULL in the column matches
+nothing, so such a row is always inserted.
 
 ## Use transactions
 
@@ -450,7 +467,7 @@ constraints and indexes are not compared. It needs a PostgreSQL 17 server.
 - A column of arrays of arrays compiles but fails at run time; so does an array column of a type whose array literal
   is not comma-separated.
 - One `Unique` field is one constraint; a unique constraint across columns is written in SQL, and `upsert` matches on
-  the primary key only.
+  the primary key or on one `Unique` column, not on a group of columns.
 - `argument_type` must be a column type of your own, not a built-in one.
 - A `RawStatement` or `unchecked_sql` argument cannot be NULL; `unchecked_sql` returns no rows.
 - The table check needs PostgreSQL 17; the library needs libpq 17.

@@ -5,6 +5,7 @@
 #include <concepts>
 #include <cstddef>
 #include <exception>
+#include <optional>
 #include <ranges>
 #include <span>
 #include <stdexcept>
@@ -95,7 +96,7 @@ class UnnestSql {
   static constexpr query::sql::TableSlot TABLE_SLOT = PARTS.second;  ///< Where `VALUE` names the table (see `query::sql::on_table`).
 };
 
-/** @return The operation that merges a column by `rule_t` (a `MergeWith`), or null for a column it keeps (a `Keep`). */
+/** @return The operation that merges a column by `rule_t` (a `MergeWith`), or null for a column it keeps (a `Keep`) or a `ConflictOn`. */
 template <UpsertRule rule_t>
 [[nodiscard]] consteval const query::Operation* merge_operation() {
   if constexpr ( IsMergeWith<rule_t> ) {
@@ -105,7 +106,7 @@ template <UpsertRule rule_t>
   }
 }
 
-/** @return Whether `rule_t` merges by a function or operator spelled as it must be; a `Keep` names none. */
+/** @return Whether `rule_t` merges by a function or operator spelled as it must be; a `Keep` or a `ConflictOn` names none. */
 template <UpsertRule rule_t>
 [[nodiscard]] consteval bool spelled_validly() {
   if constexpr ( IsMergeWith<rule_t> ) {
@@ -115,19 +116,57 @@ template <UpsertRule rule_t>
   }
 }
 
-/** @brief The upsert for `schema_t` that treats columns as `rule_ts` say (see `query::sql::upsert_statement`), as a static string. */
+/** @return The index of the column a `ConflictOn` in `rule_ts` names (the first, if several), or none: rows are matched on the primary key. */
+template <schema::IsSchema schema_t, UpsertRule... rule_ts>
+[[nodiscard]] consteval std::optional<std::size_t> matched_column() {
+  std::optional<std::size_t> matched;
+  (
+      [&] {
+        if constexpr ( IsConflictOn<rule_ts> ) {
+          if ( ! matched ) {
+            matched = schema_t::template checked_field_index<rule_ts::COLUMN>();
+          }
+        }
+      }(),
+      ...);
+  return matched;
+}
+
+/**
+ * @brief The upsert for `schema_t` that matches rows and treats columns as `rule_ts` say (see `query::sql::upsert_statement`), as
+ * a static string.
+ */
 template <schema::IsSchema schema_t, UpsertRule... rule_ts>
 class UpsertSql {
-  static constexpr std::array<query::sql::Merge, sizeof...(rule_ts)> MERGES{query::sql::Merge{
-      .column = schema_t::template checked_field_index<rule_ts::COLUMN>(),
-      .operation = merge_operation<rule_ts>(),
-  }...};
+  static constexpr std::size_t CONFLICT_COUNT = (std::size_t{0} + ... + std::size_t{IsConflictOn<rule_ts>});
+  static constexpr std::size_t MERGE_COUNT = sizeof...(rule_ts) - CONFLICT_COUNT;
 
-  static constexpr std::size_t KEPT = (std::size_t{0} + ... + std::size_t{IsKeep<rule_ts>});
+  static constexpr std::array<query::sql::Merge, MERGE_COUNT> MERGES = [] {
+    std::array<query::sql::Merge, MERGE_COUNT> merges{};
+    std::size_t                                next = 0;
+    (
+        [&] {
+          if constexpr ( ! IsConflictOn<rule_ts> ) {
+            merges.at(next++) = query::sql::Merge{
+                .column = schema_t::template checked_field_index<rule_ts::COLUMN>(),
+                .operation = merge_operation<rule_ts>(),
+            };
+          }
+        }(),
+        ...);
+    return merges;
+  }();
+
+  static constexpr std::optional<std::size_t> MATCHED = matched_column<schema_t, rule_ts...>();
 
   [[nodiscard]] static constexpr bool is_key(std::size_t column) { return schema_t::KEY_ROLES.at(column) == schema::KeyRole::Primary; }
 
   [[nodiscard]] static constexpr bool is_generated(std::size_t column) { return query::sql::detail::COLUMN_GENERATED<schema_t>.at(column); }
+
+  [[nodiscard]] static constexpr bool is_matched(std::size_t column) { return column == MATCHED; }
+
+  /** @return Whether the update may set `column`: neither a primary key column, nor generated, nor the one matched on. */
+  [[nodiscard]] static constexpr bool is_updatable(std::size_t column) { return ! is_key(column) && ! is_generated(column) && ! is_matched(column); }
 
   [[nodiscard]] static consteval bool key_generated() {
     for ( std::size_t column = 0; column < schema_t::FIELD_COUNT; ++column ) {
@@ -138,8 +177,24 @@ class UpsertSql {
     return false;
   }
 
+  /** @return How many columns the update sets when no rule keeps any. */
+  [[nodiscard]] static consteval std::size_t updatable_count() {
+    std::size_t count = 0;
+    for ( std::size_t column = 0; column < schema_t::FIELD_COUNT; ++column ) {
+      if ( is_updatable(column) ) {
+        ++count;
+      }
+    }
+    return count;
+  }
+
+  /** @return How many of the columns the update may set a `Keep` keeps (a `Keep` on another column has its own error). */
+  [[nodiscard]] static consteval std::size_t kept_count() {
+    return std::ranges::count_if(MERGES, [](const query::sql::Merge& merge) { return merge.operation == nullptr && is_updatable(merge.column); });
+  }
+
   [[nodiscard]] static consteval bool distinct_columns() {
-    std::array<std::size_t, sizeof...(rule_ts)> columns{};
+    std::array<std::size_t, MERGE_COUNT> columns{};
     std::ranges::transform(MERGES, columns.begin(), &query::sql::Merge::column);
     std::ranges::sort(columns);
 
@@ -152,15 +207,35 @@ class UpsertSql {
   static constexpr bool SPELLED = (insert_detail::spelled_validly<rule_ts>() && ...);
   static constexpr bool CHECKED = KNOWN_COLUMNS && SPELLED;  // the rules themselves are then checked
 
-  static_assert(schema_t::HAS_PRIMARY_KEY, "upsert: the schema has no primary key, which is what a row is matched on to the one already there");
-  static_assert(! key_generated(), "upsert: the database numbers the primary key, so a row inserted never carries one to match");
+  static_assert(CONFLICT_COUNT <= 1, "upsert: two ConflictOn; rows are matched on one column, or on the primary key");
   static_assert(
-      key_generated() || schema_t::INSERTABLE_FIELD_COUNT > schema_t::PRIMARY_KEY_FIELD_COUNT,
-      "upsert: every column is part of the primary key or generated, so a row already there has nothing to update"
+      ! CHECKED || ! MATCHED || schema_t::KEY_ROLES.at(*MATCHED) == schema::KeyRole::Unique,
+      "upsert: ConflictOn names a column that is not KeyRole::Unique; rows are matched on one Unique column, or on the primary key without a "
+      "ConflictOn"
+  );
+  static_assert(
+      ! CHECKED || ! MATCHED || ! is_generated(*MATCHED),
+      "upsert: the database computes the ConflictOn column, so a row inserted never carries one to match"
+  );
+  static_assert(
+      MATCHED || schema_t::HAS_PRIMARY_KEY,
+      "upsert: the schema has no primary key, which is what a row is matched on to the one already there, unless a ConflictOn names a Unique column"
+  );
+  static_assert(
+      MATCHED || ! key_generated(),
+      "upsert: the database numbers the primary key, so a row inserted never carries one to match; match on a Unique column with ConflictOn"
+  );
+  static_assert(
+      ! CHECKED || updatable_count() > 0,
+      "upsert: every column is matched on, part of the primary key or generated, so a row already there has nothing to update"
   );
   static_assert(
       ! CHECKED || std::ranges::none_of(MERGES, [](const query::sql::Merge& merge) { return is_key(merge.column); }),
-      "upsert: a MergeWith or Keep names a primary key column, which rows are matched on and is never updated"
+      "upsert: a MergeWith or Keep names a primary key column, which is never updated"
+  );
+  static_assert(
+      ! CHECKED || ! MATCHED || std::ranges::none_of(MERGES, [](const query::sql::Merge& merge) { return merge.column == *MATCHED; }),
+      "upsert: a MergeWith or Keep names the ConflictOn column, which rows are matched on and is never updated"
   );
   static_assert(
       ! CHECKED || std::ranges::none_of(MERGES, [](const query::sql::Merge& merge) { return is_generated(merge.column); }),
@@ -168,15 +243,15 @@ class UpsertSql {
   );
   static_assert(! CHECKED || distinct_columns(), "upsert: two of its MergeWith and Keep name the same column");
   static_assert(
-      key_generated() || ! CHECKED || ! distinct_columns() || schema_t::INSERTABLE_FIELD_COUNT - schema_t::PRIMARY_KEY_FIELD_COUNT > KEPT,
-      "upsert: every column besides the key is kept (Keep), so a row already there has nothing to update"
+      ! CHECKED || ! distinct_columns() || updatable_count() == 0 || updatable_count() > kept_count(),
+      "upsert: every column besides those matched on is kept (Keep), so a row already there has nothing to update"
   );
 
   [[nodiscard]] static consteval auto text() {
     if constexpr ( SPELLED ) {
-      return query::sql::upsert_statement<schema_t>(MERGES);
+      return query::sql::upsert_statement<schema_t>(MERGES, MATCHED);
     } else {
-      return query::sql::upsert_statement<schema_t>(std::array<query::sql::Merge, 0>{});  // after the spelling's error
+      return query::sql::upsert_statement<schema_t>(std::array<query::sql::Merge, 0>{}, MATCHED);  // after the spelling's error
     }
   }
 
@@ -472,14 +547,40 @@ struct Keep {
 };
 
 /**
- * @return The statement that inserts `rows` as `insert_statement` does, and, for a row whose primary key is already in the table,
- * updates that row instead (`ON CONFLICT (<key>) DO UPDATE`): each column a `MergeWith` in `rule_ts` names is merged as it
- * says, each a `Keep` names is left as it is, and every other column that is neither key nor generated takes the value that
- * would have gone in. One statement, atomic; `execute` gives the count of rows inserted or updated.
+ * @brief Matches the rows of an `upsert_statement` on the column `column`, a `KeyRole::Unique` field, instead of on the primary
+ * key (`ON CONFLICT ("column")`): a row whose value for it is already in the table updates that row. For a table whose primary
+ * key the database numbers (an identity column) and whose rows are told apart by another column: an email, a natural key.
  *
- * The schema must have a primary key that the database does not number (a row is matched on it), and a column besides the key
- * to update. Two rows with the same key in one statement fail it (PostgreSQL updates a row once per statement): the error is
- * the database's, through the completion or future.
+ * The matched row keeps its primary key, whatever the row that would have gone in carried, and the matched column is never set
+ * (as the primary key never is). The database must have the matching unique constraint or index on that column alone;
+ * `create_table_statement` writes one for each `KeyRole::Unique` field.
+ *
+ * @code
+ * using Id = sch::Field<std::int64_t, "id", sch::KeyRole::Primary, true>;  // numbered by the database
+ * using Email = sch::Field<std::string, "email", sch::KeyRole::Unique>;
+ * using Users = sch::Schema<"users", Id, Email, Name, Seen>;
+ * db.upsert<Users, pg::ConflictOn<"email">, pg::Keep<"name">>({Users::make_insert_row("ann@example.com", "ann", today)});
+ * @endcode
+ */
+template <util::CTString column>
+struct ConflictOn {
+  static constexpr util::CTString COLUMN = column;  ///< The column rows are matched on.
+};
+
+/**
+ * @return The statement that inserts `rows` as `insert_statement` does, and, for a row that is already in the table, updates
+ * that row instead (`ON CONFLICT (<matched columns>) DO UPDATE`). A row is matched on its primary key, or, if a `ConflictOn` in
+ * `rule_ts` names a `KeyRole::Unique` column, on that column alone. Each column a `MergeWith` in `rule_ts` names is merged as
+ * it says, each a `Keep` names is left as it is, and every other column that is neither matched on, nor part of the primary
+ * key, nor generated takes the value that would have gone in. One statement, atomic; `execute` gives the count of rows
+ * inserted or updated.
+ *
+ * Without a `ConflictOn`, the schema must have a primary key that the database does not number (a row is matched on it). With
+ * one, the primary key may be generated, or absent, and is never set. Either way there must be a column left to update. Two
+ * rows with the same matched value in one statement fail it (PostgreSQL updates a row once per statement): the error is the
+ * database's, through the completion or future. So is a row that collides on anything but what it is matched on: with a
+ * `ConflictOn`, a row whose primary key is already there under another matched value. A NULL in a matched column (a
+ * `std::optional` field) matches nothing, so such a row is always inserted.
  */
 template <TextSchema schema_t, UpsertRule... rule_ts, std::ranges::contiguous_range rows_t>
   requires schema::InsertRowOf<std::ranges::range_value_t<rows_t>, schema_t>

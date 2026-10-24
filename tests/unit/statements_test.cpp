@@ -235,6 +235,48 @@ TEST_CASE("an upsert matches on the whole primary key, and never sets a key or g
   );
 }
 
+TEST_CASE("an upsert with a ConflictOn matches on that unique column, and never sets it or the primary key", "[upsert]") {
+  // The schema may then have a key the database numbers: the matched row keeps it.
+  using WayId = sch::Field<std::int64_t, "way_id", sch::KeyRole::Primary, true>;
+  using Dataset = sch::Field<std::string, "dataset">;
+  using NodeIds = sch::Field<std::vector<std::int64_t>, "node_ids", sch::KeyRole::Unique>;
+  using Pushed = sch::Field<std::int64_t, "pushed">;
+  using Ways = sch::Schema<"ways", WayId, Dataset, NodeIds, Pushed>;
+
+  const std::vector<Ways::insert_row_type> ways{Ways::make_insert_row("north", std::vector<std::int64_t>{1, 2}, 7)};
+  CHECK(
+      pg::upsert_statement<Ways, pg::ConflictOn<"node_ids">>(ways).sql() ==
+      R"(INSERT INTO "ways" AS "current" ("dataset", "node_ids", "pushed") SELECT "dataset", "node_ids"::bigint[], "pushed" )"
+      R"(FROM unnest($1::text[], $2::text[], $3::bigint[]) AS u("dataset", "node_ids", "pushed") )"
+      R"(ON CONFLICT ("node_ids") DO UPDATE SET "dataset" = excluded."dataset", "pushed" = excluded."pushed")"
+  );
+
+  // A key the rows carry is not set either, and the rules apply to the rest, wherever the ConflictOn is among them.
+  using Email = sch::Field<std::string, "email", sch::KeyRole::Unique>;
+  using Users = sch::Schema<"users", t::Id, Email, t::Name, t::Score>;
+  const std::vector<Users::row_type> users{Users::make_row(1, "al@example.com", "al", 2.0)};
+  CHECK(
+      pg::upsert_statement<Users, pg::MergeWith<"score", Add>, pg::ConflictOn<"email">>(users).sql().ends_with(
+          R"( ON CONFLICT ("email") DO UPDATE SET "name" = excluded."name", "score" = "current"."score" + excluded."score")"
+      )
+  );
+
+  // A composite key is skipped whole.
+  using Code = sch::Field<std::string, "code", sch::KeyRole::Unique>;
+  using CodedPairs = sch::Schema<"coded_pairs", t::PairA, t::PairB, Code, t::PairValue>;
+  const std::vector<CodedPairs::row_type> coded{CodedPairs::make_row(1, 2, "x", 3)};
+  CHECK(pg::upsert_statement<CodedPairs, pg::ConflictOn<"code">>(coded).sql().ends_with(R"( ON CONFLICT ("code") DO UPDATE SET "v" = excluded."v")"));
+
+  // A schema with no primary key at all.
+  using Setting = sch::Schema<"settings", sch::Field<std::string, "key", sch::KeyRole::Unique>, sch::Field<std::string, "value">>;
+  const std::vector<Setting::row_type> settings{Setting::make_row("theme", "dark")};
+  CHECK(
+      pg::upsert_statement<Setting, pg::ConflictOn<"key">>(settings).sql().ends_with(
+          R"( ON CONFLICT ("key") DO UPDATE SET "value" = excluded."value")"
+      )
+  );
+}
+
 TEST_CASE("a statement given as text is sent as it is, with its arguments' text", "[unchecked_sql]") {
   const auto statement = pg::unchecked_sql(R"(UPDATE "people" SET "score" = $1 WHERE "name" = ANY($2))", 2.5, std::vector<std::string>{"a", "b,c"});
   CHECK(statement.sql() == R"(UPDATE "people" SET "score" = $1 WHERE "name" = ANY($2))");

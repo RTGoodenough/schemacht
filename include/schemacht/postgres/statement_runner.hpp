@@ -281,7 +281,8 @@ class StatementRunner {
 
   /**
    * @brief Writes `rows` of `schema_t`, updating the row already there for each key that is (see `upsert_statement`), for the
-   * count inserted or updated: `db.upsert<PageViews, pg::MergeWith<"views", Add>>(rows)`. All of them, or none.
+   * count inserted or updated: `db.upsert<PageViews, pg::MergeWith<"views", Add>>(rows)`. All of them, or none. A
+   * `pg::ConflictOn<"column">` among the rules matches rows on that unique column instead of the primary key.
    */
   template <TextSchema schema_t, UpsertRule... rule_ts, util::CompletionFor<std::uint64_t> done_t = util::UseFuture>
   auto upsert(const std::vector<typename schema_t::row_type>& rows, done_t done = {}) {

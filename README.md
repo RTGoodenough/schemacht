@@ -15,7 +15,8 @@ typed rows through `std::future`s or completions.
 - **Statements checked while compiling:** `select`, `update`, `delete_where` with comparisons, `in`, `IS NULL`, `LIKE`,
   `AND`/`OR`/`NOT`, `order_by`, `limit`, `project` and `returning`; `q::Prepared<Q>::SQL` is the SQL text.
 - **Inserts:** `insert` any number of rows in one statement, `insert_returning` for what the database filled in, `upsert`
-  with each column overwritten, merged by a SQL function or operator, or kept.
+  matched on the primary key or a unique column, with each column overwritten, merged by a SQL function or operator, or
+  kept.
 - **Transactions:** `begin` with an isolation level or read-only; a transaction dropped without a commit is rolled back.
 - **Streaming:** `stream` a large result a row at a time, or `stream_chunks` a chunk at a time, with backpressure.
 - **Futures or completions:** every call returns a `std::future`, or calls a completion given last; every error arrives

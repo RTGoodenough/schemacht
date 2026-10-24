@@ -54,6 +54,9 @@ struct MergeWith;  // postgres/statements.hpp
 template <util::CTString column>
 struct Keep;  // postgres/statements.hpp
 
+template <util::CTString column>
+struct ConflictOn;  // postgres/statements.hpp
+
 namespace detail {
 
 template <typename statement_t>
@@ -73,6 +76,12 @@ inline constexpr bool IS_KEEP = false;
 
 template <util::CTString column>
 inline constexpr bool IS_KEEP<Keep<column>> = true;
+
+template <typename rule_t>
+inline constexpr bool IS_CONFLICT_ON = false;
+
+template <util::CTString column>
+inline constexpr bool IS_CONFLICT_ON<ConflictOn<column>> = true;
 
 }  // namespace detail
 
@@ -100,9 +109,16 @@ concept IsMergeWith = detail::IS_MERGE_WITH<merge_t>;
 template <typename rule_t>
 concept IsKeep = detail::IS_KEEP<rule_t>;
 
-/** @brief Whether `rule_t` says how an upsert treats one column of a row already there: merged (`MergeWith`) or kept (`Keep`). */
+/** @brief Whether `rule_t` is a `ConflictOn`: the unique column an upsert matches rows on instead of the primary key. */
 template <typename rule_t>
-concept UpsertRule = IsMergeWith<rule_t> || IsKeep<rule_t>;
+concept IsConflictOn = detail::IS_CONFLICT_ON<rule_t>;
+
+/**
+ * @brief Whether `rule_t` is one of the things an upsert is told: which column rows are matched on (`ConflictOn`), or how one
+ * column of a row already there is treated: merged (`MergeWith`) or kept (`Keep`).
+ */
+template <typename rule_t>
+concept UpsertRule = IsMergeWith<rule_t> || IsKeep<rule_t> || IsConflictOn<rule_t>;
 
 /**
  * @brief What a `Database` can send, with a `result_type` (a `TextRow`): a query or command (`Prepared::bind`) of a `TextSchema`, a

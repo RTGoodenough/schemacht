@@ -1347,6 +1347,61 @@ TEST_CASE("integration: the upsert convenience runs on the schema's own table", 
   database.drop_table<Notes>().get();
 }
 
+TEST_CASE("integration: an upsert matched on a unique column updates the row there and keeps its identity key", "[integration][upsert]") {
+  // A table of ways told apart by their nodes, with a key the database numbers: the shape a conflict on a unique column is for.
+  using WayId = sch::Field<std::int64_t, "way_id", sch::KeyRole::Primary, true>;
+  using Dataset = sch::Field<std::string, "dataset">;
+  using NodeIds = sch::Field<std::vector<std::int64_t>, "node_ids", sch::KeyRole::Unique>;
+  using Tags = sch::Field<std::optional<std::string>, "tags">;
+  using Pushed = sch::Field<std::int64_t, "pushed">;
+  using Ways = sch::Schema<"schemacht_it_ways", WayId, Dataset, NodeIds, Tags, Pushed>;
+  constexpr auto ALL_WAYS = q::select<Ways>().order_by(q::On<Ways>::col<"way_id">().asc());
+
+  pg::Database database(test_db());
+  database.drop_table<Ways>().get();
+  database.create_table<Ways>().get();
+  CHECK(database.table_differences<Ways>().get().empty());  // the identity key and the UNIQUE bigint[] column, as created
+
+  using Nodes = std::vector<std::int64_t>;
+  CHECK(
+      database
+          .upsert<Ways, pg::ConflictOn<"node_ids">>(
+              {Ways::make_insert_row("north", Nodes{1, 2, 3}, std::nullopt, 1), Ways::make_insert_row("north", Nodes{3, 4}, "bridge", 1)}
+          )
+          .get() == 2
+  );
+  const auto first = database.execute(q::Prepared<ALL_WAYS>::bind()).get();
+  REQUIRE(first.size() == 2);
+
+  // The same nodes pushed from another dataset update the row there, which keeps its id (and a kept column); new nodes are a new row.
+  CHECK(
+      database
+          .upsert<Ways, pg::ConflictOn<"node_ids">, pg::Keep<"tags">>(
+              {Ways::make_insert_row("south", Nodes{3, 4}, std::nullopt, 2), Ways::make_insert_row("south", Nodes{4, 5}, "lane", 2)}
+          )
+          .get() == 2
+  );
+  const auto second = database.execute(q::Prepared<ALL_WAYS>::bind()).get();
+  REQUIRE(second.size() == 3);
+  CHECK(sch::get<"way_id">(second.at(0)) == sch::get<"way_id">(first.at(0)));
+  CHECK(sch::get<"dataset">(second.at(0)) == "north");
+  CHECK(sch::get<"way_id">(second.at(1)) == sch::get<"way_id">(first.at(1)));
+  CHECK(sch::get<"dataset">(second.at(1)) == "south");
+  CHECK(sch::get<"pushed">(second.at(1)) == 2);
+  CHECK(sch::get<"tags">(second.at(1)) == "bridge");
+  CHECK(sch::get<"node_ids">(second.at(2)) == Nodes{4, 5});
+  CHECK(sch::get<"tags">(second.at(2)) == "lane");
+
+  // Two rows with the same nodes in one statement: the database refuses the whole of it.
+  const std::vector<Ways::insert_row_type> twice{
+      Ways::make_insert_row("east", Nodes{9}, std::nullopt, 3), Ways::make_insert_row("east", Nodes{9}, std::nullopt, 3)
+  };
+  CHECK_THROWS_AS((database.upsert<Ways, pg::ConflictOn<"node_ids">>(twice).get()), pg::QueryError);
+  CHECK(database.execute(q::Prepared<ALL_WAYS>::bind()).get().size() == 3);
+
+  database.drop_table<Ways>().get();
+}
+
 TEST_CASE("integration: a statement given as text runs with its arguments, on the pool or in a transaction", "[integration][unchecked_sql]") {
   pg::Database            database(test_db());
   const sch::Table<Notes> notes("schemacht_it_notes_text");
