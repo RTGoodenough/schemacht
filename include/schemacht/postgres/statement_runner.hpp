@@ -99,8 +99,8 @@ class StatementRunner {
   template <RunnableStatementRef statement_t, util::CompletionFor<detail::rows_of<statement_t>> done_t = util::UseFuture>
   auto execute(statement_t&& statement, const ReadOptions& read, done_t done = {}) {
     using result_t = std::remove_cvref_t<statement_t>::result_type;
-    return util::complete<std::vector<result_t>>(std::move(done), [&](auto done) {
-      send_for_rows<result_t>(detail::wire_caught(std::forward<statement_t>(statement)), read, std::move(done));
+    return util::complete<std::vector<result_t>>(std::move(done), [&](auto completion) {
+      send_for_rows<result_t>(detail::wire_caught(std::forward<statement_t>(statement)), read, std::move(completion));
     });
   }
 
@@ -119,8 +119,8 @@ class StatementRunner {
    */
   template <CommandStatementRef statement_t, util::CompletionFor<std::uint64_t> done_t = util::UseFuture>
   auto execute(statement_t&& command, done_t done = {}) {
-    return util::complete<std::uint64_t>(std::move(done), [&](auto done) {
-      send_command(detail::wire_caught(std::forward<statement_t>(command)), std::move(done));
+    return util::complete<std::uint64_t>(std::move(done), [&](auto completion) {
+      send_command(detail::wire_caught(std::forward<statement_t>(command)), std::move(completion));
     });
   }
 
@@ -143,10 +143,10 @@ class StatementRunner {
   auto stream(statement_t&& statement, handler_t on_row, const ReadOptions& read, done_t done = {}) {
     using row_t = detail::row_of<statement_t>;
 
-    return util::complete<void>(std::move(done), [&](auto done) {
+    return util::complete<void>(std::move(done), [&](auto completion) {
       send_stream<row_t>(
           detail::wire_caught(std::forward<statement_t>(statement)), read,
-          [on_row = std::move(on_row)](const QueryResult& chunk) mutable { return read_rows<row_t>(chunk, on_row); }, std::move(done)
+          [on_row = std::move(on_row)](const QueryResult& chunk) mutable { return read_rows<row_t>(chunk, on_row); }, std::move(completion)
       );
     });
   }
@@ -176,7 +176,7 @@ class StatementRunner {
   auto stream_chunks(statement_t&& statement, handler_t on_chunk, const ReadOptions& read, done_t done = {}) {
     using row_t = detail::row_of<statement_t>;
 
-    return util::complete<void>(std::move(done), [&](auto done) {
+    return util::complete<void>(std::move(done), [&](auto completion) {
       send_stream<row_t>(
           detail::wire_caught(std::forward<statement_t>(statement)), read,
           [on_chunk = std::move(on_chunk)](const QueryResult& chunk) mutable {
@@ -193,7 +193,7 @@ class StatementRunner {
               return true;
             }
           },
-          std::move(done)
+          std::move(completion)
       );
     });
   }

@@ -46,19 +46,31 @@ inline constexpr std::int64_t INFINITE_PAST = std::numeric_limits<std::int64_t>:
 /** @return A time's text form: `2026-10-01 20:55:12.264000+00` with `zoned`, else without the `+00`; `infinity`; ` BC` when it is. */
 [[nodiscard]] std::string format_timestamp(std::int64_t micros, bool zoned);
 
-/** @return The time in a text form as PostgreSQL prints it (ISO); with `zoned`, its offset is required and taken off. @throws std::invalid_argument */
+/**
+ * @return The time in a text form as PostgreSQL prints it (ISO); with `zoned`, its offset is required and taken off.
+ * @throws std::invalid_argument for text that is not a time.
+ */
 [[nodiscard]] std::int64_t parse_timestamp(std::string_view text, bool zoned);
 
-/** @return The time in PostgreSQL's binary form: microseconds since 2000-01-01. @throws std::invalid_argument */
+/**
+ * @return The time in PostgreSQL's binary form: microseconds since 2000-01-01.
+ * @throws std::invalid_argument for the wrong size.
+ */
 [[nodiscard]] std::int64_t parse_binary_timestamp(std::span<const std::byte> bytes);
 
 /** @return A date's text form, `2026-10-01`, from days since 1970-01-01 (or an infinite one). */
 [[nodiscard]] std::string format_date(std::int64_t days);
 
-/** @return The days since 1970-01-01 of a date in its ISO text form, or an infinite one. @throws std::invalid_argument */
+/**
+ * @return The days since 1970-01-01 of a date in its ISO text form, or an infinite one.
+ * @throws std::invalid_argument for text that is not a date.
+ */
 [[nodiscard]] std::int64_t parse_date(std::string_view text);
 
-/** @return The days since 1970-01-01 of a date in PostgreSQL's binary form (days since 2000-01-01), or an infinite one. @throws std::invalid_argument */
+/**
+ * @return The days since 1970-01-01 of a date in PostgreSQL's binary form (days since 2000-01-01), or an infinite one.
+ * @throws std::invalid_argument for the wrong size.
+ */
 [[nodiscard]] std::int64_t parse_binary_date(std::span<const std::byte> bytes);
 
 }  // namespace detail

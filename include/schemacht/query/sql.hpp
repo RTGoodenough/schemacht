@@ -602,7 +602,7 @@ consteval void append_select_from(Text<text_capacity>& text, const std::array<st
 }
 
 /**
- * @return `SELECT <columns> FROM <table> [WHERE <predicate>] [ORDER BY <terms>] [LIMIT <count>]`,
+ * @return `SELECT <columns> FROM <the table> [WHERE <predicate>] [ORDER BY <terms>] [LIMIT <count>]`,
  * with each argument as `$n` (`arg<N>()` is `$N+1`).
  */
 template <schema::IsSchema schema_t, std::size_t predicate_capacity, std::size_t order_capacity>
@@ -672,7 +672,7 @@ consteval void append_returning(Text<text_capacity>& text, const ReturnedColumns
   }
 }
 
-/** @return `UPDATE <table> SET <column> = <value>, ... [WHERE <predicate>] [RETURNING <columns>]`, each value `$n`, a literal, or `NULL`. */
+/** @return `UPDATE <the table> SET <column> = <value>, ... [WHERE <predicate>] [RETURNING <columns>]`, each value `$n`, a literal, or `NULL`. */
 template <schema::IsSchema schema_t, std::size_t set_capacity, std::size_t predicate_capacity>
 [[nodiscard]] consteval Text<STATEMENT_CAPACITY> update_statement(const Update<schema_t, set_capacity, predicate_capacity>& update) {
   Text<STATEMENT_CAPACITY> text;
@@ -698,7 +698,7 @@ template <schema::IsSchema schema_t, std::size_t set_capacity, std::size_t predi
   return text;
 }
 
-/** @return `DELETE FROM <table> [WHERE <predicate>] [RETURNING <columns>]`. */
+/** @return `DELETE FROM <the table> [WHERE <predicate>] [RETURNING <columns>]`. */
 template <schema::IsSchema schema_t, std::size_t predicate_capacity>
 [[nodiscard]] consteval Text<STATEMENT_CAPACITY> delete_statement(const Delete<schema_t, predicate_capacity>& del) {
   Text<STATEMENT_CAPACITY> text;
@@ -712,7 +712,7 @@ template <schema::IsSchema schema_t, std::size_t predicate_capacity>
 }
 
 /**
- * @return `CREATE TABLE <table> (<column> <type> [NOT NULL], ..., PRIMARY KEY (<key columns>), UNIQUE (<column>), ...)`: each
+ * @return `CREATE TABLE <the table> (<column> <type> [NOT NULL], ..., PRIMARY KEY (<key columns>), UNIQUE (<column>), ...)`: each
  * column with its type's SQL name, `NOT NULL` unless its field is a `std::optional`, the primary key if the schema has one,
  * and a `UNIQUE` constraint for each `KeyRole::Unique` column on its own. A generated key column (see `COLUMN_IDENTITY`) is
  * numbered by the database: `GENERATED ALWAYS AS IDENTITY`.
@@ -900,7 +900,7 @@ template <schema::IsSchema schema_t>
   return text;
 }
 
-/** @return `DROP TABLE IF EXISTS <table>`. */
+/** @return `DROP TABLE IF EXISTS <the table>`. */
 template <schema::IsSchema schema_t>
 [[nodiscard]] consteval Text<STATEMENT_CAPACITY> drop_table_statement() {
   Text<STATEMENT_CAPACITY> text;
@@ -913,7 +913,7 @@ template <schema::IsSchema schema_t>
 /** @brief What an upsert calls the row already in the table, in its `SET` clause. */
 inline constexpr std::string_view UPSERT_CURRENT = "current";
 
-/** @brief Writes `INSERT INTO <table> (<every insertable column>)`, naming the table `alias` (`<table> AS <alias>`) unless it is empty. */
+/** @brief Writes `INSERT INTO <the table> (<every insertable column>)`, naming the table `alias` (`<the table> AS <alias>`) unless it is empty. */
 template <schema::IsSchema schema_t, std::size_t text_capacity>
 consteval void append_insert_into(Text<text_capacity>& text, std::string_view alias) {
   text.append("INSERT INTO ");
@@ -992,7 +992,7 @@ consteval void append_insert_unnest(Text<text_capacity>& text, std::string_view 
 }
 
 /**
- * @return `INSERT INTO <table> (<columns>) SELECT <columns> FROM unnest($1::<type>[], ...) AS u(<columns>)`: one array argument per
+ * @return `INSERT INTO <the table> (<columns>) SELECT <columns> FROM unnest($1::<type>[], ...) AS u(<columns>)`: one array argument per
  * insertable column, holding that column's value for every row, so any number of rows go in one statement. A column that is
  * itself an array, or of a type of your own, goes as a `text[]` of its values' text forms, cast back to its type in the select
  * list (`detail::sent_as_text`). Every insertable column's type needs an SQL type name (`sql::type_name`).

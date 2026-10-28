@@ -3,6 +3,8 @@
 #include <fcntl.h>
 #include <libpq-fe.h>
 #include <poll.h>
+#include <postgres_ext.h>
+#include <sys/types.h>
 #include <unistd.h>
 
 #include <array>
@@ -541,7 +543,7 @@ class AsyncClient::Impl {
       }
 
       collect_descriptors(active, descriptors, layout);
-      if ( poll(descriptors.data(), static_cast<nfds_t>(descriptors.size()), -1) < 0 ) {
+      if ( poll(descriptors.data(), descriptors.size(), -1) < 0 ) {  // nfds_t is size_t's type here, so no cast
         if ( errno != EINTR ) {
           fail_everything(active);
         }

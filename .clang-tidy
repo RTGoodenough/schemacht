@@ -13,11 +13,16 @@ Checks: >
   -cppcoreguidelines-pro-type-union-access,
   -hicpp-signed-bitwise,
   -misc-no-recursion,
-  -modernize-use-trailing-return-type
+  -modernize-use-trailing-return-type,
+  -portability-avoid-pragma-once
 
+# portability-avoid-pragma-once: `#pragma once` is the house guard, and every compiler schemacht builds with honours it.
 WarningsAsErrors: "*"
 
 CheckOptions:
+  # Unused includes are reported; missing ones are not, so reliance on a transitive include goes unseen: the check knows no header for
+  # <chrono>'s literal suffixes or <poll.h>'s macros, which it would report on every use.
+  - { key: misc-include-cleaner.MissingIncludes                                                          , value: false            }
   - { key: readability-identifier-naming.NamespaceCase                                                  , value: lower_case       }
   - { key: readability-identifier-naming.ClassCase                                                      , value: CamelCase        }
   - { key: readability-identifier-naming.StructCase                                                     , value: CamelCase        }

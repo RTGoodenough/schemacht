@@ -33,7 +33,7 @@ typed rows through `std::future`s or completions.
 
 - A C++20 compiler: tested with g++ 13 and clang++ 18 (the headers compile as C++23 too).
 - libpq 17 or newer (`libpq-dev` from the [PostgreSQL apt repository](https://apt.postgresql.org)).
-- CMake 3.21 or newer.
+- CMake 3.25 or newer.
 - Optional: Doxygen and Graphviz, for the API reference.
 
 ## Adding it to a CMake project
@@ -135,8 +135,9 @@ ctest --test-dir build
 ```
 
 The tests and examples are built when schemacht is the top-level project (`SCHEMACHT_BUILD_TESTS`,
-`SCHEMACHT_BUILD_EXAMPLES`). The tests that need a database, and the examples, skip themselves unless
-`SCHEMACHT_TEST_DB` holds a libpq connection string:
+`SCHEMACHT_BUILD_EXAMPLES`), and everything is then compiled with the full warning set as errors (`SCHEMACHT_WARNINGS`;
+`cmake --build build --compile-no-warning-as-error` makes them warnings again). The tests that need a database, and the
+examples, skip themselves unless `SCHEMACHT_TEST_DB` holds a libpq connection string:
 
 ```sh
 SCHEMACHT_TEST_DB="host=localhost port=5432 dbname=schemacht_test user=test" ctest --test-dir build -j8

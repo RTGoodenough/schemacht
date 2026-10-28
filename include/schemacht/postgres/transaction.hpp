@@ -103,13 +103,13 @@ class Transaction : public StatementRunner {
    */
   template <util::CompletionFor<void> done_t = util::UseFuture>
   auto commit(done_t done = {}) {
-    return util::complete<void>(std::move(done), [this](auto done) { end(true, std::move(done)); });
+    return util::complete<void>(std::move(done), [&](auto completion) { end(true, std::move(completion)); });
   }
 
   /** @brief Rolls the transaction back: as `commit`, with the error `std::logic_error` if it had already ended. */
   template <util::CompletionFor<void> done_t = util::UseFuture>
   auto rollback(done_t done = {}) {
-    return util::complete<void>(std::move(done), [this](auto done) { end(false, std::move(done)); });
+    return util::complete<void>(std::move(done), [&](auto completion) { end(false, std::move(completion)); });
   }
 
  private:

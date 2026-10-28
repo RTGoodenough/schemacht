@@ -39,10 +39,8 @@ class MoveOnlyFunction<result_t(argument_ts...)> {  // NOLINT(cppcoreguidelines-
   /** @brief Takes `callable` by move (or copy, if an lvalue): the function holds it and calls it. */
   template <CallableAs<result_t, argument_ts...> callable_t>
     requires(! std::same_as<std::remove_cvref_t<callable_t>, MoveOnlyFunction> && std::constructible_from<std::decay_t<callable_t>, callable_t>)
-  MoveOnlyFunction(
-      callable_t&& callable
-  )  // NOLINT(google-explicit-constructor,*-explicit-constructor): a lambda converts to it, as to a std::function
-      : _invoke(&invoke_as<std::decay_t<callable_t>>), _manage(&manage_as<std::decay_t<callable_t>>) {
+  // NOLINTNEXTLINE(google-explicit-constructor,*-explicit-constructor) -- a lambda converts to it, as to a std::function
+  MoveOnlyFunction(callable_t&& callable) : _invoke(&invoke_as<std::decay_t<callable_t>>), _manage(&manage_as<std::decay_t<callable_t>>) {
     using held_t = std::decay_t<callable_t>;
 
     if constexpr ( HELD_INSIDE<held_t> ) {
@@ -74,6 +72,7 @@ class MoveOnlyFunction<result_t(argument_ts...)> {  // NOLINT(cppcoreguidelines-
   MoveOnlyFunction& operator=(const MoveOnlyFunction&) = delete;
 
   /** @brief Calls what it holds. @pre it holds something. */
+  // NOLINTNEXTLINE(performance-unnecessary-value-param) -- the signature's own parameter types, as std::move_only_function takes them
   result_t operator()(argument_ts... arguments) { return _invoke(_storage, std::forward<argument_ts>(arguments)...); }
 
   /** @return Whether it holds something to call. */
@@ -121,7 +120,7 @@ class MoveOnlyFunction<result_t(argument_ts...)> {  // NOLINT(cppcoreguidelines-
   static void manage_as(Storage& target, Storage* source) noexcept {
     if constexpr ( HELD_INSIDE<held_t> ) {
       if ( source != nullptr ) {
-        held_t* moved = held_in<held_t>(*source);
+        auto* moved = held_in<held_t>(*source);
         ::new (static_cast<void*>(target.inside.data())) held_t(std::move(*moved));
         moved->~held_t();
 

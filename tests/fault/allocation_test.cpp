@@ -8,7 +8,7 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include <atomic>
-#include <chrono>
+#include <chrono>  // IWYU pragma: keep -- for its literal suffixes
 #include <concepts>
 #include <cstddef>
 #include <cstdint>
@@ -56,8 +56,15 @@ void* operator new(std::size_t size) {
 void* operator new[](std::size_t size) { return operator new(size); }
 void  operator delete(void* memory) noexcept { std::free(memory); }
 void  operator delete[](void* memory) noexcept { std::free(memory); }
-void  operator delete(void* memory, std::size_t /*size*/) noexcept { std::free(memory); }
-void  operator delete[](void* memory, std::size_t /*size*/) noexcept { std::free(memory); }
+#ifdef __clang__
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wmissing-prototypes"  // clang 18 has sized deallocation off, so <new> does not declare these two
+#endif
+void operator delete(void* memory, std::size_t /*size*/) noexcept { std::free(memory); }
+void operator delete[](void* memory, std::size_t /*size*/) noexcept { std::free(memory); }
+#ifdef __clang__
+#pragma clang diagnostic pop
+#endif
 // NOLINTEND(cppcoreguidelines-owning-memory,cppcoreguidelines-no-malloc)
 
 namespace {

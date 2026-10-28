@@ -283,8 +283,13 @@ cmake -S . -B build
 cmake --build build -j
 ```
 
-Options: `SCHEMACHT_INSTALL`, `SCHEMACHT_BUILD_TESTS` and `SCHEMACHT_BUILD_EXAMPLES` default to on when schemacht is the
-top-level project; `SCHEMACHT_BUILD_DOCS` is `AUTO` (the `docs` target exists if Doxygen is found), `ON` or `OFF`. The
+Options: `SCHEMACHT_INSTALL`, `SCHEMACHT_BUILD_TESTS`, `SCHEMACHT_BUILD_EXAMPLES` and `SCHEMACHT_WARNINGS` default to on
+when schemacht is the top-level project; `SCHEMACHT_BUILD_DOCS` is `AUTO` (the `docs` target exists if Doxygen is found),
+`ON` or `OFF`; `SCHEMACHT_CLANG_TIDY` (off) runs clang-tidy on each file as it compiles. With `SCHEMACHT_WARNINGS` every
+target of schemacht's own compiles with the warning set in `CMakeLists.txt` (`-Wall -Wextra -Wpedantic -Wshadow
+-Wconversion ...`, plus each compiler's own) as errors, through the target property `COMPILE_WARNING_AS_ERROR`, so
+`cmake --build build --compile-no-warning-as-error` turns the errors back into warnings; the flags are private to those
+targets and never reach a project that links schemacht. The `docs` target fails on any Doxygen warning. The
 library is C++20 (`cxx_std_20` on the target); the headers compile as C++23 too, which `compile_fail.baseline_cxx23`
 checks. libpq 17 or newer is required at configure time (`SCHEMACHT_MIN_LIBPQ`) and checked again when an `AsyncClient`
 starts. Catch2 is fetched with FetchContent unless a 3.x is installed. `cmake --install build --prefix <dir>` puts the
@@ -316,12 +321,16 @@ SCHEMACHT_TEST_DB="host=localhost port=5432 dbname=schemacht_test user=test" cte
 - `clang-format` with the repository's `.clang-format` (Google-based, 150 columns, `AlignAfterOpenBracket: BlockIndent`:
   captures and arguments wrap among themselves and the closing bracket gets its own line, aligned declarations).
 - `clang-tidy` with the repository's `.clang-tidy` (nearly every check on, warnings as errors; `tests/` and `examples/`
-  have their own relaxed configs). A `NOLINT` carries the reason after `--`. Headers are checked through the sources
-  that include them:
+  have their own relaxed configs; a check switched off has its reason beside it). A `NOLINT` carries the reason after
+  `--`. Headers are checked through the sources that include them, either as the build runs (`-DSCHEMACHT_CLANG_TIDY=ON`)
+  or by hand:
 
   ```sh
   clang-tidy -p build --header-filter='include/schemacht/.*' tests/unit/util_test.cpp
   ```
+
+  A clang-tidy that reports `'stddef.h' file not found` has no builtin headers of its own; point it at a compiler's:
+  `--extra-arg=-resource-dir=$(clang++ -print-resource-dir)`. Its findings before that are not to be trusted.
 
 Conventions in force:
 

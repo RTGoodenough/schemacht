@@ -102,7 +102,8 @@ struct EnumColumn {
   static std::string format(const enum_t& value) {
     const auto index = static_cast<std::underlying_type_t<enum_t>>(value);
     if ( index < 0 || static_cast<std::size_t>(index) >= LABELS.size() ) {
-      throw std::invalid_argument("the value " + std::to_string(index) + " has no label in the enum " + std::string(SQL_TYPE));
+      using widest_t = std::conditional_t<std::is_signed_v<decltype(index)>, std::int64_t, std::uint64_t>;  // to_string without a promotion
+      throw std::invalid_argument("the value " + std::to_string(static_cast<widest_t>(index)) + " has no label in the enum " + std::string(SQL_TYPE));
     }
 
     return std::string(LABELS.at(static_cast<std::size_t>(index)));

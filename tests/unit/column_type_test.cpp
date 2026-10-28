@@ -194,7 +194,8 @@ TEST_CASE("a ColumnType makes a type a column type", "[column_type]") {
   STATIC_REQUIRE_FALSE(schemacht::UserColumnType<Half>);
   STATIC_REQUIRE_FALSE(pg::HasTextForm<Half>);
 
-  STATIC_REQUIRE(sql::type_name<Labelled>() == "varchar");  // an SqlType specialization comes first
+  STATIC_REQUIRE(sql::type_name<Labelled>() == "varchar");              // an SqlType specialization comes first
+  STATIC_REQUIRE(schemacht::ColumnType<Labelled>::SQL_TYPE == "text");  // whatever the ColumnType says
   STATIC_REQUIRE(sql::type_name<std::int16_t>() == "smallint");
 
   CHECK(pg::format_field(Cents{1999}) == "1999");

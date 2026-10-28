@@ -14,6 +14,7 @@
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
@@ -121,7 +122,7 @@ TEST_CASE("future_from makes a future of a call that takes a completion", "[util
 
 TEST_CASE("a settler fails its future with an error alone, with no value to pass", "[util]") {
   struct NoDefault {  // no value to make up for the error path
-    explicit NoDefault(int value) : value(value) {}
+    explicit NoDefault(int held) : value(held) {}
     int value;
   };
 
@@ -197,9 +198,11 @@ TEST_CASE("a move-only function destroys what it holds, inside or allocated", "[
   {
     // Small and moves without throwing: kept inside the function. Large: allocated. Both are destroyed with it, once.
     STATIC_REQUIRE(Function::HELD_INSIDE<decltype([one = Counted{}] { return 1; })>);
-    STATIC_REQUIRE_FALSE(Function::HELD_INSIDE<decltype([one = Counted{}, padding = std::array<std::byte, 64>{}] { return 2; })>);
+    STATIC_REQUIRE_FALSE(
+        Function::HELD_INSIDE<decltype([one = Counted{}, padding = std::array<std::byte, 64>{}] { return static_cast<int>(padding.size()) / 32; })>
+    );
     Function small = [one = Counted{}] { return 1; };
-    Function large = [one = Counted{}, padding = std::array<std::byte, 64>{}] { return 2; };
+    Function large = [one = Counted{}, padding = std::array<std::byte, 64>{}] { return static_cast<int>(padding.size()) / 32; };  // 2
     CHECK(Counted::alive == 2);
     CHECK(small() == 1);
     CHECK(large() == 2);

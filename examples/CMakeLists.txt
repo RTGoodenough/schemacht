@@ -1,14 +1,5 @@
-add_executable(schemacht_example_first_program first_program.cpp)
-target_link_libraries(schemacht_example_first_program PRIVATE schemacht::schemacht)
-
-add_executable(schemacht_example_basic basic.cpp)
-target_link_libraries(schemacht_example_basic PRIVATE schemacht::schemacht)
-
-add_executable(schemacht_example_custom_types custom_types.cpp)
-target_link_libraries(schemacht_example_custom_types PRIVATE schemacht::schemacht)
-
-add_executable(schemacht_example_transfers transfers.cpp)
-target_link_libraries(schemacht_example_transfers PRIVATE schemacht::schemacht)
-
-add_executable(schemacht_example_extensions extensions.cpp)
-target_link_libraries(schemacht_example_extensions PRIVATE schemacht::schemacht)
+foreach(example first_program basic custom_types transfers extensions)
+  add_executable(schemacht_example_${example} ${example}.cpp)
+  target_link_libraries(schemacht_example_${example} PRIVATE schemacht::schemacht)
+  schemacht_checks(schemacht_example_${example})
+endforeach()

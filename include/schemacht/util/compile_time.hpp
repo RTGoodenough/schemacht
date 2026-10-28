@@ -65,15 +65,17 @@ template <CTString... parts>
  */
 template <EqualityComparableRange range_t>
 [[nodiscard]] constexpr bool all_distinct(const range_t& values) {
-  std::size_t seen = 0;
-  for ( const auto& value : values ) {
-    ++seen;
-    for ( const auto& later : values | std::views::drop(seen) ) {
-      if ( value == later ) {
+  // Iterators rather than `values | std::views::drop(n)`, which GCC 13's -Wdangling-reference misreads as a dangling view.
+  // NOLINTBEGIN(cppcoreguidelines-pro-bounds-pointer-arithmetic) -- iterator steps, which for an array are pointer steps
+  const auto end = std::ranges::end(values);
+  for ( auto value = std::ranges::begin(values); value != end; ++value ) {
+    for ( auto later = std::ranges::next(value); later != end; ++later ) {
+      if ( *value == *later ) {
         return false;
       }
     }
   }
+  // NOLINTEND(cppcoreguidelines-pro-bounds-pointer-arithmetic)
 
   return true;
 }

@@ -1280,7 +1280,7 @@ std::vector<std::tuple<std::int64_t, std::string, std::int64_t>> notes_in(pg::St
 }  // namespace
 
 TEST_CASE("integration: an upsert inserts new keys and merges into the rows already there", "[integration][upsert]") {
-  using Note = std::tuple<std::int64_t, std::string, std::int64_t>;
+  using NoteRow = std::tuple<std::int64_t, std::string, std::int64_t>;
   pg::Database            database(test_db());
   const sch::Table<Notes> notes("schemacht_it_notes_merged");
   recreate(database, notes);
@@ -1298,11 +1298,11 @@ TEST_CASE("integration: an upsert inserts new keys and merges into the rows alre
   // Key 1 is there (merged: the longer body, the hits added), key 3 is not (inserted); key 2 is left alone.
   const std::vector incoming{Notes::make_row(1, "much longer", 2), Notes::make_row(3, "new", 1)};
   CHECK(database.execute(pg::upsert_statement<Notes, pg::MergeWith<"body", KeepLonger>, pg::MergeWith<"hits", Add>>(incoming).on(notes)).get() == 2);
-  CHECK(notes_in(database, notes) == std::vector<Note>{{1, "much longer", 3}, {2, "bb", 5}, {3, "new", 1}});
+  CHECK(notes_in(database, notes) == std::vector<NoteRow>{{1, "much longer", 3}, {2, "bb", 5}, {3, "new", 1}});
 
   // Without a MergeWith, the row already there takes the incoming values: a shorter body too.
   CHECK(database.execute(pg::upsert_statement<Notes>(std::vector{Notes::make_row(1, "x", 10)}).on(notes)).get() == 1);
-  CHECK(notes_in(database, notes).front() == Note{1, "x", 10});
+  CHECK(notes_in(database, notes).front() == NoteRow{1, "x", 10});
 
   // Two rows with one key in one statement: the database refuses the whole of it.
   CHECK_THROWS_AS(
@@ -1352,9 +1352,9 @@ TEST_CASE("integration: an upsert matched on a unique column updates the row the
   using WayId = sch::Field<std::int64_t, "way_id", sch::KeyRole::Primary, true>;
   using Dataset = sch::Field<std::string, "dataset">;
   using NodeIds = sch::Field<std::vector<std::int64_t>, "node_ids", sch::KeyRole::Unique>;
-  using Tags = sch::Field<std::optional<std::string>, "tags">;
+  using WayTags = sch::Field<std::optional<std::string>, "tags">;
   using Pushed = sch::Field<std::int64_t, "pushed">;
-  using Ways = sch::Schema<"schemacht_it_ways", WayId, Dataset, NodeIds, Tags, Pushed>;
+  using Ways = sch::Schema<"schemacht_it_ways", WayId, Dataset, NodeIds, WayTags, Pushed>;
   constexpr auto ALL_WAYS = q::select<Ways>().order_by(q::On<Ways>::col<"way_id">().asc());
 
   pg::Database database(test_db());

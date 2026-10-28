@@ -143,7 +143,8 @@ class UpsertSql {
 
   static constexpr std::array<query::sql::Merge, MERGE_COUNT> MERGES = [] {
     std::array<query::sql::Merge, MERGE_COUNT> merges{};
-    std::size_t                                next = 0;
+    // NOLINTNEXTLINE(misc-const-correctness) -- stepped once per MergeWith or Keep: never, for an upsert told only a ConflictOn
+    [[maybe_unused]] std::size_t next = 0;
     (
         [&] {
           if constexpr ( ! IsConflictOn<rule_ts> ) {
@@ -190,7 +191,9 @@ class UpsertSql {
 
   /** @return How many of the columns the update may set a `Keep` keeps (a `Keep` on another column has its own error). */
   [[nodiscard]] static consteval std::size_t kept_count() {
-    return std::ranges::count_if(MERGES, [](const query::sql::Merge& merge) { return merge.operation == nullptr && is_updatable(merge.column); });
+    return static_cast<std::size_t>(std::ranges::count_if(MERGES, [](const query::sql::Merge& merge) {
+      return merge.operation == nullptr && is_updatable(merge.column);
+    }));
   }
 
   [[nodiscard]] static consteval bool distinct_columns() {
@@ -251,7 +254,9 @@ class UpsertSql {
     if constexpr ( SPELLED ) {
       return query::sql::upsert_statement<schema_t>(MERGES, MATCHED);
     } else {
-      return query::sql::upsert_statement<schema_t>(std::array<query::sql::Merge, 0>{}, MATCHED);  // after the spelling's error
+      return query::sql::upsert_statement<schema_t>(
+          std::array<query::sql::Merge, 0>(), MATCHED
+      );  // after the spelling's error; () as {} reads as a trailing comma to clang-tidy
     }
   }
 
@@ -663,8 +668,8 @@ template <UncheckedSqlArgument... argument_ts>
   std::vector<std::string> params;
   try {
     params.reserve(sizeof...(argument_ts));
-    const detail::TextBinder bind(&params);
-    const auto               bind_one = [&bind]<typename argument_t>(const argument_t& argument) {
+    const detail::TextBinder    bind(&params);
+    [[maybe_unused]] const auto bind_one = [&bind]<typename argument_t>(const argument_t& argument) {  // unused with no arguments
       if constexpr ( std::convertible_to<const argument_t&, std::string_view> ) {
         // NOLINTNEXTLINE(cppcoreguidelines-pro-bounds-array-to-pointer-decay) -- a string literal, read up to its terminating null
         bind(std::string(std::string_view(argument)));  // text, as it is

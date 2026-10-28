@@ -5,6 +5,7 @@ FetchContent_Declare(
   GIT_REPOSITORY https://github.com/catchorg/Catch2.git
   GIT_TAG v3.7.1
   GIT_SHALLOW TRUE
+  SYSTEM  # its headers are not held to schemacht's warnings
   FIND_PACKAGE_ARGS 3
 )
 FetchContent_MakeAvailable(Catch2)
@@ -39,12 +40,14 @@ add_executable(
 )
 target_include_directories(schemacht_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(schemacht_tests PRIVATE schemacht::schemacht Catch2::Catch2WithMain)
+schemacht_checks(schemacht_tests)
 catch_discover_tests(schemacht_tests)
 
 # Failing allocations on purpose: its own executable, as it replaces the global operator new. Skipped without SCHEMACHT_TEST_DB.
 add_executable(schemacht_fault_tests fault/allocation_test.cpp)
 target_include_directories(schemacht_fault_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(schemacht_fault_tests PRIVATE schemacht::schemacht Catch2::Catch2WithMain)
+schemacht_checks(schemacht_fault_tests)
 catch_discover_tests(schemacht_fault_tests)
 
 # ==============================================================================

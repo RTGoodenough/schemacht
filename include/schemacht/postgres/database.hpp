@@ -82,9 +82,9 @@ class Database : private detail::ClientHolder, public StatementRunner {
    */
   template <util::CompletionFor<Transaction> done_t = util::UseFuture>
   auto begin(const TransactionOptions& options = TransactionOptions(), done_t done = {}) {
-    return util::complete<Transaction>(std::move(done), [&](auto done) {
-      // Shared here, on the caller's thread: a worker that can't queue the BEGIN still holds `done`, to say so.
-      const auto shared = std::make_shared<decltype(done)>(std::move(done));
+    return util::complete<Transaction>(std::move(done), [&](auto completion) {
+      // Shared here, on the caller's thread: a worker that can't queue the BEGIN still holds the completion, to say so.
+      const auto shared = std::make_shared<decltype(completion)>(std::move(completion));
       held_client().lease([client = &held_client(), read = read_options(), sql = detail::begin_statement(options),
                            shared](AsyncClient::Lease lease, std::exception_ptr error) mutable {
         if ( ! error ) {

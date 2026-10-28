@@ -1,4 +1,5 @@
-# The library's checks, minus those that fight test code: literal expected values, Catch2's macros, and test-only globals.
+# The library's checks, minus those that fight test code: literal expected values, Catch2's macros, test-only globals, and
+# casts out of an enum's range on purpose (Catch2's Flags are ORed together; a test formats a value no enumerator has).
 InheritParentConfig: true
 Checks: >
   -readability-magic-numbers,
@@ -17,4 +18,5 @@ Checks: >
   -cppcoreguidelines-pro-bounds-avoid-unchecked-container-access,
   -readability-identifier-length,
   -readability-trailing-comma,
-  -modernize-use-emplace
+  -modernize-use-emplace,
+  -clang-analyzer-optin.core.EnumCastOutOfRange

@@ -123,6 +123,12 @@ struct schemacht::ColumnType<shop::Money> {
 
 namespace shop {
 
+// Declared first, as a program would in a header (the warning set wants a declaration for every function with external linkage).
+std::ostream& operator<<(std::ostream& out, const OrderId& id);
+std::ostream& operator<<(std::ostream& out, const Mood& mood);
+std::ostream& operator<<(std::ostream& out, const Priority& priority);
+std::ostream& operator<<(std::ostream& out, const Money& amount);
+
 std::ostream& operator<<(std::ostream& out, const OrderId& id) { return out << '#' << id.value; }
 std::ostream& operator<<(std::ostream& out, const Mood& mood) { return out << schemacht::postgres::format_field(mood); }
 std::ostream& operator<<(std::ostream& out, const Priority& priority) {

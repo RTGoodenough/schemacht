@@ -99,7 +99,7 @@ using completion_t = std::conditional_t<std::same_as<done_t, UseFuture>, Settler
  * @return What a call that takes a completion `done` (`CompletionFor<value_t>`) returns: for `UseFuture`, the future of its
  * outcome; for any other completion, nothing. `start` begins the work and gets the completion to hand on: a `Settler` of that
  * future, or `done` itself. So each call is written once, as
- * `return util::complete<value_t>(std::move(done), [&](auto done) { ... });`.
+ * `return util::complete<value_t>(std::move(done), [&](auto completion) { ... });`.
  * @throws std::bad_alloc for `UseFuture`, if the future itself can't be made, before `start` is called.
  */
 template <FutureValue value_t, CompletionFor<value_t> done_t, std::invocable<completion_t<done_t, value_t>> start_t>

@@ -5,7 +5,7 @@
 #include <catch2/matchers/catch_matchers.hpp>
 
 #include <algorithm>
-#include <chrono>
+#include <chrono>  // IWYU pragma: keep -- for its literal suffixes
 #include <cstddef>
 #include <cstdint>
 #include <exception>
@@ -167,7 +167,7 @@ TEST_CASE("integration: a transaction that has ended refuses every statement", "
   pg::Transaction target = std::move(source);
 
   // What a moved-from one does:
-  // NOLINTNEXTLINE(bugprone-use-after-move,hicpp-invalid-access-moved)
+  // NOLINTNEXTLINE(bugprone-use-after-move,hicpp-invalid-access-moved,clang-analyzer-cplusplus.Move) -- the moved-from one is the subject
   CHECK_THROWS_AS(source.execute(Series::bind(1)).get(), std::logic_error);
 
   target.insert<Accounts>({Accounts::make_row(1, 1)}).get();

@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.21)
+cmake_minimum_required(VERSION 3.25)  # 3.24: COMPILE_WARNING_AS_ERROR; 3.25: FetchContent_Declare(... SYSTEM)
 
 project(schemacht VERSION 0.1.0 LANGUAGES CXX)
 
@@ -16,6 +16,8 @@ option(SCHEMACHT_BUILD_TESTS "Build the tests" ${PROJECT_IS_TOP_LEVEL})
 option(SCHEMACHT_BUILD_EXAMPLES "Build the examples" ${PROJECT_IS_TOP_LEVEL})
 set(SCHEMACHT_BUILD_DOCS "AUTO" CACHE STRING "Add the target `docs`, the API reference built from the headers with Doxygen: AUTO (if Doxygen is found), ON or OFF")
 set_property(CACHE SCHEMACHT_BUILD_DOCS PROPERTY STRINGS AUTO ON OFF)
+option(SCHEMACHT_WARNINGS "Compile schemacht's own targets with the full warning set, warnings as errors (see Static checks below)" ${PROJECT_IS_TOP_LEVEL})
+option(SCHEMACHT_CLANG_TIDY "Run clang-tidy on each of schemacht's own files as it compiles (needs clang-tidy)" OFF)
 
 # ==============================================================================
 # Dependencies
@@ -29,6 +31,53 @@ if(PostgreSQL_VERSION_STRING VERSION_LESS SCHEMACHT_MIN_LIBPQ)
                       "Install libpq-dev from the PostgreSQL apt repository (https://apt.postgresql.org).")
 endif()
 find_package(Threads REQUIRED)
+
+# ==============================================================================
+# Static checks: warnings as errors and clang-tidy, on schemacht's own targets
+# ==============================================================================
+# `schemacht_checks(<target>)` is called on the library, the tests and the examples. With SCHEMACHT_WARNINGS (on when
+# schemacht is the top-level project, off when another project adds it, so that a newer compiler's warnings never break
+# that project's build) a target compiles with the warnings below, as errors; `cmake --build <build>
+# --compile-no-warning-as-error` makes them warnings again. The flags are PRIVATE: nothing reaches a project that links
+# schemacht. Left out on purpose: -Weffc++ and -Wnoexcept (fire throughout libstdc++), -Wfloat-equal, and
+# -Wmissing-field-initializers (part of -Wextra, so switched off: it fires on designated initializers that leave a member to
+# its default, which is how an `Options` is written), -Wswitch-default (a `default:` label would silence -Wswitch, which wants
+# every enumerator handled and is the stronger check) and clang's -Wshadow-all (flags the `[x = std::move(x)]` capture).
+#
+# With SCHEMACHT_CLANG_TIDY each file is also checked by clang-tidy (the repository's .clang-tidy) as it compiles; its
+# findings are errors too.
+set(SCHEMACHT_WARNING_FLAGS)
+if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+  list(APPEND SCHEMACHT_WARNING_FLAGS
+       -Wall -Wextra -Wpedantic -Wshadow -Wconversion -Wsign-conversion -Wold-style-cast -Wcast-align -Wcast-qual
+       -Woverloaded-virtual -Wnon-virtual-dtor -Wnull-dereference -Wdouble-promotion -Wformat=2 -Wimplicit-fallthrough -Wundef
+       -Wextra-semi -Wzero-as-null-pointer-constant -Wmissing-declarations -Wno-missing-field-initializers)
+endif()
+if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+  list(APPEND SCHEMACHT_WARNING_FLAGS -Wduplicated-cond -Wduplicated-branches -Wlogical-op -Wuseless-cast -Wredundant-decls
+                                      -Wsuggest-override -Wsign-promo -Wdeprecated-copy-dtor -Walloca -Wcast-function-type)
+elseif(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+  list(APPEND SCHEMACHT_WARNING_FLAGS -Wunused-lambda-capture -Wdocumentation -Wmissing-prototypes)
+endif()
+
+if(SCHEMACHT_CLANG_TIDY)
+  find_program(SCHEMACHT_CLANG_TIDY_EXE NAMES clang-tidy clang-tidy-18 clang-tidy-17 clang-tidy-16 REQUIRED)
+endif()
+
+function(schemacht_checks target)
+  if(SCHEMACHT_WARNINGS)
+    target_compile_options(${target} PRIVATE ${SCHEMACHT_WARNING_FLAGS})
+    set_target_properties(${target} PROPERTIES COMPILE_WARNING_AS_ERROR ON)
+  endif()
+  if(SCHEMACHT_CLANG_TIDY)
+    # clang-tidy gets the compiler's command line; under g++ that holds GCC-only flags, which clang must not reject.
+    set_target_properties(
+      ${target}
+      PROPERTIES CXX_CLANG_TIDY
+                 "${SCHEMACHT_CLANG_TIDY_EXE};--header-filter=${PROJECT_SOURCE_DIR}/(include|tests/support|examples)/.*;--extra-arg=-Wno-unknown-warning-option"
+    )
+  endif()
+endfunction()
 
 # ==============================================================================
 # Library
@@ -56,6 +105,8 @@ target_link_libraries(schemacht PUBLIC PostgreSQL::PostgreSQL Threads::Threads)
 
 # The headers use C++20, so whoever includes them compiles as C++20 or later.
 target_compile_features(schemacht PUBLIC cxx_std_20)
+
+schemacht_checks(schemacht)
 
 # The name a project links, whether it builds schemacht (add_subdirectory) or finds it installed (find_package).
 add_library(schemacht::schemacht ALIAS schemacht)
@@ -108,7 +159,7 @@ if(DOXYGEN_FOUND AND NOT SCHEMACHT_BUILD_DOCS_CHOICE STREQUAL "OFF")
   set(DOXYGEN_SHOW_INCLUDE_FILES NO)
   set(DOXYGEN_SORT_MEMBER_DOCS NO)
   set(DOXYGEN_WARN_IF_UNDOCUMENTED YES)
-  set(DOXYGEN_WARN_AS_ERROR NO)
+  set(DOXYGEN_WARN_AS_ERROR FAIL_ON_WARNINGS)  # every warning is printed, then the target fails
   set(DOXYGEN_QUIET YES)
   doxygen_add_docs(docs ${CMAKE_CURRENT_SOURCE_DIR}/include/schemacht ${CMAKE_CURRENT_SOURCE_DIR}/README.md ${CMAKE_CURRENT_SOURCE_DIR}/docs
                    COMMENT "The API reference, with Doxygen, into ${CMAKE_BINARY_DIR}/docs/html")
